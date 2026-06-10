@@ -1,0 +1,25 @@
+services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    restart: unless-stopped
+    ports:
+      - "2283:2283"
+    volumes:
+      - ./data:/usr/src/app/upload
+    depends_on:
+      - immich-redis
+      - immich-postgres
+
+  immich-redis:
+    image: docker.io/valkey/valkey:8-bookworm
+    restart: unless-stopped
+
+  immich-postgres:
+    image: ghcr.io/immich-app/postgres:14
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: immich
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data

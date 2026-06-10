@@ -1,0 +1,5 @@
+name: dockstack-demo-sample
+services:
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
