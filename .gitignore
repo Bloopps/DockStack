@@ -6,3 +6,7 @@
 # Artefacts Go
 *.test
 *.out
+
+# Config locale (outillage de dev personnel)
+/.rtk/
+/CLAUDE.md

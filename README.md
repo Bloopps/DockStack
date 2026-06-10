@@ -36,11 +36,21 @@ de l'utiliser sur des stacks importantes.
 
 ## Prérequis
 
-- Go 1.26+
 - Accès au socket Docker (le binaire utilise l'API `docker/compose/v5`, pas
   le binaire `docker compose`)
+- Pour compiler depuis les sources : Go 1.26+
 
-## Lancer
+## Installation
+
+Binaire statique linux/amd64, sans dépendance :
+
+```bash
+wget https://github.com/Bloopps/DockStack/releases/latest/download/dockstack-linux-amd64 -O dockstack
+chmod +x dockstack
+./dockstack
+```
+
+## Lancer depuis les sources
 
 ```bash
 go run ./cmd/dockstack
