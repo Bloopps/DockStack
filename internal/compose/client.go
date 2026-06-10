@@ -43,8 +43,8 @@ type Stack struct {
 	Services    []ServiceStatus // par service compose, trié par nom
 }
 
-// ServiceStatus holds the aggregate state of one compose service within a
-// stack (several containers when the service is scaled).
+// ServiceStatus représente l'état agrégé d'un service compose au sein
+// d'une stack (plusieurs conteneurs si le service est scalé).
 type ServiceStatus struct {
 	Name      string
 	Running   int
