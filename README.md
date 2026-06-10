@@ -4,6 +4,8 @@ TUI (terminal) en Go pour gérer des stacks Docker Compose : lister les stacks
 détectées, les démarrer/arrêter/redémarrer/recréer, pull les images, suivre
 les logs, et capturer/restaurer l'état des stacks en cours d'exécution.
 
+![demo](demo.gif)
+
 ## ⚠️ Avertissement important
 
 **Ce projet est entièrement vibecodé** : tout le code a été généré par un
@@ -84,3 +86,12 @@ lancement) :
 | `o`                   | Changer de répertoire                                |
 | `?`                   | Aide                                                 |
 | `q`                   | Quitter                                              |
+
+## Régénérer la démo
+
+Le GIF en haut du README est généré avec [VHS](https://github.com/charmbracelet/vhs) :
+
+```bash
+go build -o dockstack ./cmd/dockstack
+vhs demo.tape
+```
