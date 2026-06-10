@@ -5,9 +5,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/user/dockerstack/internal/backup"
-	"github.com/user/dockerstack/internal/compose"
-	"github.com/user/dockerstack/internal/monitor"
+	"github.com/Bloopps/dockstack/internal/backup"
+	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/monitor"
 )
 
 // ---- progress stream ----

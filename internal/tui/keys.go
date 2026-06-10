@@ -12,7 +12,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/user/dockerstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/compose"
 )
 
 var stackActions = []string{

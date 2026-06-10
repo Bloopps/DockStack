@@ -6,8 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/user/dockerstack/internal/config"
-	"github.com/user/dockerstack/internal/tui"
+	"github.com/Bloopps/dockstack/internal/config"
+	"github.com/Bloopps/dockstack/internal/tui"
 )
 
 func main() {

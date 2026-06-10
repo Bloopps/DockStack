@@ -1,4 +1,4 @@
-# dockerstack
+# DockStack
 
 TUI (terminal) en Go pour gérer des stacks Docker Compose : lister les stacks
 détectées, les démarrer/arrêter/redémarrer/recréer, pull les images, suivre
@@ -43,12 +43,12 @@ de l'utiliser sur des stacks importantes.
 ## Lancer
 
 ```bash
-go run ./cmd/dockerstack
+go run ./cmd/dockstack
 ```
 
 ## Configuration
 
-Fichier `~/.dockerstack/config.json` (créé automatiquement au premier
+Fichier `~/.dockstack/config.json` (créé automatiquement au premier
 lancement) :
 
 ```json

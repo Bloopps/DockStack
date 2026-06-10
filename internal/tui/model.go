@@ -11,10 +11,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/user/dockerstack/internal/backup"
-	"github.com/user/dockerstack/internal/compose"
-	"github.com/user/dockerstack/internal/config"
-	"github.com/user/dockerstack/internal/monitor"
+	"github.com/Bloopps/dockstack/internal/backup"
+	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/config"
+	"github.com/Bloopps/dockstack/internal/monitor"
 )
 
 type view int
@@ -563,7 +563,7 @@ func renderError(err error) string {
 		content := strings.Join([]string{
 			styleRed.Bold(true).Render("Accès Docker refusé"),
 			"",
-			styleDim.Render("Relancer en sudo :") + "  " + styleYellow.Render("sudo dockerstack"),
+			styleDim.Render("Relancer en sudo :") + "  " + styleYellow.Render("sudo dockstack"),
 			styleDim.Render("Ou rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
 			styleDim.Render("Ou démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}, "\n")

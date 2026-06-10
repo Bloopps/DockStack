@@ -1,7 +1,7 @@
 # Binaire compilé
-/dockerstack
-/cmd/dockerstack/dockerstack
-/dockerstack-linux-*
+/dockstack
+/cmd/dockstack/dockstack
+/dockstack-linux-*
 
 # Artefacts Go
 *.test

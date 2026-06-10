@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/user/dockerstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/compose"
 )
 
 // Libellés d'affichage des actions canoniques (ids utilisés par les raccourcis

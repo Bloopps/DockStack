@@ -13,7 +13,7 @@ type Config struct {
 
 func dir() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".dockerstack")
+	return filepath.Join(home, ".dockstack")
 }
 
 func path() string {

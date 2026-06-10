@@ -7,7 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/user/dockerstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/compose"
 )
 
 var (

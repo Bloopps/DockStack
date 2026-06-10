@@ -1,4 +1,4 @@
-module github.com/user/dockerstack
+module github.com/Bloopps/dockstack
 
 go 1.26.3
 
