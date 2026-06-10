@@ -1,6 +1,7 @@
 # Binaire compilé
 /dockerstack
 /cmd/dockerstack/dockerstack
+/dockerstack-linux-*
 
 # Artefacts Go
 *.test
