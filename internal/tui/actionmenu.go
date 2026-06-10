@@ -77,7 +77,14 @@ func buildActionPanel(stack compose.Stack, cursor int) string {
 	inner := panelWidth - 4
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
-	rows := []string{title, state, divider, ""}
+	rows := []string{title, state}
+	if len(stack.Services) > 1 {
+		rows = append(rows, divider)
+		for _, svc := range stack.Services {
+			rows = append(rows, renderServiceLine(svc, inner))
+		}
+	}
+	rows = append(rows, divider, "")
 
 	labels := []string{"Up", "Down", "Restart", "Recreate", "Pull", "Logs", "Remove", "Retour"}
 
@@ -101,6 +108,26 @@ func buildActionPanel(stack compose.Stack, cursor int) string {
 	}
 
 	return stylePanel.Width(panelWidth).Render(strings.Join(rows, "\n"))
+}
+
+// renderServiceLine affiche une ligne « ● nom  x/y » pour un service de la
+// stack, le nom étant tronqué pour tenir dans la largeur du panneau.
+func renderServiceLine(svc compose.ServiceStatus, width int) string {
+	dot, dotStyle := stateStyle(svc.State())
+	count := fmt.Sprintf("%d/%d", svc.Running, svc.Total)
+
+	const prefixW = 4 // "  " + dot + " "
+	maxName := width - prefixW - lipgloss.Width(count) - 1
+	if maxName < 1 {
+		maxName = 1
+	}
+	name := truncate(svc.Name, maxName)
+
+	pad := width - prefixW - lipgloss.Width(name) - lipgloss.Width(count)
+	if pad < 1 {
+		pad = 1
+	}
+	return "  " + dotStyle.Render(dot) + " " + styleDim.Render(name) + strings.Repeat(" ", pad) + styleDim.Render(count)
 }
 
 func buildGroupPanel(selected []compose.Stack, cursor int) string {

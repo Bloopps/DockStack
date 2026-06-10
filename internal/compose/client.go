@@ -14,6 +14,7 @@ import (
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
@@ -26,6 +27,7 @@ const (
 	StateStopped
 	StatePartial
 	StateRunning
+	StateUnhealthy
 )
 
 // Stack holds info about one docker-compose stack found on disk.
@@ -37,15 +39,36 @@ type Stack struct {
 	Group       string
 	Running     int
 	Total       int
+	Unhealthy   int
+	Services    []ServiceStatus // par service compose, trié par nom
+}
+
+// ServiceStatus holds the aggregate state of one compose service within a
+// stack (several containers when the service is scaled).
+type ServiceStatus struct {
+	Name      string
+	Running   int
+	Total     int
+	Unhealthy int
+}
+
+func (s ServiceStatus) State() State {
+	return aggregateState(s.Running, s.Total, s.Unhealthy)
 }
 
 func (s *Stack) State() State {
+	return aggregateState(s.Running, s.Total, s.Unhealthy)
+}
+
+func aggregateState(running, total, unhealthy int) State {
 	switch {
-	case s.Total == 0:
+	case total == 0:
 		return StateUnknown
-	case s.Running == s.Total:
+	case unhealthy > 0:
+		return StateUnhealthy
+	case running == total:
 		return StateRunning
-	case s.Running > 0:
+	case running > 0:
 		return StatePartial
 	default:
 		return StateStopped
@@ -103,31 +126,64 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		return nil, err
 	}
 
-	type counts struct{ running, total int }
-	dirCounts  := make(map[string]counts, len(result.Items))
-	projCounts := make(map[string]counts, len(result.Items)) // fallback: par nom de projet
-	projDir    := make(map[string]string)                    // nom de projet → premier working_dir vu
+	type counts struct{ running, total, unhealthy int }
+	addServiceCount := func(m map[string]map[string]counts, key, svc string, running, unhealthy bool) {
+		sc, ok := m[key]
+		if !ok {
+			sc = make(map[string]counts)
+			m[key] = sc
+		}
+		c := sc[svc]
+		c.total++
+		if running {
+			c.running++
+		}
+		if unhealthy {
+			c.unhealthy++
+		}
+		sc[svc] = c
+	}
+	dirCounts    := make(map[string]counts, len(result.Items))
+	projCounts   := make(map[string]counts, len(result.Items)) // fallback: par nom de projet
+	projDir      := make(map[string]string)                    // nom de projet → premier working_dir vu
+	dirServices  := make(map[string]map[string]counts)         // working_dir -> service -> counts
+	projServices := make(map[string]map[string]counts)         // projet -> service -> counts (fallback)
 
 	for _, ctr := range result.Items {
+		unhealthy := ctr.Health != nil && ctr.Health.Status == container.Unhealthy
+		running := ctr.State == "running"
+		svc := ctr.Labels["com.docker.compose.service"]
 		// Populate both maps: dir-based (primary) and project-name-based (fallback).
 		// Always populate both so that whichever key matches at lookup time wins.
 		wd := filepath.Clean(ctr.Labels["com.docker.compose.project.working_dir"])
 		if wd != "." {
 			cnt := dirCounts[wd]
 			cnt.total++
-			if ctr.State == "running" {
+			if running {
 				cnt.running++
 			}
+			if unhealthy {
+				cnt.unhealthy++
+			}
 			dirCounts[wd] = cnt
+			if svc != "" {
+				addServiceCount(dirServices, wd, svc, running, unhealthy)
+			}
 		}
 		proj := strings.ToLower(ctr.Labels["com.docker.compose.project"])
 		if proj != "" {
 			cnt := projCounts[proj]
 			cnt.total++
-			if ctr.State == "running" {
+			if running {
 				cnt.running++
 			}
+			if unhealthy {
+				cnt.unhealthy++
+			}
 			projCounts[proj] = cnt
+			if svc != "" {
+				addServiceCount(projServices, proj, svc, running, unhealthy)
+			}
 			if wd != "." {
 				if _, ok := projDir[proj]; !ok {
 					projDir[proj] = wd
@@ -150,20 +206,29 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		dir := filepath.Dir(f)
 		rel, _ := filepath.Rel(stackDir, dir)
 		group := strings.SplitN(rel, string(os.PathSeparator), 2)[0]
-		cnt := dirCounts[filepath.Clean(dir)]
+		cleanDir := filepath.Clean(dir)
+		cnt := dirCounts[cleanDir]
+		svcCounts := dirServices[cleanDir]
 		if cnt.total == 0 {
 			projName := strings.ToLower(filepath.Base(dir))
 			wd, deployed := projDir[projName]
 			// Fallback seulement s'il est non ambigu : un seul candidat
 			// avec ce basename, et pas de working_dir connu pointant vers
 			// un autre répertoire.
-			if baseCount[projName] == 1 && (!deployed || wd == filepath.Clean(dir)) {
+			if baseCount[projName] == 1 && (!deployed || wd == cleanDir) {
 				cnt = projCounts[projName]
+				svcCounts = projServices[projName]
 			}
 		}
+		services := make([]ServiceStatus, 0, len(svcCounts))
+		for name, c := range svcCounts {
+			services = append(services, ServiceStatus{Name: name, Running: c.running, Total: c.total, Unhealthy: c.unhealthy})
+		}
+		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 		stacks = append(stacks, Stack{
 			Name: rel, NameLC: strings.ToLower(rel), Dir: dir, ComposeFile: f,
-			Group: group, Running: cnt.running, Total: cnt.total,
+			Group: group, Running: cnt.running, Total: cnt.total, Unhealthy: cnt.unhealthy,
+			Services: services,
 		})
 	}
 
@@ -442,6 +507,55 @@ type chanConsumer struct{ ch chan LogEntry }
 func (c *chanConsumer) Log(name, msg string)    { c.ch <- LogEntry{Name: name, Line: msg} }
 func (c *chanConsumer) Err(name, msg string)    { c.ch <- LogEntry{Name: name, Line: msg, IsErr: true} }
 func (c *chanConsumer) Status(_, _ string)      {}
+
+// DockerEvent is a minimal, decoupled view of a moby system event: just
+// enough for the TUI to decide whether the stack list needs a refresh.
+type DockerEvent struct {
+	Action string
+}
+
+// SubscribeEvents streams container lifecycle events (start/stop/die/
+// health_status…) until ctx is cancelled or the underlying API stream ends,
+// at which point the returned channel is closed.
+func (c *Client) SubscribeEvents(ctx context.Context) <-chan DockerEvent {
+	out := make(chan DockerEvent, 32)
+	go func() {
+		defer close(out)
+		f := make(mobyclient.Filters).Add("type", "container")
+		res := c.cli.Client().Events(ctx, mobyclient.EventsListOptions{Filters: f})
+		for {
+			select {
+			case msg := <-res.Messages:
+				out <- DockerEvent{Action: string(msg.Action)}
+			case <-res.Err:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// relevantEventActions are the container actions that can change a stack's
+// aggregate State() (running count or health) and therefore warrant a
+// stack-list refresh.
+var relevantEventActions = map[string]bool{
+	"create":  true,
+	"start":   true,
+	"restart": true,
+	"stop":    true,
+	"die":     true,
+	"pause":   true,
+	"unpause": true,
+	"destroy": true,
+}
+
+// IsRelevantDockerEvent reports whether action should trigger a stack-list
+// refresh: container lifecycle transitions and health-check results.
+func IsRelevantDockerEvent(action string) bool {
+	return relevantEventActions[action] || strings.HasPrefix(action, "health_status")
+}
 
 type stackLiveFn func(context.Context, Stack, chan<- ProgressEvent) error
 
