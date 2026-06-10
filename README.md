@@ -11,12 +11,7 @@ agent IA (Claude / Claude Code), aucune ligne n'a été écrite à la main par u
 développeur humain.
 
 Je relis et corrige au fur et à mesure les bugs que je rencontre dans mon
-usage quotidien, mais en l'état :
-
-- il n'y a pas de tests automatisés ;
-- le code n'a pas été audité ligne par ligne ;
-- certaines actions sont **destructives** (`down --volumes`, restauration de
-  captures d'état qui relance des stacks).
+usage quotidien.
 
 **Utilisez ce projet à vos propres risques**, idéalement sur un environnement
 où une erreur n'a pas de conséquence grave. Relisez le code vous-même avant
