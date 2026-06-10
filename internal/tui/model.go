@@ -1,0 +1,828 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/user/dockerstack/internal/backup"
+	"github.com/user/dockerstack/internal/compose"
+	"github.com/user/dockerstack/internal/config"
+	"github.com/user/dockerstack/internal/monitor"
+)
+
+type view int
+
+const (
+	maxLogLines  = 10000 // lignes de logs conservées en mémoire
+	logTrimChunk = 512   // marge avant taille, pour amortir les recopies
+)
+
+const (
+	viewList view = iota
+	viewAction
+	viewLogs
+	viewBackup
+	viewDirPicker
+	viewProgress
+	viewConfirm
+	viewHelp
+	viewRestorePick
+)
+
+// ---- message types ----
+
+type tickMsg time.Time
+type metricsMsg monitor.Metrics
+type clientReadyMsg struct{ client *compose.Client }
+type stacksLoadedMsg []compose.Stack
+type backupsLoadedMsg []backup.Snapshot
+type opDoneMsg struct {
+	err error
+}
+
+type clearStatusMsg struct{}
+type quitDisarmMsg int
+type stackTickMsg struct{}
+
+// Les messages de logs portent le numéro de session : ceux d'une session
+// fermée (vue quittée puis rouverte) sont ignorés, sinon les lignes de
+// l'ancien flux se mélangeraient au nouveau.
+type logLineMsg struct {
+	entry compose.LogEntry
+	seq   int
+}
+type logDoneMsg struct{ seq int }
+type errMsg error
+
+// ---- model ----
+
+type Model struct {
+	cfg    *config.Config
+	client *compose.Client
+
+	view view
+
+	// Stack list. La sélection est indexée par nom de stack (pas par position) :
+	// la liste est re-triée à chaque refresh et peut être filtrée, les indices
+	// ne sont donc jamais stables.
+	// Le curseur indexe les lignes de listRows() (en-têtes de groupe inclus).
+	stacks       []compose.Stack
+	cursor       int
+	selected     map[string]bool
+	foldedGroups map[string]bool
+	rowsCache    *rowsCacheBox
+	refreshing   bool
+	lastRefresh  time.Time // dernier chargement des stacks (affiché au footer)
+	manualR      bool      // refresh déclenché par R : confirmer la fin par un statut
+
+	// Action menu cursor (shared between viewAction / viewBackup)
+	actionCursor int
+
+	// Logs (canal et annulation portés par le Model, pas par des globals).
+	// logSeq numérote la session courante pour invalider les messages en vol
+	// d'une session précédente.
+	logLines  []string
+	logScroll int
+	logCh     <-chan compose.LogEntry
+	logCancel context.CancelFunc
+	logSeq    int
+
+	// Dir picker
+	dirPath    string
+	dirEntries []string
+	dirCursor  int
+
+	// Backup
+	backups []backup.Snapshot
+
+	// Restauration : sélection des stacks de la capture à relancer
+	restoreLabel  string
+	restoreNames  []string
+	restoreSel    map[string]bool
+	restoreCursor int
+
+	// Filter
+	filter    textinput.Model
+	filtering bool
+
+	// Operation in progress
+	spinner  spinner.Model
+	spinning bool
+	opLabel  string
+
+	// Status bar (ephemeral)
+	status    string
+	statusErr bool
+
+	// Quitter en deux frappes (q/ctrl+c) ; quitSeq invalide les timers de
+	// désarmement périmés.
+	quitArmed bool
+	quitSeq   int
+
+	// Progress (live streaming view)
+	progressTitle         string
+	progress              *progressState
+	progressScroll        int  // lines above the bottom to offset; 0 = auto-scroll to bottom
+	progressManualScroll  bool // true once user has scrolled up manually
+	progressDone          bool
+	progressOk            int
+	progressTotal         int
+	progressCancel        context.CancelFunc
+	progressCh            <-chan compose.ProgressEvent
+	progressConfirmCancel bool // armed by a first esc/q while running; the next confirms
+	progressCancelling    bool // cancel() fired, waiting for the stream to drain
+
+	// Confirmation (destructive actions)
+	confirmLabel   string
+	confirmWarning string
+	confirmNames   []string
+	confirmExec    func(Model) (tea.Model, tea.Cmd)
+	confirmReturn  view // vue de retour si l'utilisateur annule
+
+	// Metrics
+	metrics monitor.Metrics
+	history metricsHistory
+
+	// Terminal
+	width  int
+	height int
+
+	loading bool
+	err     error
+}
+
+func New(cfg *config.Config) Model {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+
+	ti := textinput.New()
+	ti.Prompt = "/ "
+	ti.Placeholder = "filtrer..."
+	ti.CharLimit = 64
+	// v2: per-state styling via the Styles struct instead of PromptStyle/TextStyle/…
+	tiStyles := ti.Styles()
+	tiStyles.Focused.Prompt = styleCyan
+	tiStyles.Focused.Text = lipgloss.NewStyle()
+	tiStyles.Focused.Placeholder = styleDim
+	tiStyles.Blurred.Prompt = styleCyan
+	tiStyles.Blurred.Placeholder = styleDim
+	ti.SetStyles(tiStyles)
+
+	return Model{
+		cfg:          cfg,
+		spinner:      sp,
+		filter:       ti,
+		selected:     make(map[string]bool),
+		foldedGroups: make(map[string]bool),
+		rowsCache:    &rowsCacheBox{},
+		loading:      true,
+	}
+}
+
+func (m Model) Init() tea.Cmd {
+	// collectMetricsNow paints the header immediately; the metricsMsg handler then
+	// schedules the recurring tickMetrics. prewarmStacks overlaps the filesystem
+	// walk with the Docker client init in initClient.
+	return tea.Batch(
+		initClient(),
+		prewarmStacks(m.cfg.StackDir),
+		collectMetricsNow(),
+		tickStacks(),
+	)
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case metricsMsg:
+		m.metrics = monitor.Metrics(msg)
+		m.history.push(m.metrics)
+		return m, tickMetrics()
+
+	case clientReadyMsg:
+		m.client = msg.client
+		m.err = nil
+		if m.cfg.StackDir == "" {
+			m.loading = false
+			m.view = viewDirPicker
+			return m, loadDirCmd("/")
+		}
+		// La liste est l'écran d'accueil ; les stacks se chargent en arrière-plan
+		m.view = viewList
+		return m, loadStacks(m.client, m.cfg.StackDir)
+
+	case stacksLoadedMsg:
+		// Restaure la position du curseur par identité de ligne (stack ou
+		// en-tête de groupe) : les indices bougent à chaque re-tri/refresh.
+		var curStack, curGroup string
+		if row, ok := m.cursorRow(); ok {
+			if row.header {
+				curGroup = row.group
+			} else if !row.sep {
+				curStack = row.stack.Name
+			}
+		}
+		// Ne pas toucher à m.spinning : il appartient aux opérations backup
+		// (startOp/opDoneMsg) ; un refresh auto qui aboutit pendant une
+		// capture/restauration effacerait son spinner avant la fin.
+		m.stacks = sortByState([]compose.Stack(msg))
+		m.invalidateRows()
+		m.loading = false
+		m.refreshing = false
+		m.lastRefresh = time.Now()
+		m.cursor = 0
+		for i, r := range m.listRows() {
+			if (curStack != "" && !r.header && !r.sep && r.stack.Name == curStack) ||
+				(curGroup != "" && r.header && r.group == curGroup) {
+				m.cursor = i
+				break
+			}
+		}
+		// Un refresh manuel (R) confirme sa fin ; l'auto-refresh reste discret.
+		if m.manualR {
+			m.manualR = false
+			m.setStatus("Liste actualisée", false)
+			return m, clearStatusIn(2 * time.Second)
+		}
+
+	case backupsLoadedMsg:
+		m.backups = []backup.Snapshot(msg)
+		m.spinning = false
+
+	case opDoneMsg:
+		// Backup save/restore result (stack actions use the live progress view).
+		m.spinning = false
+		m.view = viewList // always land on list after any op
+		if msg.err != nil {
+			s := truncate(m.opLabel+": "+msg.err.Error(), 80)
+			m.setStatus(s, true)
+			return m, tea.Batch(clearStatusIn(6*time.Second), loadStacks(m.client, m.cfg.StackDir))
+		}
+		m.setStatus("✓ "+m.opLabel, false)
+		return m, tea.Batch(clearStatusIn(3*time.Second), loadStacks(m.client, m.cfg.StackDir))
+
+	case progressEventMsg:
+		ev := compose.ProgressEvent(msg)
+		if m.progress != nil {
+			m.progress.apply(ev)
+		}
+		if ev.StackDone {
+			m.progressTotal++
+			if ev.Err == nil {
+				m.progressOk++
+			}
+		}
+		return m, readProgressCmd(m.progressCh)
+
+	case progressAllDoneMsg:
+		m.progressDone = true
+		m.progressCh = nil
+		if m.progressCancel != nil {
+			m.progressCancel()
+			m.progressCancel = nil
+		}
+		return m, loadStacks(m.client, m.cfg.StackDir)
+
+	case logLineMsg:
+		if msg.seq != m.logSeq {
+			return m, nil // session de logs périmée : ne pas réarmer la lecture
+		}
+		entry := msg.entry
+		line := fmt.Sprintf("[%s] %s", sanitizeLogLine(entry.Name), sanitizeLogLine(entry.Line))
+		m.logLines = append(m.logLines, line)
+		// Plafond glissant : le suivi est continu (Follow), sans limite la
+		// mémoire grandit indéfiniment. On taille par paquets pour ne pas
+		// recopier à chaque ligne, et on réalloue pour libérer l'ancien tampon.
+		if len(m.logLines) > maxLogLines+logTrimChunk {
+			drop := len(m.logLines) - maxLogLines
+			m.logLines = append([]string(nil), m.logLines[drop:]...)
+			if m.logScroll > drop {
+				m.logScroll -= drop
+			} else {
+				m.logScroll = 0
+			}
+		}
+		if m.logScroll >= len(m.logLines)-m.logsHeight()-2 {
+			m.logScroll = max(0, len(m.logLines)-m.logsHeight())
+		}
+		return m, readLogCmd(m.logCh, m.logSeq)
+
+	case logsStartedMsg:
+		if msg.seq != m.logSeq {
+			return m, nil // la vue a été fermée avant l'ouverture du flux
+		}
+		m.logCh = msg.ch
+		return m, readLogCmd(msg.ch, msg.seq)
+
+	case clearStatusMsg:
+		m.status = ""
+		m.statusErr = false
+
+	case quitDisarmMsg:
+		if int(msg) == m.quitSeq {
+			m.quitArmed = false
+		}
+
+	case stackTickMsg:
+		// Auto-refresh seulement depuis la liste : recharger pendant qu'un
+		// menu d'action ou une confirmation est ouvert re-trie les stacks et
+		// peut déplacer le curseur, donc faire viser une autre stack au
+		// moment d'exécuter l'action.
+		if m.client != nil && m.cfg.StackDir != "" && !m.spinning && m.view == viewList {
+			m.refreshing = true
+			return m, tea.Batch(loadStacks(m.client, m.cfg.StackDir), tickStacks())
+		}
+		return m, tickStacks()
+
+	case logDoneMsg:
+		if msg.seq != m.logSeq {
+			return m, nil
+		}
+		m.logCh = nil
+		// Flux clos après fermeture de la vue (annulation) : rien à signaler.
+		if m.view != viewLogs {
+			return m, nil
+		}
+		m.setStatus("Logs terminés", false)
+		return m, clearStatusIn(3 * time.Second)
+
+	case dirLoadedMsg:
+		m.dirPath = msg.path
+		m.dirEntries = msg.entries
+		m.dirCursor = 0
+
+	case errMsg:
+		m.err = msg
+		m.loading = false
+		m.spinning = false
+
+	case spinner.TickMsg:
+		// Keep the spinner animating both for footer ops (m.spinning) and for the
+		// live progress view while at least one task is still running.
+		if m.spinning || (m.view == viewProgress && !m.progressDone) {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+
+	case tea.MouseWheelMsg:
+		if m.view == viewProgress {
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				if m.progressScroll < m.progressMaxScroll() {
+					m.progressScroll++
+					m.progressManualScroll = true
+				}
+			case tea.MouseWheelDown:
+				if m.progressScroll > 0 {
+					m.progressScroll--
+				}
+				if m.progressScroll == 0 {
+					m.progressManualScroll = false
+				}
+			}
+			return m, nil
+		}
+
+	case tea.KeyPressMsg:
+		return m.handleKey(msg)
+	}
+
+	return m, nil
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.view == viewProgress {
+		switch msg.String() {
+		case "up", "k":
+			if m.progressScroll < m.progressMaxScroll() {
+				m.progressScroll++
+				m.progressManualScroll = true
+			}
+		case "down", "j":
+			if m.progressScroll > 0 {
+				m.progressScroll--
+			}
+			if m.progressScroll == 0 {
+				m.progressManualScroll = false
+			}
+		case "g", "G":
+			m.progressScroll = 0
+			m.progressManualScroll = false
+		case "q", "esc":
+			if m.progressDone {
+				m.view = viewList
+				break
+			}
+			// Opération en cours : premier esc arme la confirmation, le second annule.
+			if !m.progressConfirmCancel {
+				m.progressConfirmCancel = true
+				break
+			}
+			m.progressConfirmCancel = false
+			if m.progressCancel != nil {
+				m.progressCancel()
+				m.progressCancel = nil
+				m.progressCancelling = true
+			}
+		case "enter":
+			if m.progressDone {
+				m.view = viewList
+			}
+		default:
+			// Toute autre touche désarme la confirmation d'annulation.
+			m.progressConfirmCancel = false
+		}
+		return m, nil
+	}
+	// L'aide se ferme sur n'importe quelle touche (avant l'intercept global de r).
+	if m.view == viewHelp {
+		m.view = viewList
+		return m, nil
+	}
+	// R = reload global (r est réservé à Restart dans la liste). Si l'init
+	// Docker a échoué, R retente la connexion au lieu de ne rien faire.
+	if msg.String() == "R" && !m.filtering {
+		if m.client == nil {
+			m.loading = true
+			m.err = nil
+			return m, initClient()
+		}
+		if m.cfg.StackDir != "" {
+			compose.InvalidateComposeCache()
+			m.refreshing = true
+			m.manualR = true
+			return m, loadStacks(m.client, m.cfg.StackDir)
+		}
+	}
+	switch m.view {
+	case viewList:
+		return m.handleListKey(msg)
+	case viewAction:
+		return m.handleActionKey(msg)
+	case viewLogs:
+		return m.handleLogsKey(msg)
+	case viewBackup:
+		return m.handleBackupKey(msg)
+	case viewDirPicker:
+		return m.handleDirKey(msg)
+	case viewConfirm:
+		return m.handleConfirmKey(msg)
+	case viewRestorePick:
+		return m.handleRestorePickKey(msg)
+	}
+	return m, nil
+}
+
+// View wraps the rendered content in a tea.View. In bubbletea v2 the alt-screen
+// and mouse mode are carried by the View itself (not program options).
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	// Capture the mouse only in the progress view while the operation runs
+	// (for wheel scrolling). Once it's done — and everywhere else — leave the
+	// mouse free so the terminal's native text selection / copy works, e.g.
+	// to copy an error message from the result. Keyboard scroll (↑↓/j/k)
+	// still works after completion.
+	if m.view == viewProgress && !m.progressDone {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
+	return v
+}
+
+func (m Model) viewContent() string {
+	if m.width == 0 {
+		return ""
+	}
+
+	switch m.view {
+	case viewLogs:
+		return renderLogsView(m)
+	case viewDirPicker:
+		return renderDirPicker(m)
+	case viewProgress:
+		return renderProgressView(m)
+	}
+
+	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.width)
+
+	headerH := lipgloss.Height(header)
+	footerH := 1
+	bodyH := m.height - headerH - footerH
+	if bodyH < 0 {
+		bodyH = 0
+	}
+
+	var body string
+	switch m.view {
+	case viewHelp:
+		body = renderHelpView(m, bodyH)
+	case viewConfirm:
+		body = renderConfirmView(m, bodyH)
+	case viewRestorePick:
+		body = renderRestorePick(m, bodyH)
+	case viewAction:
+		body = renderActionMenu(m, bodyH)
+	case viewBackup:
+		body = renderBackupView(m, bodyH)
+	default:
+		if m.loading {
+			body = styleDim.Render("\n  Chargement...")
+		} else if m.err != nil {
+			body = renderError(m.err)
+		} else {
+			body = renderStackList(m, bodyH)
+		}
+	}
+
+	footer := m.renderFooter()
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+func renderError(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "docker.sock") || strings.Contains(msg, "permission denied") {
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("1")).
+			Padding(0, 2).
+			MarginLeft(2)
+
+		content := strings.Join([]string{
+			styleRed.Bold(true).Render("Accès Docker refusé"),
+			"",
+			styleDim.Render("Relancer en sudo :") + "  " + styleYellow.Render("sudo dockerstack"),
+			styleDim.Render("Ou rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
+			styleDim.Render("Ou démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
+		}, "\n")
+
+		return "\n" + box.Render(content)
+	}
+	return styleRed.Render(fmt.Sprintf("\n  Erreur: %v", err))
+}
+
+func (m *Model) setStatus(s string, isErr bool) {
+	m.status = s
+	m.statusErr = isErr
+}
+
+func (m Model) logsHeight() int {
+	return m.height - 3
+}
+
+func (m Model) stackCounts() StackCounts {
+	if m.rowsCache.countsOK {
+		return m.rowsCache.counts
+	}
+	sc := StackCounts{Dir: m.cfg.StackDir, Total: len(m.stacks)}
+	for _, s := range m.stacks {
+		switch s.State() {
+		case compose.StateRunning:
+			sc.Running++
+		case compose.StatePartial:
+			sc.Partial++
+		case compose.StateStopped:
+			sc.Stopped++
+		default:
+			sc.NotDep++
+		}
+	}
+	m.rowsCache.counts = sc
+	m.rowsCache.countsOK = true
+	return sc
+}
+
+// filteredStacks applique le filtre dès qu'il a une valeur, que le champ de
+// saisie soit focus ou non : valider avec ↩ fige le filtre au lieu de l'effacer.
+func (m Model) filteredStacks() []compose.Stack {
+	if m.rowsCache.filteredOK {
+		return m.rowsCache.filtered
+	}
+	out := m.stacks
+	if m.filter.Value() != "" {
+		query := strings.ToLower(m.filter.Value())
+		out = nil
+		for _, s := range m.stacks {
+			lc := s.NameLC
+			if lc == "" { // stacks construites hors ListStacks
+				lc = strings.ToLower(s.Name)
+			}
+			if strings.Contains(lc, query) {
+				out = append(out, s)
+			}
+		}
+	}
+	m.rowsCache.filtered = out
+	m.rowsCache.filteredOK = true
+	return out
+}
+
+func (m Model) selectedStacks() []compose.Stack {
+	var out []compose.Stack
+	for _, s := range m.stacks {
+		if m.selected[s.Name] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (m Model) renderFooter() string {
+	if m.quitArmed {
+		return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau sur q pour quitter") +
+			styleDim.Render("  ·  autre touche = annuler")
+	}
+	if m.status != "" {
+		msg := m.status
+		maxW := m.width - 4
+		if maxW > 0 && lipgloss.Width(msg) > maxW {
+			msg = truncate(msg, maxW)
+		}
+		if m.statusErr {
+			return styleRed.PaddingLeft(2).Render("✕ " + msg)
+		}
+		return styleGreen.PaddingLeft(2).Render("✓ " + msg)
+	}
+	if m.spinning {
+		bar := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")).
+			Bold(true).
+			PaddingLeft(2).
+			Render("▶ " + m.opLabel + "  " + m.spinner.View())
+		return bar
+	}
+	if m.err != nil {
+		return renderFooterKeys([]struct{ key, desc string }{
+			{"R", "réessayer"},
+			{"o", "répertoire"},
+			{"q", "quitter"},
+		}, m.width)
+	}
+	if m.view == viewConfirm {
+		return renderFooterKeys([]struct{ key, desc string }{
+			{"y / ↩", "confirmer"},
+			{"n / esc", "annuler"},
+		}, m.width)
+	}
+	if m.view == viewAction || m.view == viewBackup {
+		return renderFooterKeys([]struct{ key, desc string }{
+			{"↑↓", "naviguer"},
+			{"↩", "valider"},
+			{"esc", "retour"},
+		}, m.width)
+	}
+	if m.view == viewRestorePick {
+		n := 0
+		for _, v := range m.restoreSel {
+			if v {
+				n++
+			}
+		}
+		return renderFooterKeys([]struct{ key, desc string }{
+			{"␣", "(dé)sélect"},
+			{"ctrl+a", "tout"},
+			{"↩", fmt.Sprintf("relancer %d stack(s)", n)},
+			{"esc", "retour"},
+		}, m.width)
+	}
+	if m.view == viewHelp {
+		return styleDim.PaddingLeft(2).Render("appuyer sur une touche pour fermer")
+	}
+	if m.view == viewList {
+		// À droite : état du rafraîchissement (en cours / heure du dernier)
+		// puis position dans la liste.
+		right := m.listPosition()
+		switch {
+		case m.refreshing:
+			right = "↻ actualisation…   " + right
+		case !m.lastRefresh.IsZero():
+			right = "maj " + m.lastRefresh.Format("15:04:05") + "   " + right
+		}
+		if n := len(m.selectedStacks()); n > 0 {
+			return renderFooterKeysRight([]struct{ key, desc string }{
+				{fmt.Sprintf("%d", n), "sélectionnées"},
+				{"↩", "actions"},
+				{"esc", "désélect"},
+				{"?", "aide"},
+				{"q", "quitter"},
+			}, m.width, right)
+		}
+		return renderFooterKeysRight([]struct{ key, desc string }{
+			{"↩", "actions"},
+			{"␣", "sélect"},
+			{"/", "filtre"},
+			{"b", "backup"},
+			{"o", "dossier"},
+			{"R", "rafraîchir"},
+			{"?", "aide"},
+			{"q", "quitter"},
+		}, m.width, right)
+	}
+	return renderFooterRefresh(m.width, m.refreshing)
+}
+
+// truncate coupe s à max caractères (suffixe « … ») en comptant des runes,
+// pas des octets : couper au milieu d'un caractère multi-octets produirait
+// un caractère invalide à l'affichage.
+func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max-1]) + "…"
+}
+
+// sanitizeLogLine retire les caractères de contrôle qu'un conteneur peut
+// écrire dans ses logs : séquences ANSI/escape comprises, elles corrompraient
+// le rendu de la TUI, voire le terminal lui-même (titre, presse-papiers…).
+// Le résidu textuel d'une séquence (ex. « [31m ») reste visible : inoffensif.
+func sanitizeLogLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r
+		}
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// listPosition renvoie « i/N » pour la stack sous le curseur (indices dans la
+// liste filtrée complète, repli ignoré pour que N reste stable).
+func (m Model) listPosition() string {
+	all := m.filteredStacks()
+	if len(all) == 0 {
+		return ""
+	}
+	if st, ok := m.cursorStack(); ok {
+		for i, s := range all {
+			if s.Name == st.Name {
+				return fmt.Sprintf("%d/%d", i+1, len(all))
+			}
+		}
+	}
+	return fmt.Sprintf("%d stacks", len(all))
+}
+
+func clearStatusIn(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return clearStatusMsg{} })
+}
+
+func tickStacks() tea.Cmd {
+	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return stackTickMsg{} })
+}
+
+func tickMetrics() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return metricsMsg(monitor.Collect())
+	})
+}
+
+func (m Model) startOp(label string, op tea.Cmd) (tea.Model, tea.Cmd) {
+	m.spinning = true
+	m.opLabel = label
+	m.status = ""
+	return m, tea.Batch(op, m.spinner.Tick)
+}
+
+func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-chan compose.ProgressEvent) (tea.Model, tea.Cmd) {
+	m.progressTitle = title
+	m.progress = newProgressState()
+	m.progressScroll = 0
+	m.progressManualScroll = false
+	m.progressDone = false
+	m.progressOk = 0
+	m.progressTotal = 0
+	m.progressCancel = cancel
+	m.progressConfirmCancel = false
+	m.progressCancelling = false
+	m.spinning = false
+	m.status = ""
+	m.view = viewProgress
+	m.progressCh = ch
+	return m, tea.Batch(readProgressCmd(ch), m.spinner.Tick)
+}
+
+func (m Model) filterBar() string {
+	// Visible pendant la saisie, et tant qu'un filtre validé reste appliqué.
+	if !m.filtering && m.filter.Value() == "" {
+		return ""
+	}
+	return m.filter.View()
+}
