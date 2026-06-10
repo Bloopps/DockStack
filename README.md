@@ -40,7 +40,7 @@ de l'utiliser sur des stacks importantes.
 Binaire statique linux/amd64, sans dépendance :
 
 ```bash
-wget https://github.com/Bloopps/DockStack/releases/latest/download/dockstack-linux-amd64 -O dockstack
+curl -L https://github.com/Bloopps/DockStack/releases/latest/download/dockstack-linux-amd64 -o dockstack
 chmod +x dockstack
 ./dockstack
 ```
