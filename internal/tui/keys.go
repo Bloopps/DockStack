@@ -560,10 +560,16 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch entry {
 		case "[*] Choisir ce dossier":
 			m.cfg.StackDir = m.dirPath
-			m.cfg.Save()
 			m.view = viewList
 			m.loading = true
-			return m, loadStacks(m.client, m.cfg.StackDir)
+			cmds := []tea.Cmd{loadStacks(m.client, m.cfg.StackDir)}
+			// Le choix vaut pour la session même si l'écriture échoue ;
+			// prévenir qu'il ne survivra pas au prochain lancement.
+			if err := m.cfg.Save(); err != nil {
+				m.setStatus("Config non sauvegardée : "+err.Error(), true)
+				cmds = append(cmds, clearStatusIn(6*time.Second))
+			}
+			return m, tea.Batch(cmds...)
 		case "../":
 			return m, loadDirCmd(filepath.Dir(m.dirPath))
 		default:
@@ -582,9 +588,11 @@ func loadDirCmd(path string) tea.Cmd {
 		if path != "/" {
 			entries = append(entries, "../")
 		}
-		dirs, _ := listSubDirs(path)
+		// L'erreur est portée par le message : sans elle, un répertoire
+		// illisible (permissions) s'affiche comme simplement vide.
+		dirs, err := listSubDirs(path)
 		entries = append(entries, dirs...)
-		return dirLoadedMsg{path: path, entries: entries}
+		return dirLoadedMsg{path: path, entries: entries, err: err}
 	}
 }
 
@@ -626,4 +634,3 @@ func restoreSnap(ctx context.Context, client *compose.Client, names []string, st
 	}
 	return firstErr
 }
-

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	dockercli "github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
-	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -143,11 +143,11 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		}
 		sc[svc] = c
 	}
-	dirCounts    := make(map[string]counts, len(result.Items))
-	projCounts   := make(map[string]counts, len(result.Items)) // fallback: par nom de projet
-	projDir      := make(map[string]string)                    // nom de projet → premier working_dir vu
-	dirServices  := make(map[string]map[string]counts)         // working_dir -> service -> counts
-	projServices := make(map[string]map[string]counts)         // projet -> service -> counts (fallback)
+	dirCounts := make(map[string]counts, len(result.Items))
+	projCounts := make(map[string]counts, len(result.Items)) // fallback: par nom de projet
+	projDir := make(map[string]string)                       // nom de projet → premier working_dir vu
+	dirServices := make(map[string]map[string]counts)        // working_dir -> service -> counts
+	projServices := make(map[string]map[string]counts)       // projet -> service -> counts (fallback)
 
 	for _, ctr := range result.Items {
 		unhealthy := ctr.Health != nil && ctr.Health.Status == container.Unhealthy
@@ -494,19 +494,39 @@ func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, e
 		return nil, err
 	}
 	ch := make(chan LogEntry, 200)
-	consumer := &chanConsumer{ch: ch}
+	consumer := &chanConsumer{ctx: ctx, ch: ch}
 	go func() {
 		defer close(ch)
-		c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true})
+		// L'erreur du flux est poussée comme entrée de log : la TUI n'a pas
+		// d'autre canal de retour ici, et sans elle un échec immédiat
+		// s'afficherait comme un simple « Logs terminés ». L'annulation par
+		// l'utilisateur (ctx.Err() != nil) n'est pas une erreur.
+		if err := c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true}); err != nil && ctx.Err() == nil {
+			consumer.send(LogEntry{Name: "⚠", Line: "flux de logs interrompu : " + err.Error(), IsErr: true})
+		}
 	}()
 	return ch, nil
 }
 
-type chanConsumer struct{ ch chan LogEntry }
+// chanConsumer relaie les lignes de compose vers le canal lu par la TUI.
+// Les envois écoutent ctx : une fois la vue logs fermée (ctx annulé), plus
+// personne ne lit le canal, et un envoi bloquant retiendrait la goroutine de
+// Logs — et le flux HTTP sous-jacent — indéfiniment.
+type chanConsumer struct {
+	ctx context.Context
+	ch  chan LogEntry
+}
 
-func (c *chanConsumer) Log(name, msg string)    { c.ch <- LogEntry{Name: name, Line: msg} }
-func (c *chanConsumer) Err(name, msg string)    { c.ch <- LogEntry{Name: name, Line: msg, IsErr: true} }
-func (c *chanConsumer) Status(_, _ string)      {}
+func (c *chanConsumer) send(e LogEntry) {
+	select {
+	case c.ch <- e:
+	case <-c.ctx.Done():
+	}
+}
+
+func (c *chanConsumer) Log(name, msg string) { c.send(LogEntry{Name: name, Line: msg}) }
+func (c *chanConsumer) Err(name, msg string) { c.send(LogEntry{Name: name, Line: msg, IsErr: true}) }
+func (c *chanConsumer) Status(_, _ string)   {}
 
 // DockerEvent is a minimal, decoupled view of a moby system event: just
 // enough for the TUI to decide whether the stack list needs a refresh.

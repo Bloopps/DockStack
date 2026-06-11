@@ -10,6 +10,7 @@ import (
 type dirLoadedMsg struct {
 	path    string
 	entries []string
+	err     error // lecture du répertoire impossible (permissions…)
 }
 
 func renderDirPicker(m Model) string {
@@ -30,6 +31,10 @@ func renderDirPicker(m Model) string {
 	}
 
 	body := strings.Join(lines, "\n")
+	// Répertoire illisible : le dire plutôt que de l'afficher comme vide.
+	if m.dirErr != nil {
+		body += "\n\n  " + styleRed.Render("⚠ "+truncate(m.dirErr.Error(), max(m.width-6, 10)))
+	}
 	hint := styleDim.Render("  ↑↓ naviguer  ↩ ouvrir/choisir  Échap annuler")
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, sub, "", body, "", hint)

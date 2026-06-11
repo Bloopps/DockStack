@@ -222,11 +222,11 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		if svc.CustomLabels == nil {
 			svc.CustomLabels = composetypes.Labels{}
 		}
-		svc.CustomLabels[composeapi.ProjectLabel]     = proj.Name
-		svc.CustomLabels[composeapi.ServiceLabel]     = name
-		svc.CustomLabels[composeapi.WorkingDirLabel]  = proj.WorkingDir
+		svc.CustomLabels[composeapi.ProjectLabel] = proj.Name
+		svc.CustomLabels[composeapi.ServiceLabel] = name
+		svc.CustomLabels[composeapi.WorkingDirLabel] = proj.WorkingDir
 		svc.CustomLabels[composeapi.ConfigFilesLabel] = strings.Join(proj.ComposeFiles, ",")
-		svc.CustomLabels[composeapi.OneoffLabel]      = "False"
+		svc.CustomLabels[composeapi.OneoffLabel] = "False"
 		proj.Services[name] = svc
 	}
 	return proj, nil

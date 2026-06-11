@@ -30,7 +30,10 @@ func renderLogsView(m Model) string {
 
 	var lines []string
 	for _, l := range m.logLines[start:end] {
-		lines = append(lines, "  "+l)
+		// Tronqué à la largeur du terminal : une ligne qui wrappe ajouterait
+		// des lignes physiques non comptées par bodyH et décalerait toute la
+		// mise en page (titre/footer compris).
+		lines = append(lines, truncate("  "+l, m.width))
 	}
 
 	body := strings.Join(lines, "\n")

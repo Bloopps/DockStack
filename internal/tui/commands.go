@@ -39,6 +39,11 @@ const debounceDelay = 300 * time.Millisecond
 // (ex: redémarrage du daemon Docker).
 const reconnectDelay = 2 * time.Second
 
+// loadStacksTimeout borne le rechargement de la liste : sans lui, un daemon
+// qui ne répond plus bloquerait le refresh (et l'indicateur « actualisation… »)
+// pour toujours — les ticks suivants étant inhibés tant que m.refreshing dure.
+const loadStacksTimeout = 30 * time.Second
+
 type dockerEventsStartedMsg struct{ ch <-chan compose.DockerEvent }
 type dockerEventMsg compose.DockerEvent
 type dockerEventsClosedMsg struct{}
@@ -106,7 +111,9 @@ func prewarmStacks(stackDir string) tea.Cmd {
 
 func loadStacks(client *compose.Client, stackDir string) tea.Cmd {
 	return func() tea.Msg {
-		stacks, err := client.ListStacks(context.Background(), stackDir)
+		ctx, cancel := context.WithTimeout(context.Background(), loadStacksTimeout)
+		defer cancel()
+		stacks, err := client.ListStacks(ctx, stackDir)
 		if err != nil {
 			return errMsg(err)
 		}

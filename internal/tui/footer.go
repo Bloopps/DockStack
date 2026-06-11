@@ -27,7 +27,7 @@ func renderFooterRefresh(width int, refreshing bool) string {
 		{"↩", "action"},
 		{"␣", "sélect"},
 		{"b", "backup"},
-		{"r", "refresh"},
+		{"R", "rafraîchir"},
 		{"q", "quitter"},
 	}, width, refreshing)
 }

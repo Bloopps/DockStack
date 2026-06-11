@@ -109,6 +109,7 @@ type Model struct {
 	dirPath    string
 	dirEntries []string
 	dirCursor  int
+	dirErr     error // lecture du répertoire courant impossible
 
 	// Backup
 	backups []backup.Snapshot
@@ -250,6 +251,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// capture/restauration effacerait son spinner avant la fin.
 		m.stacks = sortByState([]compose.Stack(msg))
 		m.invalidateRows()
+		// Un chargement réussi efface l'erreur précédente : sans ça, un raté
+		// transitoire (ex: daemon redémarré) laisserait l'écran d'erreur
+		// affiché à vie alors que les refresh suivants aboutissent.
+		m.err = nil
 		m.loading = false
 		m.refreshing = false
 		m.lastRefresh = time.Now()
@@ -417,6 +422,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dirLoadedMsg:
 		m.dirPath = msg.path
 		m.dirEntries = msg.entries
+		m.dirErr = msg.err
 		m.dirCursor = 0
 
 	case errMsg:

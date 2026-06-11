@@ -31,7 +31,7 @@ func renderHelpView(m Model, height int) string {
 		"",
 		styleYellow.Render("Liste"),
 		"  " + k("/") + "  filtrer" + d("  (↩ fige le filtre, esc l'efface)"),
-		"  " + k("R") + "  rafraîchir" + d("  (auto toutes les 15 s)") + "   " + k("b") + "  sauvegardes",
+		"  " + k("R") + "  rafraîchir" + d("  (auto sur événement Docker + toutes les 60 s)") + "   " + k("b") + "  sauvegardes",
 		"  " + k("o") + "  changer de répertoire",
 		"",
 		"  " + k("q") + "  quitter",

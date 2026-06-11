@@ -29,14 +29,14 @@ type actionStyle struct {
 }
 
 var stackActionStyles = []actionStyle{
-	{"▶", "2"},  // Up       — vert
-	{"▪", "1"},  // Down     — rouge
-	{"↺", "3"},  // Restart  — jaune
-	{"↻", "3"},  // Recreate — jaune
-	{"↓", "6"},  // Pull     — cyan
-	{"≡", "6"},  // Logs     — cyan
-	{"✕", "1"},  // Remove   — rouge
-	{"←", "8"},  // Retour   — gris
+	{"▶", "2"}, // Up       — vert
+	{"▪", "1"}, // Down     — rouge
+	{"↺", "3"}, // Restart  — jaune
+	{"↻", "3"}, // Recreate — jaune
+	{"↓", "6"}, // Pull     — cyan
+	{"≡", "6"}, // Logs     — cyan
+	{"✕", "1"}, // Remove   — rouge
+	{"←", "8"}, // Retour   — gris
 }
 
 var groupActionStyles = []actionStyle{
@@ -162,4 +162,3 @@ func buildGroupPanel(selected []compose.Stack, cursor int) string {
 
 	return stylePanel.Width(panelWidth).Render(strings.Join(rows, "\n"))
 }
-
