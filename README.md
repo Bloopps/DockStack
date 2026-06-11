@@ -28,7 +28,8 @@ de l'utiliser sur des stacks importantes.
 - Actions groupées sur une sélection multiple ou un dossier entier
 - Vue de progression en temps réel pendant les opérations, façon
   `docker compose` en CLI
-- Captures d'état (« active stacks ») et restauration sélective
+- Captures d'état (« active stacks ») : mémorise quelles stacks tournent et
+  permet de les relancer sélectivement (`b`)
 - Filtrage / recherche dans la liste des stacks
 
 ## Prérequis
