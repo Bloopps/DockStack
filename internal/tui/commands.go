@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -26,6 +27,51 @@ func readProgressCmd(ch <-chan compose.ProgressEvent) tea.Cmd {
 		}
 		return progressEventMsg(ev)
 	}
+}
+
+// ---- docker events stream ----
+
+// debounceDelay coalesce les rafales d'événements (ex: tous les conteneurs
+// d'un `up`/`down` de stack) en un seul rechargement de la liste.
+const debounceDelay = 300 * time.Millisecond
+
+// reconnectDelay avant de se réabonner après une coupure du flux d'événements
+// (ex: redémarrage du daemon Docker).
+const reconnectDelay = 2 * time.Second
+
+type dockerEventsStartedMsg struct{ ch <-chan compose.DockerEvent }
+type dockerEventMsg compose.DockerEvent
+type dockerEventsClosedMsg struct{}
+type debounceRefreshMsg struct{ gen int }
+
+// subscribeDockerEvents lance l'abonnement au flux d'événements Docker.
+func subscribeDockerEvents(client *compose.Client) tea.Cmd {
+	return func() tea.Msg {
+		ch := client.SubscribeEvents(context.Background())
+		return dockerEventsStartedMsg{ch: ch}
+	}
+}
+
+// readDockerEventCmd lit le prochain événement du flux. Sur le modèle de
+// readProgressCmd/readLogCmd : le canal vit dans le Model, et la fermeture
+// du canal (fin du flux/erreur) est signalée par dockerEventsClosedMsg.
+func readDockerEventCmd(ch <-chan compose.DockerEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return dockerEventsClosedMsg{}
+		}
+		return dockerEventMsg(ev)
+	}
+}
+
+// debounceRefresh programme une vérification après debounceDelay : si aucun
+// événement plus récent n'est arrivé entre-temps (gen inchangé), la liste
+// des stacks est rechargée.
+func debounceRefresh(gen int) tea.Cmd {
+	return tea.Tick(debounceDelay, func(time.Time) tea.Msg {
+		return debounceRefreshMsg{gen: gen}
+	})
 }
 
 func initClient() tea.Cmd {
@@ -88,7 +134,8 @@ func saveBackup(configDir, stackDir string, stacks []compose.Stack) tea.Cmd {
 	return func() tea.Msg {
 		running := make([]string, 0, len(stacks))
 		for _, s := range stacks {
-			if s.State() == compose.StateRunning || s.State() == compose.StatePartial {
+			switch s.State() {
+			case compose.StateRunning, compose.StatePartial, compose.StateUnhealthy:
 				running = append(running, s.Name)
 			}
 		}

@@ -16,6 +16,7 @@ var (
 	styleRed     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	styleCyan    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	styleMagenta = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	styleOrange  = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 	styleBold    = lipgloss.NewStyle().Bold(true)
 	styleDim     = lipgloss.NewStyle().Faint(true)
 )
@@ -87,12 +88,13 @@ func sparkRune(v int) rune {
 
 // StackCounts holds the aggregated stack states for the header.
 type StackCounts struct {
-	Dir     string
-	Total   int
-	Running int
-	Partial int
-	Stopped int
-	NotDep  int
+	Dir       string
+	Total     int
+	Running   int
+	Partial   int
+	Unhealthy int
+	Stopped   int
+	NotDep    int
 }
 
 func colorForPct(pct int) lipgloss.Style {
@@ -132,11 +134,12 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
 	title := styleBold.Foreground(lipgloss.Color("2")).Render("🐳 Docker Stack Manager")
 	path := L.Render("📂") + " " + sc.Dir
-	stacksInfo := fmt.Sprintf("%s %d [%s%s%s%s]",
+	stacksInfo := fmt.Sprintf("%s %d [%s%s%s%s%s]",
 		L.Render("📦"),
 		sc.Total,
 		styleGreen.Render(fmt.Sprintf("●%d", sc.Running)),
 		styleYellow.Render(fmt.Sprintf(" ●%d", sc.Partial)),
+		styleOrange.Render(fmt.Sprintf(" ●%d", sc.Unhealthy)),
 		styleRed.Render(fmt.Sprintf(" ●%d", sc.Stopped)),
 		styleCyan.Render(fmt.Sprintf(" ●%d", sc.NotDep)),
 	)

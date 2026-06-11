@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ type opDoneMsg struct {
 type clearStatusMsg struct{}
 type quitDisarmMsg int
 type stackTickMsg struct{}
+type resubscribeEventsMsg struct{}
 
 // Les messages de logs portent le numéro de session : ceux d'une session
 // fermée (vue quittée puis rouverte) sont ignorés, sinon les lignes de
@@ -81,6 +83,15 @@ type Model struct {
 	refreshing   bool
 	lastRefresh  time.Time // dernier chargement des stacks (affiché au footer)
 	manualR      bool      // refresh déclenché par R : confirmer la fin par un statut
+
+	// Flux d'événements Docker (start/stop/die/health_status…), qui pilote le
+	// refresh de la liste à la place du seul tick périodique. refreshGen est
+	// incrémenté à chaque événement pertinent ; debounceRefreshMsg ne déclenche
+	// le rechargement que si aucun nouvel événement n'est arrivé depuis (gen
+	// inchangé), ce qui coalesce les rafales (ex: up/down d'une stack entière).
+	eventsCh       <-chan compose.DockerEvent
+	refreshPending bool
+	refreshGen     int
 
 	// Action menu cursor (shared between viewAction / viewBackup)
 	actionCursor int
@@ -217,11 +228,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cfg.StackDir == "" {
 			m.loading = false
 			m.view = viewDirPicker
-			return m, loadDirCmd("/")
+			return m, tea.Batch(loadDirCmd("/"), subscribeDockerEvents(m.client))
 		}
 		// La liste est l'écran d'accueil ; les stacks se chargent en arrière-plan
 		m.view = viewList
-		return m, loadStacks(m.client, m.cfg.StackDir)
+		return m, tea.Batch(loadStacks(m.client, m.cfg.StackDir), subscribeDockerEvents(m.client))
 
 	case stacksLoadedMsg:
 		// Restaure la position du curseur par identité de ligne (stack ou
@@ -345,6 +356,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(loadStacks(m.client, m.cfg.StackDir), tickStacks())
 		}
 		return m, tickStacks()
+
+	case dockerEventsStartedMsg:
+		m.eventsCh = msg.ch
+		return m, readDockerEventCmd(msg.ch)
+
+	case dockerEventMsg:
+		cmds := []tea.Cmd{readDockerEventCmd(m.eventsCh)}
+		if compose.IsRelevantDockerEvent(msg.Action) {
+			m.refreshGen++
+			if !m.refreshPending {
+				m.refreshPending = true
+				cmds = append(cmds, debounceRefresh(m.refreshGen))
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case dockerEventsClosedMsg:
+		// Flux interrompu (erreur/EOF, ex: redémarrage du daemon) : on se
+		// réabonne après un court délai. Le tick périodique continue de
+		// rafraîchir la liste entre-temps.
+		m.eventsCh = nil
+		if m.client == nil {
+			return m, nil
+		}
+		return m, tea.Tick(reconnectDelay, func(time.Time) tea.Msg {
+			return resubscribeEventsMsg{}
+		})
+
+	case resubscribeEventsMsg:
+		if m.client == nil {
+			return m, nil
+		}
+		return m, subscribeDockerEvents(m.client)
+
+	case debounceRefreshMsg:
+		if msg.gen != m.refreshGen {
+			// Un événement plus récent est arrivé pendant l'attente : reprogrammer.
+			return m, debounceRefresh(m.refreshGen)
+		}
+		m.refreshPending = false
+		if m.client != nil && m.cfg.StackDir != "" && !m.spinning && m.view == viewList {
+			m.refreshing = true
+			return m, loadStacks(m.client, m.cfg.StackDir)
+		}
+		return m, nil
 
 	case logDoneMsg:
 		if msg.seq != m.logSeq {
@@ -589,6 +645,8 @@ func (m Model) stackCounts() StackCounts {
 	sc := StackCounts{Dir: m.cfg.StackDir, Total: len(m.stacks)}
 	for _, s := range m.stacks {
 		switch s.State() {
+		case compose.StateUnhealthy:
+			sc.Unhealthy++
 		case compose.StateRunning:
 			sc.Running++
 		case compose.StatePartial:
@@ -747,11 +805,29 @@ func truncate(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-// sanitizeLogLine retire les caractères de contrôle qu'un conteneur peut
-// écrire dans ses logs : séquences ANSI/escape comprises, elles corrompraient
-// le rendu de la TUI, voire le terminal lui-même (titre, presse-papiers…).
-// Le résidu textuel d'une séquence (ex. « [31m ») reste visible : inoffensif.
+// ansiCSI repère les séquences ANSI/CSI (couleurs, déplacement du curseur,
+// effacement de ligne/écran…) qu'émettent les programmes pensés pour un
+// terminal interactif. On les retire en bloc : ne garder que le filtrage
+// caractère par caractère ci-dessous laisserait leur résidu textuel
+// (« [2K », « [1;1H »…) visible dans les logs.
+var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+
+// sanitizeLogLine retire les séquences ANSI/escape et les caractères de
+// contrôle qu'un conteneur peut écrire dans ses logs : non filtrés, ils
+// corrompraient le rendu de la TUI, voire le terminal lui-même (titre,
+// presse-papiers…).
+//
+// Un programme pensé pour un terminal interactif redessine une ligne de
+// progression avec '\r' plutôt que '\n' : dans un vrai terminal, le curseur
+// revient en colonne 0 et le texte suivant écrase l'ancien. Sans '\n' entre
+// les deux, tout finit dans la même entrée de log ici ; on ne garde donc que
+// ce qui suit le dernier '\r', soit ce qu'un terminal afficherait au final
+// sur cette ligne.
 func sanitizeLogLine(s string) string {
+	if i := strings.LastIndexByte(s, '\r'); i >= 0 && i < len(s)-1 {
+		s = s[i+1:]
+	}
+	s = ansiCSI.ReplaceAllString(s, "")
 	return strings.Map(func(r rune) rune {
 		if r == '\t' {
 			return r
@@ -785,7 +861,7 @@ func clearStatusIn(d time.Duration) tea.Cmd {
 }
 
 func tickStacks() tea.Cmd {
-	return tea.Tick(15*time.Second, func(time.Time) tea.Msg { return stackTickMsg{} })
+	return tea.Tick(60*time.Second, func(time.Time) tea.Msg { return stackTickMsg{} })
 }
 
 func tickMetrics() tea.Cmd {

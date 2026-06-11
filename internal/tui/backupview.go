@@ -21,7 +21,7 @@ func renderBackupView(m Model, height int) string {
 
 	running := 0
 	for _, s := range m.stacks {
-		if st := s.State(); st == compose.StateRunning || st == compose.StatePartial {
+		if st := s.State(); st == compose.StateRunning || st == compose.StatePartial || st == compose.StateUnhealthy {
 			running++
 		}
 	}

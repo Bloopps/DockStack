@@ -59,10 +59,10 @@ func (m Model) confirmGroupActionWarn(action, warning string, stacks []compose.S
 // RecreateDiverged peut recréer (couper) les conteneurs dont la config a changé.
 const upWarning = "Déjà en marche : les conteneurs dont la config/image a changé seront recréés"
 
-// anyActive dit si au moins une stack tourne (running ou partial).
+// anyActive dit si au moins une stack tourne (running, partial ou unhealthy).
 func anyActive(stacks []compose.Stack) bool {
 	for _, s := range stacks {
-		if st := s.State(); st == compose.StateRunning || st == compose.StatePartial {
+		if st := s.State(); st == compose.StateRunning || st == compose.StatePartial || st == compose.StateUnhealthy {
 			return true
 		}
 	}

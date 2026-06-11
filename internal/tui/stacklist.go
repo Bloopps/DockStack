@@ -18,27 +18,31 @@ var (
 	styleGroup      = styleMagenta.Bold(true)
 
 	// Per-state name styles
-	styleNameRunning  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
-	styleNamePartial  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleNameStopped  = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleNameInactive = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	styleNameRunning   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
+	styleNamePartial   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	styleNameUnhealthy = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+	styleNameStopped   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleNameInactive  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	// Per-state count badge
-	styleCountRunning = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Faint(true)
-	styleCountPartial = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
-	styleCountStopped = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Faint(true)
+	styleCountRunning   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Faint(true)
+	styleCountPartial   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
+	styleCountUnhealthy = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Faint(true)
+	styleCountStopped   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Faint(true)
 )
 
 func statePriority(s compose.State) int {
 	switch s {
-	case compose.StateRunning:
+	case compose.StateUnhealthy:
 		return 0
-	case compose.StatePartial:
+	case compose.StateRunning:
 		return 1
-	case compose.StateStopped:
+	case compose.StatePartial:
 		return 2
-	default:
+	case compose.StateStopped:
 		return 3
+	default:
+		return 4
 	}
 }
 
@@ -55,7 +59,7 @@ func sortByState(stacks []compose.Stack) []compose.Stack {
 	for _, s := range stacks {
 		key := s.Group
 		if _, ok := groups[key]; !ok {
-			groups[key] = &groupEntry{bestPriority: 3}
+			groups[key] = &groupEntry{bestPriority: 4}
 			order = append(order, key)
 		}
 		g := groups[key]
@@ -90,6 +94,8 @@ func sortByState(stacks []compose.Stack) []compose.Stack {
 
 func stateStyle(s compose.State) (string, lipgloss.Style) {
 	switch s {
+	case compose.StateUnhealthy:
+		return "●", styleOrange
 	case compose.StateRunning:
 		return "●", styleGreen
 	case compose.StatePartial:
@@ -103,6 +109,8 @@ func stateStyle(s compose.State) (string, lipgloss.Style) {
 
 func stateLabel(stack compose.Stack) string {
 	switch stack.State() {
+	case compose.StateUnhealthy:
+		return fmt.Sprintf("Unhealthy (%d/%d)", stack.Running, stack.Total)
 	case compose.StateRunning:
 		return fmt.Sprintf("Running (%d/%d)", stack.Running, stack.Total)
 	case compose.StatePartial:
@@ -137,13 +145,15 @@ type listRow struct {
 	indented bool
 }
 
-type groupCounts struct{ run, part, stop, off int }
+type groupCounts struct{ run, part, unhealthy, stop, off int }
 
 func groupCountsOf(stacks []compose.Stack) map[string]groupCounts {
 	m := make(map[string]groupCounts)
 	for _, s := range stacks {
 		gc := m[s.Group]
 		switch s.State() {
+		case compose.StateUnhealthy:
+			gc.unhealthy++
 		case compose.StateRunning:
 			gc.run++
 		case compose.StatePartial:
@@ -446,6 +456,8 @@ func renderGroupHeader(row listRow, isCursor bool, width int) string {
 	var dotGlyph string
 	var dotStyle lipgloss.Style
 	switch {
+	case row.gc.unhealthy > 0:
+		dotGlyph, dotStyle = "●", styleOrange
 	case row.gc.stop > 0:
 		dotGlyph, dotStyle = "●", styleRed
 	case row.gc.part > 0:
@@ -481,7 +493,7 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	// Compteur en texte brut ; il n'est stylé que hors ligne curseur.
 	var countText string
 	switch s.State() {
-	case compose.StateRunning, compose.StatePartial:
+	case compose.StateUnhealthy, compose.StateRunning, compose.StatePartial:
 		countText = fmt.Sprintf("%d/%d", s.Running, s.Total)
 	case compose.StateStopped:
 		countText = fmt.Sprintf("0/%d", s.Total)
@@ -522,6 +534,9 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	// Name style + count badge based on state
 	var nameStyled, count string
 	switch s.State() {
+	case compose.StateUnhealthy:
+		nameStyled = styleNameUnhealthy.Render(displayName)
+		count = styleCountUnhealthy.Render(countText)
 	case compose.StateRunning:
 		nameStyled = styleNameRunning.Render(displayName)
 		count = styleCountRunning.Render(countText)
