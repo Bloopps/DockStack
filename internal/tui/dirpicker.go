@@ -36,6 +36,16 @@ func renderDirPicker(m Model) string {
 		body += "\n\n  " + styleRed.Render("⚠ "+truncate(m.dirErr.Error(), max(m.width-6, 10)))
 	}
 	hint := styleDim.Render("  ↑↓ naviguer  ↩ ouvrir/choisir  Échap annuler")
+	if m.cfg.StackDir == "" {
+		// Premier lancement : esc n'a nulle part où revenir, c'est q qui quitte.
+		hint = styleDim.Render("  ↑↓ naviguer  ↩ ouvrir/choisir  q quitter")
+	}
+	// Cette vue a son propre pied de page : la confirmation de sortie doit y
+	// être visible aussi (le footer commun ne s'affiche pas ici).
+	if m.quitArmed {
+		hint = styleYellow.Bold(true).Render("  ⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
+			styleDim.Render("  ·  autre touche = annuler")
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, sub, "", body, "", hint)
 }

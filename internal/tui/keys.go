@@ -70,22 +70,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Toute touche autre que q/ctrl+c désarme la confirmation de sortie.
-	if s := msg.String(); s != "q" && s != "ctrl+c" {
-		m.quitArmed = false
-	}
-
+	// Le désarmement de la confirmation de sortie par les autres touches est
+	// global (handleKey), comme l'intercept ctrl+c.
 	switch msg.String() {
 	case "q", "ctrl+c":
 		// Quitter en deux frappes (style Claude Code) : la première arme,
 		// la seconde dans les 2 s quitte.
-		if m.quitArmed {
-			return m, tea.Quit
-		}
-		m.quitArmed = true
-		m.quitSeq++
-		seq := m.quitSeq
-		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return quitDisarmMsg(seq) })
+		return m.armOrQuit()
 	case "esc":
 		// Efface d'abord le filtre appliqué, puis la sélection.
 		if m.filter.Value() != "" {
@@ -314,6 +305,13 @@ func (m *Model) toggleSelectAll(stacks []compose.Stack) {
 // premières passent par la vue de progression live, Pull/Remove par le
 // spinner du footer.
 func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, tea.Cmd) {
+	// Verrou d'opération : la liste reste interactive pendant une capture/
+	// restauration (spinner), rien n'empêcherait de lancer une op concurrente
+	// sur les mêmes stacks. Logs inclus : la session de logs partage la vue
+	// et son cycle de vie avec le reste.
+	if m.opInProgress() {
+		return m.refuseOp()
+	}
 	client := m.client
 	one := []compose.Stack{stack}
 
@@ -380,6 +378,11 @@ func (m Model) execGroupAction() (tea.Model, tea.Cmd) {
 // startGroupAction lance une action live sur plusieurs stacks. La sélection
 // n'est vidée qu'ici, donc annuler la confirmation la conserve.
 func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Model, tea.Cmd) {
+	// Verrou d'opération (cf. startStackAction), avant de vider la sélection :
+	// un refus la conserve, comme une annulation de confirmation.
+	if m.opInProgress() {
+		return m.refuseOp()
+	}
 	client := m.client
 	par := m.cfg.MaxParallel
 	m.selected = make(map[string]bool)
@@ -526,12 +529,24 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setStatus("Aucune stack sélectionnée", true)
 			return m, clearStatusIn(3 * time.Second)
 		}
-		client := m.client
-		stackDir := m.cfg.StackDir
-		m.view = viewList
-		return m.startOp(fmt.Sprintf("Restauration — %d stack(s)...", len(names)), runOp(func() error {
-			return restoreSnap(context.Background(), client, names, stackDir)
-		}))
+		if m.opInProgress() {
+			return m.refuseOp()
+		}
+		// Comme les autres actions, la restauration passe par la vue de
+		// progression : flux live, annulable (esc), au lieu d'un Up bloquant
+		// sur ctx.Background().
+		stacks, missing := resolveRestoreStacks(names, m.cfg.StackDir)
+		if len(stacks) == 0 {
+			m.setStatus(fmt.Sprintf("Aucune stack restaurable (%d introuvable(s) sur le disque)", len(missing)), true)
+			return m, clearStatusIn(5 * time.Second)
+		}
+		title := fmt.Sprintf("Restauration — %d stack(s)", len(stacks))
+		if len(missing) > 0 {
+			// Signaler les introuvables au lieu de les ignorer en silence.
+			title += fmt.Sprintf(" (%d introuvable(s) ignorée(s))", len(missing))
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		return m.startProgressOp(title, cancel, m.client.UpManyLive(ctx, stacks, m.cfg.MaxParallel))
 	}
 	return m, nil
 }
@@ -551,6 +566,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "q":
 		if m.cfg.StackDir != "" {
 			m.view = viewList
+		} else if msg.String() == "q" {
+			// Premier lancement : aucune liste où revenir — q quitte (deux
+			// frappes), sinon le picker rendrait l'application inquittable.
+			return m.armOrQuit()
 		}
 	case "enter":
 		if len(m.dirEntries) == 0 {
@@ -562,7 +581,17 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfg.StackDir = m.dirPath
 			m.view = viewList
 			m.loading = true
-			cmds := []tea.Cmd{loadStacks(m.client, m.cfg.StackDir)}
+			// On peut arriver ici avec un client nil (init Docker échoué, le
+			// footer d'erreur propose « o ») : retenter la connexion au lieu
+			// de charger — loadStacks sur un client nil paniquerait. Une fois
+			// le client prêt, clientReadyMsg chargera la liste.
+			var cmds []tea.Cmd
+			if m.client == nil {
+				m.err = nil
+				cmds = []tea.Cmd{initClient()}
+			} else {
+				cmds = []tea.Cmd{loadStacks(m.client, m.cfg.StackDir)}
+			}
 			// Le choix vaut pour la session même si l'écriture échoue ;
 			// prévenir qu'il ne survivra pas au prochain lancement.
 			if err := m.cfg.Save(); err != nil {
@@ -611,26 +640,28 @@ func listSubDirs(path string) ([]string, error) {
 	return dirs, nil
 }
 
-func restoreSnap(ctx context.Context, client *compose.Client, names []string, stackDir string) error {
-	var firstErr error
+// resolveRestoreStacks transforme les noms d'une capture en stacks restaurables.
+// Chaque nom doit désigner un répertoire local (refus de toute traversée « ../ »
+// ou chemin absolu, le nom venant d'un fichier de capture) contenant encore un
+// fichier compose. Les noms non résolus sont renvoyés à part (missing) pour être
+// signalés à l'utilisateur, et non ignorés en silence.
+func resolveRestoreStacks(names []string, stackDir string) (stacks []compose.Stack, missing []string) {
 	for _, name := range names {
-		// Le nom vient du fichier snapshot : refuser tout chemin qui
-		// sortirait de stackDir (traversée « ../ », chemin absolu).
 		if !filepath.IsLocal(name) {
+			missing = append(missing, name)
 			continue
 		}
-		composeFile := compose.FindComposeFile(filepath.Join(stackDir, name))
+		dir := filepath.Join(stackDir, name)
+		composeFile := compose.FindComposeFile(dir)
 		if composeFile == "" {
+			missing = append(missing, name)
 			continue
 		}
-		stack := compose.Stack{
+		stacks = append(stacks, compose.Stack{
 			Name:        name,
-			Dir:         filepath.Join(stackDir, name),
+			Dir:         dir,
 			ComposeFile: composeFile,
-		}
-		if err := client.Up(ctx, stack); err != nil && firstErr == nil {
-			firstErr = err
-		}
+		})
 	}
-	return firstErr
+	return stacks, missing
 }

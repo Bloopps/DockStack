@@ -41,7 +41,7 @@ const (
 
 type tickMsg time.Time
 type metricsMsg monitor.Metrics
-type clientReadyMsg struct{ client *compose.Client }
+type clientReadyMsg struct{ client dockerService }
 type stacksLoadedMsg []compose.Stack
 type backupsLoadedMsg []backup.Snapshot
 type opDoneMsg struct {
@@ -56,18 +56,33 @@ type resubscribeEventsMsg struct{}
 // Les messages de logs portent le numéro de session : ceux d'une session
 // fermée (vue quittée puis rouverte) sont ignorés, sinon les lignes de
 // l'ancien flux se mélangeraient au nouveau.
-type logLineMsg struct {
-	entry compose.LogEntry
-	seq   int
+// logLinesMsg porte un lot de lignes : readLogCmd vide le canal sans bloquer
+// pour livrer plusieurs lignes par message, au lieu d'un cycle Update par
+// ligne (le suivi de nombreux conteneurs peut être très verbeux).
+type logLinesMsg struct {
+	entries []compose.LogEntry
+	seq     int
 }
 type logDoneMsg struct{ seq int }
-type errMsg error
+
+// fatalErrMsg : erreur qui empêche d'utiliser l'appli (init Docker échoué,
+// listing des stacks impossible). Affichée en plein écran avec le rappel
+// R/o/q, et effacée par un chargement réussi ou un R.
+type fatalErrMsg error
+
+// opErrMsg : erreur d'une opération ponctuelle lancée depuis une vue dédiée
+// (ouverture des logs, chargement des captures). Récupérable : le flux n'a
+// jamais démarré, donc on revient à la liste et on affiche l'erreur en barre
+// de statut. (L'ancien errMsg fourre-tout posait m.err, invisible partout
+// sauf dans la vue liste : une erreur d'ouverture des logs laissait un écran
+// vide.)
+type opErrMsg struct{ err error }
 
 // ---- model ----
 
 type Model struct {
 	cfg    *config.Config
-	client *compose.Client
+	client dockerService
 
 	view view
 
@@ -148,6 +163,7 @@ type Model struct {
 	progressTotal         int
 	progressCancel        context.CancelFunc
 	progressCh            <-chan compose.ProgressEvent
+	progressSeq           int  // numérote l'op courante : invalide les messages en vol d'une précédente
 	progressConfirmCancel bool // armed by a first esc/q while running; the next confirms
 	progressCancelling    bool // cancel() fired, waiting for the stream to drain
 
@@ -279,8 +295,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case opDoneMsg:
 		// Backup save/restore result (stack actions use the live progress view).
+		// Pas de retour forcé à la liste : capture et restauration y sont déjà
+		// (leurs handlers posent viewList avant startOp) ; écraser la vue ici
+		// éjecterait l'utilisateur de là où il a navigué pendant l'opération
+		// (vue de progression d'une autre op, aide, dossier…).
 		m.spinning = false
-		m.view = viewList // always land on list after any op
 		if msg.err != nil {
 			s := truncate(m.opLabel+": "+msg.err.Error(), 80)
 			m.setStatus(s, true)
@@ -290,19 +309,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(clearStatusIn(3*time.Second), loadStacks(m.client, m.cfg.StackDir))
 
 	case progressEventMsg:
-		ev := compose.ProgressEvent(msg)
-		if m.progress != nil {
-			m.progress.apply(ev)
+		// Message d'une op périmée : ne pas l'appliquer ni ré-armer sa pompe
+		// (le verrou d'op rend le cas improbable, le seq le rend inoffensif).
+		if msg.seq != m.progressSeq {
+			return m, nil
 		}
-		if ev.StackDone {
+		if m.progress != nil {
+			m.progress.apply(msg.ev)
+		}
+		if msg.ev.StackDone {
 			m.progressTotal++
-			if ev.Err == nil {
+			if msg.ev.Err == nil {
 				m.progressOk++
 			}
 		}
-		return m, readProgressCmd(m.progressCh)
+		return m, readProgressCmd(m.progressCh, msg.seq)
 
 	case progressAllDoneMsg:
+		if msg.seq != m.progressSeq {
+			return m, nil
+		}
 		m.progressDone = true
 		m.progressCh = nil
 		if m.progressCancel != nil {
@@ -311,13 +337,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, loadStacks(m.client, m.cfg.StackDir)
 
-	case logLineMsg:
+	case logLinesMsg:
 		if msg.seq != m.logSeq {
 			return m, nil // session de logs périmée : ne pas réarmer la lecture
 		}
-		entry := msg.entry
-		line := fmt.Sprintf("[%s] %s", sanitizeLogLine(entry.Name), sanitizeLogLine(entry.Line))
-		m.logLines = append(m.logLines, line)
+		for _, entry := range msg.entries {
+			line := fmt.Sprintf("[%s] %s", sanitizeLogLine(entry.Name), sanitizeLogLine(entry.Line))
+			m.logLines = append(m.logLines, line)
+		}
 		// Plafond glissant : le suivi est continu (Follow), sans limite la
 		// mémoire grandit indéfiniment. On taille par paquets pour ne pas
 		// recopier à chaque ligne, et on réalloue pour libérer l'ancien tampon.
@@ -425,10 +452,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dirErr = msg.err
 		m.dirCursor = 0
 
-	case errMsg:
+	case fatalErrMsg:
 		m.err = msg
 		m.loading = false
 		m.spinning = false
+
+	case opErrMsg:
+		m.loading = false
+		m.spinning = false
+		// L'op a échoué avant de démarrer son flux : libérer le contexte de
+		// logs s'il a été ouvert (sinon le cancel resterait pendant), revenir
+		// à la liste et signaler l'erreur en barre de statut plutôt que de
+		// laisser la vue dédiée afficher un écran vide.
+		if m.logCancel != nil {
+			m.logCancel()
+			m.logCancel = nil
+			m.logSeq++ // périme la session de logs qui n'a pas pu démarrer
+			m.logCh = nil
+		}
+		m.view = viewList
+		m.setStatus(truncate(msg.err.Error(), 80), true)
+		return m, clearStatusIn(6 * time.Second)
 
 	case spinner.TickMsg:
 		// Keep the spinner animating both for footer ops (m.spinning) and for the
@@ -483,9 +527,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "g", "G":
 			m.progressScroll = 0
 			m.progressManualScroll = false
-		case "q", "esc":
+		case "q", "esc", "ctrl+c":
 			if m.progressDone {
-				m.view = viewList
+				m.leaveProgressView()
 				break
 			}
 			// Opération en cours : premier esc arme la confirmation, le second annule.
@@ -501,7 +545,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if m.progressDone {
-				m.view = viewList
+				m.leaveProgressView()
 			}
 		default:
 			// Toute autre touche désarme la confirmation d'annulation.
@@ -513,6 +557,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.view == viewHelp {
 		m.view = viewList
 		return m, nil
+	}
+	// ctrl+c quitte depuis n'importe quelle vue (deux frappes) : les vues qui
+	// ne le traitent pas l'avaleraient — au premier lancement, le dirpicker
+	// (sans esc/q possibles) rendait l'application inquittable.
+	if msg.String() == "ctrl+c" {
+		return m.armOrQuit()
+	}
+	// Toute touche autre que q désarme la confirmation de sortie (le ctrl+c
+	// est traité juste au-dessus).
+	if msg.String() != "q" {
+		m.quitArmed = false
 	}
 	// R = reload global (r est réservé à Restart dans la liste). Si l'init
 	// Docker a échoué, R retente la connexion au lieu de ne rien faire.
@@ -705,7 +760,7 @@ func (m Model) selectedStacks() []compose.Stack {
 
 func (m Model) renderFooter() string {
 	if m.quitArmed {
-		return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau sur q pour quitter") +
+		return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
 			styleDim.Render("  ·  autre touche = annuler")
 	}
 	if m.status != "" {
@@ -876,11 +931,49 @@ func tickMetrics() tea.Cmd {
 	})
 }
 
+// armOrQuit applique la sortie en deux frappes : la première arme (désarmée
+// après 2 s ou par une autre touche), la seconde quitte. Partagé par q dans la
+// liste, ctrl+c globalement et q dans le dirpicker du premier lancement.
+func (m Model) armOrQuit() (tea.Model, tea.Cmd) {
+	if m.quitArmed {
+		return m, tea.Quit
+	}
+	m.quitArmed = true
+	m.quitSeq++
+	seq := m.quitSeq
+	return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return quitDisarmMsg(seq) })
+}
+
+// opInProgress dit si une opération court déjà : spinner du footer
+// (capture/restauration) ou vue de progression pas encore terminée.
+func (m Model) opInProgress() bool {
+	return m.spinning || (m.view == viewProgress && !m.progressDone)
+}
+
+// refuseOp refuse de démarrer une opération quand une autre court déjà :
+// deux ops simultanées pourraient viser les mêmes stacks (ex. une
+// restauration et un Up), et la vue de progression n'affiche qu'un flux.
+func (m Model) refuseOp() (tea.Model, tea.Cmd) {
+	m.setStatus("Opération déjà en cours — attendre la fin", true)
+	return m, clearStatusIn(3 * time.Second)
+}
+
 func (m Model) startOp(label string, op tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.opInProgress() {
+		return m.refuseOp()
+	}
 	m.spinning = true
 	m.opLabel = label
 	m.status = ""
 	return m, tea.Batch(op, m.spinner.Tick)
+}
+
+// leaveProgressView revient à la liste et libère l'état de progression : un
+// gros pull peut accumuler des dizaines de milliers de ressources dans
+// progressState, inutile de les retenir une fois de retour sur la liste.
+func (m *Model) leaveProgressView() {
+	m.view = viewList
+	m.progress = nil
 }
 
 func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-chan compose.ProgressEvent) (tea.Model, tea.Cmd) {
@@ -898,7 +991,8 @@ func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-cha
 	m.status = ""
 	m.view = viewProgress
 	m.progressCh = ch
-	return m, tea.Batch(readProgressCmd(ch), m.spinner.Tick)
+	m.progressSeq++ // nouvelle op : périme les messages en vol de la précédente
+	return m, tea.Batch(readProgressCmd(ch, m.progressSeq), m.spinner.Tick)
 }
 
 func (m Model) filterBar() string {

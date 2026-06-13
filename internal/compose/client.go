@@ -545,7 +545,13 @@ func (c *Client) SubscribeEvents(ctx context.Context) <-chan DockerEvent {
 		res := c.cli.Client().Events(ctx, mobyclient.EventsListOptions{Filters: f})
 		for {
 			select {
-			case msg := <-res.Messages:
+			case msg, ok := <-res.Messages:
+				// Canal fermé (fin du flux) : sans le test ok, ce case serait
+				// toujours prêt et tournerait en boucle chaude sur des messages
+				// vides.
+				if !ok {
+					return
+				}
 				out <- DockerEvent{Action: string(msg.Action)}
 			case <-res.Err:
 				return

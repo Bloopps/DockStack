@@ -285,7 +285,9 @@ func renderProgressView(m Model) string {
 	}
 
 	title := styleBold.Render(m.progressTitle)
-	sep := styleDim.Render(strings.Repeat("─", m.width-2))
+	// max(…, 0) : un WindowSizeMsg transitoire à 1 colonne rendrait le compte
+	// négatif et ferait paniquer strings.Repeat (viewContent ne garde que 0).
+	sep := styleDim.Render(strings.Repeat("─", max(m.width-2, 0)))
 	body := title + "\n" + sep + "\n" + strings.Join(visible, "\n") + belowHint
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)

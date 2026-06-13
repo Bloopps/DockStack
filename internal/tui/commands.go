@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,19 +14,27 @@ import (
 
 // ---- progress stream ----
 
-type progressEventMsg compose.ProgressEvent
-type progressAllDoneMsg struct{}
+// Les messages de progression portent le numéro d'opération (cf.
+// Model.progressSeq, même recette que logSeq) : un message en vol d'une
+// opération précédente est ignoré au lieu d'être appliqué à l'état de la
+// suivante — sans ça, deux pompes pourraient lire le même canal et mélanger
+// les flux de deux opérations.
+type progressEventMsg struct {
+	ev  compose.ProgressEvent
+	seq int
+}
+type progressAllDoneMsg struct{ seq int }
 
 // readProgressCmd lit le prochain événement du flux. Le canal vit dans le
 // Model (pas de variable globale) : chaque opération a son propre flux.
 // La fin est signalée par la sentinelle AllDone (le canal n'est pas fermé).
-func readProgressCmd(ch <-chan compose.ProgressEvent) tea.Cmd {
+func readProgressCmd(ch <-chan compose.ProgressEvent, seq int) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok || ev.AllDone {
-			return progressAllDoneMsg{}
+			return progressAllDoneMsg{seq: seq}
 		}
-		return progressEventMsg(ev)
+		return progressEventMsg{ev: ev, seq: seq}
 	}
 }
 
@@ -50,7 +59,7 @@ type dockerEventsClosedMsg struct{}
 type debounceRefreshMsg struct{ gen int }
 
 // subscribeDockerEvents lance l'abonnement au flux d'événements Docker.
-func subscribeDockerEvents(client *compose.Client) tea.Cmd {
+func subscribeDockerEvents(client dockerService) tea.Cmd {
 	return func() tea.Msg {
 		ch := client.SubscribeEvents(context.Background())
 		return dockerEventsStartedMsg{ch: ch}
@@ -83,7 +92,7 @@ func initClient() tea.Cmd {
 	return func() tea.Msg {
 		c, err := compose.New()
 		if err != nil {
-			return errMsg(err)
+			return fatalErrMsg(err)
 		}
 		return clientReadyMsg{c}
 	}
@@ -109,13 +118,18 @@ func prewarmStacks(stackDir string) tea.Cmd {
 	}
 }
 
-func loadStacks(client *compose.Client, stackDir string) tea.Cmd {
+func loadStacks(client dockerService, stackDir string) tea.Cmd {
 	return func() tea.Msg {
+		// Défense en profondeur : un appelant qui passerait un client nil
+		// (init Docker échoué) ferait paniquer ListStacks dans ce Cmd.
+		if client == nil {
+			return fatalErrMsg(errors.New("client Docker non initialisé (R pour réessayer)"))
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), loadStacksTimeout)
 		defer cancel()
 		stacks, err := client.ListStacks(ctx, stackDir)
 		if err != nil {
-			return errMsg(err)
+			return fatalErrMsg(err)
 		}
 		return stacksLoadedMsg(stacks)
 	}
@@ -125,15 +139,9 @@ func loadBackups(configDir string) tea.Cmd {
 	return func() tea.Msg {
 		snaps, err := backup.List(configDir)
 		if err != nil {
-			return errMsg(err)
+			return opErrMsg{err: err}
 		}
 		return backupsLoadedMsg(snaps)
-	}
-}
-
-func runOp(fn func() error) tea.Cmd {
-	return func() tea.Msg {
-		return opDoneMsg{err: fn()}
 	}
 }
 
@@ -158,22 +166,43 @@ type logsStartedMsg struct {
 	seq int
 }
 
-func startLogs(ctx context.Context, client *compose.Client, stack compose.Stack, seq int) tea.Cmd {
+func startLogs(ctx context.Context, client dockerService, stack compose.Stack, seq int) tea.Cmd {
 	return func() tea.Msg {
 		ch, err := client.LogsAsync(ctx, stack)
 		if err != nil {
-			return errMsg(err)
+			return opErrMsg{err: err}
 		}
 		return logsStartedMsg{ch: ch, seq: seq}
 	}
 }
 
+// logBatchMax borne le nombre de lignes regroupées en un seul message : assez
+// pour amortir les rafales sans rendre le rendu saccadé ni bloquer la lecture.
+const logBatchMax = 256
+
 func readLogCmd(ch <-chan compose.LogEntry, seq int) tea.Cmd {
 	return func() tea.Msg {
+		// Lecture bloquante de la première ligne, puis on vide ce qui est déjà
+		// disponible sans attendre, pour livrer un lot d'un coup.
 		entry, ok := <-ch
 		if !ok {
 			return logDoneMsg{seq: seq}
 		}
-		return logLineMsg{entry: entry, seq: seq}
+		batch := make([]compose.LogEntry, 1, logBatchMax)
+		batch[0] = entry
+		for len(batch) < logBatchMax {
+			select {
+			case e, ok := <-ch:
+				if !ok {
+					// Canal fermé en cours de lot : on livre le lot ; le prochain
+					// readLogCmd relira le canal fermé et renverra logDoneMsg.
+					return logLinesMsg{entries: batch, seq: seq}
+				}
+				batch = append(batch, e)
+			default:
+				return logLinesMsg{entries: batch, seq: seq}
+			}
+		}
+		return logLinesMsg{entries: batch, seq: seq}
 	}
 }

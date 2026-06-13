@@ -15,14 +15,13 @@ import (
 	composeapi "github.com/docker/compose/v5/pkg/api"
 )
 
-var skipDirs = map[string]bool{
+// skipDirsAlways : répertoires sautés à n'importe quelle profondeur (VCS,
+// dépendances, caches) — jamais des racines de stack légitimes.
+var skipDirsAlways = map[string]bool{
 	// VCS / deps
 	".git":         true,
 	"node_modules": true,
 	"vendor":       true,
-	// Go workspace / module cache
-	"go":  true,
-	"pkg": true,
 	// Caches / tooling
 	".cache":      true,
 	"snap":        true,
@@ -30,12 +29,20 @@ var skipDirs = map[string]bool{
 	".npm":        true,
 	".cargo":      true,
 	".gradle":     true,
-	// Systèmes de fichiers virtuels si stackDir est /
+}
+
+// skipDirsRoot : sautés uniquement à la racine du scan — systèmes de fichiers
+// virtuels (quand stackDir est /) et arborescences Go du home. Plus profond, un
+// vrai projet peut légitimement contenir un sous-dossier « pkg », « go »,
+// « tmp »… qu'il ne faut pas exclure.
+var skipDirsRoot = map[string]bool{
 	"proc": true,
 	"sys":  true,
 	"dev":  true,
 	"run":  true,
 	"tmp":  true,
+	"go":   true,
+	"pkg":  true,
 }
 
 const composeFileTTL = 60 * time.Second
@@ -125,7 +132,10 @@ func scanComposeDir(dir string, depth int, files *[]string) {
 			continue
 		}
 		name := e.Name()
-		if skipDirs[name] || strings.HasPrefix(name, ".") {
+		// Les noms « racine seulement » (proc, tmp, go…) ne sont sautés qu'au
+		// niveau du root du scan (depth 0) : plus profond ils peuvent être de
+		// vrais sous-dossiers de projet.
+		if skipDirsAlways[name] || (depth == 0 && skipDirsRoot[name]) || strings.HasPrefix(name, ".") {
 			continue
 		}
 		scanComposeDir(filepath.Join(dir, name), depth+1, files)
@@ -154,6 +164,28 @@ var composeRank = func() map[string]int {
 // de docker compose, ou "" si le répertoire n'en contient aucun.
 func FindComposeFile(dir string) string {
 	for _, name := range composeNamesByPriority {
+		if p := filepath.Join(dir, name); fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// composeOverrideNames liste les fichiers d'override que docker compose charge
+// automatiquement par-dessus le fichier de base (le premier présent l'emporte).
+// Même ordre de priorité que composeNamesByPriority.
+var composeOverrideNames = []string{
+	"compose.override.yaml",
+	"compose.override.yml",
+	"docker-compose.override.yml",
+	"docker-compose.override.yaml",
+}
+
+// findOverrideFile renvoie le fichier d'override présent dans dir (le premier
+// selon composeOverrideNames), ou "" si aucun. Comme la CLI, il est fusionné
+// par-dessus le fichier de base.
+func findOverrideFile(dir string) string {
+	for _, name := range composeOverrideNames {
 		if p := filepath.Join(dir, name); fileExists(p) {
 			return p
 		}
@@ -195,9 +227,17 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		}
 	}
 
+	// Parité CLI : charger le fichier d'override par-dessus la base s'il existe.
+	// L'ordre compte (la base d'abord, l'override ensuite l'emporte) ; ces
+	// fichiers alimentent aussi proj.ComposeFiles → le label ConfigFilesLabel.
+	configFiles := []composetypes.ConfigFile{{Filename: stack.ComposeFile}}
+	if ov := findOverrideFile(stack.Dir); ov != "" {
+		configFiles = append(configFiles, composetypes.ConfigFile{Filename: ov})
+	}
+
 	proj, err := loader.LoadWithContext(context.Background(), composetypes.ConfigDetails{
 		WorkingDir:  stack.Dir,
-		ConfigFiles: []composetypes.ConfigFile{{Filename: stack.ComposeFile}},
+		ConfigFiles: configFiles,
 		Environment: env,
 	}, func(o *loader.Options) {
 		o.SkipValidation = true
@@ -215,6 +255,15 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 	// (ex. `default: {name: x}` à côté d'un `x: {external: true}`) est
 	// quand même contrôlé au Up et échoue sur son label compose.network.
 	proj = proj.WithoutUnnecessaryResources()
+	// Le loader ne renseigne pas proj.ComposeFiles : on le pose nous-mêmes
+	// (base + override) pour que ConfigFilesLabel ci-dessous liste tous les
+	// fichiers, comme la CLI — sinon le label resterait vide.
+	if len(proj.ComposeFiles) == 0 {
+		proj.ComposeFiles = make([]string, len(configFiles))
+		for i, cf := range configFiles {
+			proj.ComposeFiles[i] = cf.Filename
+		}
+	}
 	// Set the compose labels that the compose v5 service normally adds via
 	// postProcessProject (internal). Without this, containers created through
 	// our loadProject+Up path lack project/service/working_dir labels.
