@@ -511,6 +511,9 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 		// L'état reste lisible via le glyphe ●/○ et le compteur.
 		prefix := indent + styleCursorMark.Render("▶") + " "
 		body := dot + " " + displayName
+		if s.Orphaned {
+			body += " ⟳"
+		}
 		prefixW := lipgloss.Width(prefix)
 		bodyW := lipgloss.Width(body)
 
@@ -558,6 +561,11 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 
 	// Build line with right-aligned count
 	left := fmt.Sprintf("%s%s %s %s", indent, marker, dotStyle.Render(dot), nameStyled)
+	if s.Orphaned {
+		// Conteneur(s) rattaché(s) par nom faute de label projet (orphelin
+		// watchtower) : sera ré-adopté au prochain up/recreate.
+		left += " " + styleDim.Render("⟳")
+	}
 	leftW := lipgloss.Width(left)
 
 	if count != "" {

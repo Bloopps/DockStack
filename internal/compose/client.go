@@ -41,6 +41,7 @@ type Stack struct {
 	Total       int
 	Unhealthy   int
 	Services    []ServiceStatus // par service compose, trié par nom
+	Orphaned    bool            // au moins un conteneur rattaché par nom faute de label projet (recréé par watchtower)
 }
 
 // ServiceStatus représente l'état agrégé d'un service compose au sein
@@ -232,6 +233,8 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		})
 	}
 
+	attachOrphans(stacks, result.Items)
+
 	sort.Slice(stacks, func(i, j int) bool {
 		if stacks[i].Group != stacks[j].Group {
 			return stacks[i].Group < stacks[j].Group
@@ -243,6 +246,106 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		return stacks[i].Name < stacks[j].Name
 	})
 	return stacks, nil
+}
+
+// attachOrphans rattache par NOM les conteneurs qui tournent sans label
+// com.docker.compose.project (typiquement recréés par watchtower, qui n'a pas
+// repropagé ce label) aux stacks ressorties à 0 conteneur — sinon elles
+// paraissent « down » alors qu'elles tournent. Le nom du conteneur survit à la
+// recréation, c'est le lien fiable. Coût maîtrisé : on ne charge le projet
+// (loadProject) que s'il existe des orphelins ET seulement pour les stacks à
+// 0 conteneur — donc nul en régime nominal (tout bien labellisé).
+func attachOrphans(stacks []Stack, items []container.Summary) {
+	hasOrphan := false
+	for i := range items {
+		if strings.TrimSpace(items[i].Labels["com.docker.compose.project"]) == "" {
+			hasOrphan = true
+			break
+		}
+	}
+	if !hasOrphan {
+		return
+	}
+	consumed := make(map[string]bool) // par ID, pour ne pas rattacher un orphelin à 2 stacks
+	for i := range stacks {
+		if stacks[i].Total > 0 {
+			continue // déjà rattachée par label
+		}
+		proj, err := loadProject(stacks[i])
+		if err != nil {
+			continue
+		}
+		cand := projectContainerNames(proj)
+		if len(cand) == 0 {
+			continue
+		}
+		svcAgg := make(map[string]*ServiceStatus)
+		for j := range items {
+			ctr := &items[j]
+			if consumed[ctr.ID] || strings.TrimSpace(ctr.Labels["com.docker.compose.project"]) != "" {
+				continue
+			}
+			svcName, ok := matchByNames(cand, ctr.Names)
+			if !ok {
+				continue
+			}
+			consumed[ctr.ID] = true
+			running := ctr.State == "running"
+			unhealthy := ctr.Health != nil && ctr.Health.Status == container.Unhealthy
+			ss := svcAgg[svcName]
+			if ss == nil {
+				ss = &ServiceStatus{Name: svcName}
+				svcAgg[svcName] = ss
+			}
+			ss.Total++
+			stacks[i].Total++
+			if running {
+				ss.Running++
+				stacks[i].Running++
+			}
+			if unhealthy {
+				ss.Unhealthy++
+				stacks[i].Unhealthy++
+			}
+		}
+		if len(svcAgg) == 0 {
+			continue
+		}
+		stacks[i].Orphaned = true
+		services := make([]ServiceStatus, 0, len(svcAgg))
+		for _, ss := range svcAgg {
+			services = append(services, *ss)
+		}
+		sort.Slice(services, func(a, b int) bool { return services[a].Name < services[b].Name })
+		stacks[i].Services = services
+	}
+}
+
+// projectContainerNames retourne les noms de conteneurs qu'un projet peut
+// porter sur disque (container_name explicite + motifs compose par défaut
+// projet-service-1 / projet_service_1), associés à leur service. Sert à
+// rattacher par NOM un conteneur qui a perdu son label projet.
+func projectContainerNames(proj *types.Project) map[string]string {
+	names := make(map[string]string, len(proj.Services)*3)
+	for svcName, svc := range proj.Services {
+		if svc.ContainerName != "" {
+			names[svc.ContainerName] = svcName
+		}
+		names[proj.Name+"-"+svcName+"-1"] = svcName
+		names[proj.Name+"_"+svcName+"_1"] = svcName
+	}
+	return names
+}
+
+// matchByNames renvoie le service associé au premier nom de conteneur (parmi
+// ctrNames, préfixe « / » retiré) présent dans cand.
+func matchByNames(cand map[string]string, ctrNames []string) (string, bool) {
+	for _, n := range ctrNames {
+		if svc, ok := cand[strings.TrimPrefix(n, "/")]; ok {
+			return svc, true
+		}
+	}
+	return "", false
 }
 
 // ProgressEvent is a single live event streamed during an operation.
@@ -347,10 +450,11 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 	if err != nil {
 		return err
 	}
-	err = svc.Up(ctx, proj, api.UpOptions{
+	opts := api.UpOptions{
 		Create: api.CreateOptions{Recreate: api.RecreateDiverged},
 		Start:  api.StartOptions{Project: proj},
-	})
+	}
+	err = c.upWithReadopt(ctx, stack, proj, svc, opts, ch)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "has no container to start") ||
@@ -359,6 +463,21 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 		}
 	}
 	return err
+}
+
+// upWithReadopt lance svc.Up et, en cas de conflit de nom (« already in use »),
+// retire le conteneur orphelin qui squatte le nom puis relance le Up : compose
+// le recrée alors proprement avec ses labels (ré-adoption). Le coût n'est payé
+// que lorsqu'un conflit survient réellement.
+func (c *Client) upWithReadopt(ctx context.Context, stack Stack, proj *types.Project, svc api.Compose, opts api.UpOptions, ch chan<- ProgressEvent) error {
+	err := svc.Up(ctx, proj, opts)
+	if err == nil || !strings.Contains(err.Error(), "already in use") {
+		return err
+	}
+	if c.removeProjectOrphans(ctx, stack.Name, proj, ch, "ré-adopté (orphelin watchtower)") == 0 {
+		return err // rien à ré-adopter : ne pas masquer le conflit d'origine
+	}
+	return svc.Up(ctx, proj, opts)
 }
 
 // startByContainerName tente de démarrer les conteneurs existants du projet
@@ -422,6 +541,52 @@ func (c *Client) startByContainerName(ctx context.Context, proj *types.Project, 
 	return nil
 }
 
+// removeProjectOrphans supprime les conteneurs qui portent un nom du projet
+// mais plus le label com.docker.compose.project (orphelins, typiquement
+// recréés par watchtower qui n'a pas repropagé ce label). Sans ça, compose ne
+// les voit pas : il tente de recréer un conteneur de même nom et échoue sur
+// « name already in use » (Up), ou les ignore en silence (Down). On les
+// retire (Force, volumes PRÉSERVÉS → données saines) ; au Up qui suit, compose
+// les recrée proprement avec leurs labels (ré-adoption). On ne touche JAMAIS
+// un conteneur déjà rattaché à un projet. doneStatus décrit l'effet dans la
+// vue de progression. Renvoie le nombre d'orphelins retirés.
+func (c *Client) removeProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus string) int {
+	cand := projectContainerNames(proj)
+	if len(cand) == 0 {
+		return 0
+	}
+	result, err := c.cli.Client().ContainerList(ctx, mobyclient.ContainerListOptions{All: true})
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, ctr := range result.Items {
+		if strings.TrimSpace(ctr.Labels["com.docker.compose.project"]) != "" {
+			continue // déjà rattaché à un projet : ne jamais voler
+		}
+		if _, ok := matchByNames(cand, ctr.Names); !ok {
+			continue
+		}
+		id := "Orphelin " + primaryName(ctr.Names)
+		if _, rmErr := c.cli.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); rmErr != nil {
+			ch <- ProgressEvent{StackName: stackName, Container: id, Status: "ré-adoption impossible : " + rmErr.Error(), State: "warning"}
+			continue
+		}
+		removed++
+		ch <- ProgressEvent{StackName: stackName, Container: id, Status: doneStatus, State: "done"}
+	}
+	return removed
+}
+
+// primaryName renvoie le nom principal d'un conteneur (premier de la liste,
+// préfixe « / » retiré).
+func primaryName(ctrNames []string) string {
+	if len(ctrNames) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(ctrNames[0], "/")
+}
+
 func (c *Client) downLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
 	svc, err := newSvcWithProcessor(c.cli, &streamingCollector{stackName: stack.Name, out: ch})
 	if err != nil {
@@ -431,7 +596,16 @@ func (c *Client) downLive(ctx context.Context, stack Stack, ch chan<- ProgressEv
 	if err != nil {
 		return err
 	}
-	return svc.Down(ctx, proj.Name, api.DownOptions{})
+	if derr := svc.Down(ctx, proj.Name, api.DownOptions{}); derr != nil {
+		return derr
+	}
+	// Orphelins watchtower : compose down ne les a pas vus (label projet
+	// absent) → on les arrête nous-mêmes, sinon « down » serait un no-op
+	// silencieux sur des conteneurs qui tournent toujours.
+	if stack.Orphaned {
+		c.removeProjectOrphans(ctx, stack.Name, proj, ch, "arrêté (orphelin)")
+	}
+	return nil
 }
 
 func (c *Client) restartLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
@@ -455,10 +629,10 @@ func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- Progre
 	if err != nil {
 		return err
 	}
-	return svc.Up(ctx, proj, api.UpOptions{
+	return c.upWithReadopt(ctx, stack, proj, svc, api.UpOptions{
 		Create: api.CreateOptions{Recreate: api.RecreateForce},
 		Start:  api.StartOptions{Project: proj},
-	})
+	}, ch)
 }
 
 func (c *Client) pullLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
