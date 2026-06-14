@@ -133,6 +133,40 @@ func (m Model) progressLines(start, end int) (visible []string, total int) {
 		idx++
 	}
 
+	// addResource ajoute une ressource : une seule ligne en régime normal, mais
+	// en cas d'erreur le statut (message complet du démon Docker, ex. « Conflict.
+	// The container name … is already in use ») est replié sous la ligne au lieu
+	// de déborder hors de l'écran et d'être tronqué par le terminal.
+	addResource := func(r *resourceProgress, stackDone bool, indent string) {
+		if r.state != "error" {
+			add(func() string { return m.renderResourceLine(r, stackDone, now, indent) })
+			return
+		}
+		end := r.doneAt
+		if end.IsZero() {
+			end = now
+		}
+		dur := fmt.Sprintf("%.1fs", end.Sub(r.firstSeen).Seconds())
+		add(func() string {
+			return indent + styleRed.Render("✕ "+r.id) + "  " + styleDim.Render(dur)
+		})
+		status := r.status
+		if r.details != "" {
+			status += " " + r.details
+		}
+		if status == "" {
+			return
+		}
+		wrapW := m.width - len(indent) - 4
+		if wrapW < 20 {
+			wrapW = 20
+		}
+		for _, l := range wordWrap(status, wrapW) {
+			l := l
+			add(func() string { return indent + "  " + styleRed.Render(l) })
+		}
+	}
+
 	for _, st := range ps.order {
 		// Stack header with an aggregate indicator and a docker-style counter.
 		add(func() string {
@@ -162,9 +196,9 @@ func (m Model) progressLines(start, end int) (visible []string, total int) {
 		})
 
 		for _, r := range st.roots {
-			add(func() string { return m.renderResourceLine(r, st.done, now, "      ") })
+			addResource(r, st.done, "      ")
 			for _, c := range st.children[r.id] {
-				add(func() string { return m.renderResourceLine(c, st.done, now, "         ") })
+				addResource(c, st.done, "         ")
 			}
 		}
 
