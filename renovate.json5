@@ -1,0 +1,41 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+
+  // Configuration de base recommandée par Renovate.
+  extends: [
+    'config:recommended',
+    // Regroupe les mises à jour patch + mineures en une seule PR par gestionnaire.
+    'group:allNonMajor',
+    // Limite le bruit : ne rouvre pas une PR ignorée pendant 2 semaines.
+    ':ignoreModulesAndTests',
+  ],
+
+  // Étiquettes appliquées aux PR ouvertes par Renovate.
+  labels: ['dependencies'],
+
+  // Limite le débit pour ne pas noyer le dépôt.
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+
+  // Garde go.mod / go.sum cohérents après chaque mise à jour.
+  postUpdateOptions: ['gomodTidy'],
+
+  // Une PR de synthèse listant tout ce qui est en attente.
+  dependencyDashboard: true,
+
+  packageRules: [
+    {
+      // Auto-merge des mises à jour patch des dépendances Go (faible risque),
+      // une fois la CI passée.
+      matchManagers: ['gomod'],
+      matchUpdateTypes: ['patch'],
+      automerge: true,
+    },
+    {
+      // Regroupe les bumps d'actions GitHub dans une seule PR.
+      matchManagers: ['github-actions'],
+      groupName: 'github-actions',
+      automerge: true,
+    },
+  ],
+}

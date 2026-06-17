@@ -1,0 +1,78 @@
+name: CI
+
+# Intégration continue : build, vérifications statiques et tests
+# Déclenchée sur les push et les pull requests vers master.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Annule les exécutions précédentes encore en cours sur la même réf.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # La version de Go est lue depuis go.mod (source unique de vérité).
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Vérifie que go.mod / go.sum sont cohérents et à jour.
+      - name: Verify modules
+        run: |
+          go mod download
+          go mod verify
+
+      # Échoue si du code n'est pas formaté avec gofmt.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Fichiers non formatés (lancez 'gofmt -w .') :"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    # Non-bloquant : golangci-lint peut avoir du retard sur les versions récentes
+    # de Go (1.26). Le job informe sans faire échouer la CI.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
