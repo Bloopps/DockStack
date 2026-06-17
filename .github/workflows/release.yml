@@ -28,7 +28,9 @@ jobs:
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          # Épinglé sur la série v2 pour éviter une rupture lors d'une future
+          # version majeure de GoReleaser.
+          version: '~> v2'
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
