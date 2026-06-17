@@ -1,0 +1,43 @@
+# Configuration GoReleaser : compilation multi-plateforme et publication
+# d'une GitHub Release lors d'un tag « v* ».
+# Doc : https://goreleaser.com
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: dockstack
+    main: ./cmd/dockstack
+    binary: dockstack
+    env:
+      - CGO_ENABLED=0
+    # DockStack est Linux-only (métriques via /proc, statfs_linux.go).
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+
+archives:
+  - id: dockstack
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    # Exclut le bruit du changelog généré.
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - 'merge conflict'

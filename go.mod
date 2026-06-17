@@ -9,6 +9,7 @@ require (
 	github.com/compose-spec/compose-go/v2 v2.11.0
 	github.com/docker/cli v29.5.1+incompatible
 	github.com/docker/compose/v5 v5.1.4
+	github.com/moby/moby/api v1.54.2
 	github.com/moby/moby/client v0.4.1
 	github.com/sirupsen/logrus v1.9.4
 	golang.org/x/sys v0.45.0
@@ -80,7 +81,6 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.2.0 // indirect
 	github.com/moby/locker v1.0.1 // indirect
-	github.com/moby/moby/api v1.54.2 // indirect
 	github.com/moby/patternmatcher v0.6.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/sys/capability v0.4.0 // indirect

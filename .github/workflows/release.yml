@@ -1,0 +1,34 @@
+name: Release
+
+# Publie une GitHub Release avec les binaires compilés à chaque tag « v* ».
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # nécessaire pour créer la release et y attacher les binaires.
+
+jobs:
+  goreleaser:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # GoReleaser a besoin de tout l'historique et des tags.
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

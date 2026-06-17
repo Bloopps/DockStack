@@ -56,6 +56,30 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
+  vulncheck:
+    name: Vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    # Non-bloquant : certaines CVE de github.com/docker/docker sont « Fixed in: N/A »
+    # (aucun correctif amont), donc impossibles à résoudre. Le job informe sans
+    # faire échouer la CI ; à repasser bloquant quand ces CVE seront corrigées.
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Scan les CVE des dépendances en ne signalant que celles réellement
+      # atteignables depuis le code (peu de faux positifs).
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   lint:
     name: Lint (golangci-lint)
     runs-on: ubuntu-latest

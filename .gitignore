@@ -7,6 +7,9 @@
 *.test
 *.out
 
+# Sortie GoReleaser
+/dist/
+
 # Config locale (outillage de dev personnel)
 /.rtk/
 /CLAUDE.md
