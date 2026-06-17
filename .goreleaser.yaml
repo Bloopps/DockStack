@@ -24,9 +24,10 @@ builds:
 
 archives:
   - id: dockstack
-    formats: [tar.gz]
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # Binaires bruts (pas de .tar.gz) pour rester compatible avec la commande
+    # d'installation du README : curl .../dockstack-linux-amd64
+    formats: [binary]
+    name_template: 'dockstack-{{ .Os }}-{{ .Arch }}'
 
 checksum:
   name_template: 'checksums.txt'
