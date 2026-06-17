@@ -34,6 +34,16 @@ checksum:
 
 changelog:
   sort: asc
+  # Regroupe les commits par catégorie dans les notes de version.
+  groups:
+    - title: 'Nouveautés'
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: 'Corrections'
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: 'Autres changements'
+      order: 999
   filters:
     # Exclut le bruit du changelog généré.
     exclude:
@@ -42,3 +52,16 @@ changelog:
       - '^ci:'
       - '^chore:'
       - 'merge conflict'
+
+# Bloc fixe ajouté en pied de chaque release (instructions d'installation).
+release:
+  footer: |
+    ## Installation
+
+    Binaire statique linux/amd64, sans dépendance :
+
+    ```bash
+    curl -L https://github.com/Bloopps/DockStack/releases/latest/download/dockstack-linux-amd64 -o dockstack
+    chmod +x dockstack
+    ./dockstack
+    ```
