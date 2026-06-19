@@ -181,6 +181,13 @@ var composeOverrideNames = []string{
 	"docker-compose.override.yaml",
 }
 
+// FindOverrideFile expose findOverrideFile : le fichier d'override présent dans
+// dir, ou "" si aucun. Utilisé par l'aperçu compose de la TUI pour signaler
+// qu'un override sera fusionné par-dessus le fichier affiché.
+func FindOverrideFile(dir string) string {
+	return findOverrideFile(dir)
+}
+
 // findOverrideFile renvoie le fichier d'override présent dans dir (le premier
 // selon composeOverrideNames), ou "" si aucun. Comme la CLI, il est fusionné
 // par-dessus le fichier de base.
@@ -196,6 +203,22 @@ func findOverrideFile(dir string) string {
 func fileExists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && !st.IsDir()
+}
+
+// RenderResolvedConfig charge le projet compose de la stack (interpolation du
+// .env + fusion de l'override, comme la CLI) puis le re-sérialise en YAML :
+// l'équivalent de `docker compose config`. Utilisé par la vue compose de la
+// TUI pour basculer entre le fichier brut et la config réellement appliquée.
+func RenderResolvedConfig(stack Stack) (string, error) {
+	proj, err := loadProject(stack)
+	if err != nil {
+		return "", err
+	}
+	data, err := proj.MarshalYAML()
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func loadProject(stack Stack) (*composetypes.Project, error) {

@@ -15,6 +15,10 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
+// doubleVDelay est la fenêtre pendant laquelle un second appui sur v escalade
+// du volet d'aperçu vers la vue compose plein écran.
+const doubleVDelay = 700 * time.Millisecond
+
 var stackActions = []string{
 	"▶  Up",
 	"▪  Down",
@@ -22,6 +26,7 @@ var stackActions = []string{
 	"↻  Recreate",
 	"↓  Pull",
 	"≡  Logs",
+	"📄  Compose",
 	"✕  Remove",
 	"←  Retour",
 }
@@ -201,6 +206,23 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if stack, ok := m.cursorStack(); ok {
 			return m.startStackAction("logs", stack)
 		}
+	case "v":
+		// Premier appui : (dé)montre le volet d'aperçu. Second appui rapproché
+		// alors que le volet est déjà ouvert : escalade vers la vue compose
+		// plein écran sur la stack courante.
+		doubleTap := m.previewOn && time.Since(m.lastVAt) < doubleVDelay
+		m.lastVAt = time.Now()
+		if doubleTap {
+			if s, ok := m.cursorStack(); ok {
+				return m.openComposeView(s)
+			}
+			// Curseur sur un en-tête de dossier : pas de compose unique à
+			// ouvrir. Garder le volet ouvert et l'expliquer, plutôt que de le
+			// refermer (effet « clignotement » trompeur).
+			m.setStatus("Plein écran : viser une stack (→ pour ouvrir le dossier), pas le dossier", false)
+			return m, clearStatusIn(4 * time.Second)
+		}
+		m.previewOn = !m.previewOn
 	case "b":
 		m.view = viewBackup
 		m.actionCursor = 0
@@ -268,6 +290,8 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 		return m.startStackAction("pull", stack)
 	case "≡  Logs":
 		return m.startStackAction("logs", stack)
+	case "📄  Compose":
+		return m.openComposeView(stack)
 	case "✕  Remove":
 		// Destructif : confirmation obligatoire, et Remove supprime aussi
 		// les volumes (down --volumes --remove-orphans).
@@ -429,6 +453,38 @@ func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "G":
 		m.logScroll = max(0, len(m.logLines)-m.logsHeight())
+	}
+	return m, nil
+}
+
+// ---- compose (vue plein écran) ----
+
+func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc":
+		m.view = viewList
+	case "up", "k":
+		if m.composeScroll > 0 {
+			m.composeScroll--
+		}
+	case "down", "j":
+		if m.composeScroll < m.composeMaxScroll() {
+			m.composeScroll++
+		}
+	case "g":
+		m.composeScroll = 0
+	case "G":
+		m.composeScroll = m.composeMaxScroll()
+	case "tab":
+		// Bascule brut ↔ résolu et recharge ; le curseur repart en haut car le
+		// contenu (donc le nombre de lignes) change.
+		m.composeResolved = !m.composeResolved
+		m.composeScroll = 0
+		m.loadComposeContent()
+	case "m":
+		// Relâche/reprend la capture souris : relâchée, la sélection/copie
+		// native du terminal fonctionne ; captée, la molette défile.
+		m.composeMouseOff = !m.composeMouseOff
 	}
 	return m, nil
 }

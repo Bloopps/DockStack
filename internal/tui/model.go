@@ -35,6 +35,7 @@ const (
 	viewConfirm
 	viewHelp
 	viewRestorePick
+	viewCompose
 )
 
 // ---- message types ----
@@ -96,8 +97,29 @@ type Model struct {
 	foldedGroups map[string]bool
 	rowsCache    *rowsCacheBox
 	refreshing   bool
-	lastRefresh  time.Time // dernier chargement des stacks (affiché au footer)
-	manualR      bool      // refresh déclenché par R : confirmer la fin par un statut
+
+	// Aperçu compose : volet à droite de la liste qui suit le curseur (touche
+	// v). previewCache évite de relire le fichier à chaque frame. lastVAt date le
+	// dernier appui sur v : un second appui rapproché (volet déjà ouvert) escalade
+	// vers la vue compose plein écran.
+	previewOn    bool
+	previewCache *previewCacheBox
+	lastVAt      time.Time
+
+	// Vue compose plein écran (ouverte depuis le menu d'actions). Bascule entre
+	// le fichier brut et la config résolue (docker compose config).
+	composeStack    compose.Stack
+	composeLines    []string
+	composeScroll   int
+	composeResolved bool
+	composeErr      error
+	// composeMouseOff relâche la capture souris dans la vue compose : la molette
+	// ne défile plus, mais la sélection/copie native du terminal refonctionne
+	// (tous les terminaux n'offrent pas le contournement Maj). Bascule : « m ».
+	composeMouseOff bool
+
+	lastRefresh time.Time // dernier chargement des stacks (affiché au footer)
+	manualR     bool      // refresh déclenché par R : confirmer la fin par un statut
 
 	// Flux d'événements Docker (start/stop/die/health_status…), qui pilote le
 	// refresh de la liste à la place du seul tick périodique. refreshGen est
@@ -211,6 +233,7 @@ func New(cfg *config.Config) Model {
 		selected:     make(map[string]bool),
 		foldedGroups: make(map[string]bool),
 		rowsCache:    &rowsCacheBox{},
+		previewCache: &previewCacheBox{},
 		loading:      true,
 	}
 }
@@ -501,6 +524,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.view == viewCompose {
+			// Molette : 3 lignes par cran (lire un fichier ligne à ligne serait
+			// pénible), bornée comme le défilement clavier.
+			const step = 3
+			switch msg.Button {
+			case tea.MouseWheelUp:
+				m.composeScroll -= step
+				if m.composeScroll < 0 {
+					m.composeScroll = 0
+				}
+			case tea.MouseWheelDown:
+				m.composeScroll += step
+				if mx := m.composeMaxScroll(); m.composeScroll > mx {
+					m.composeScroll = mx
+				}
+			}
+			return m, nil
+		}
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -599,6 +640,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case viewRestorePick:
 		return m.handleRestorePickKey(msg)
+	case viewCompose:
+		return m.handleComposeKey(msg)
 	}
 	return m, nil
 }
@@ -613,7 +656,7 @@ func (m Model) View() tea.View {
 	// mouse free so the terminal's native text selection / copy works, e.g.
 	// to copy an error message from the result. Keyboard scroll (↑↓/j/k)
 	// still works after completion.
-	if m.view == viewProgress && !m.progressDone {
+	if (m.view == viewProgress && !m.progressDone) || (m.view == viewCompose && !m.composeMouseOff) {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	return v
@@ -631,6 +674,8 @@ func (m Model) viewContent() string {
 		return renderDirPicker(m)
 	case viewProgress:
 		return renderProgressView(m)
+	case viewCompose:
+		return renderComposeView(m)
 	}
 
 	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.width)
@@ -659,8 +704,18 @@ func (m Model) viewContent() string {
 			body = styleDim.Render("\n  Chargement...")
 		} else if m.err != nil {
 			body = renderError(m.err)
+		} else if m.previewVisible() {
+			// Liste à gauche (largeur réduite), aperçu compose à droite. On
+			// force la largeur du bloc liste pour que le volet s'aligne quelle
+			// que soit la longueur des lignes affichées.
+			paneW := m.previewWidth()
+			listW := m.width - paneW
+			list := lipgloss.NewStyle().Width(listW).Height(bodyH).
+				Render(renderStackList(m, bodyH, listW))
+			pane := renderPreviewPane(m, bodyH, paneW)
+			body = lipgloss.JoinHorizontal(lipgloss.Top, list, pane)
 		} else {
-			body = renderStackList(m, bodyH)
+			body = renderStackList(m, bodyH, m.width)
 		}
 	}
 
@@ -838,16 +893,18 @@ func (m Model) renderFooter() string {
 				{"q", "quitter"},
 			}, m.width, right)
 		}
-		return renderFooterKeysRight([]struct{ key, desc string }{
+		keys := []struct{ key, desc string }{
 			{"↩", "actions"},
 			{"␣", "sélect"},
 			{"/", "filtre"},
+			{"v", "aperçu"},
 			{"b", "backup"},
 			{"o", "dossier"},
 			{"R", "rafraîchir"},
 			{"?", "aide"},
 			{"q", "quitter"},
-		}, m.width, right)
+		}
+		return renderFooterKeysRight(keys, m.width, right)
 	}
 	return renderFooterRefresh(m.width, m.refreshing)
 }

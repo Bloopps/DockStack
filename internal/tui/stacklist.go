@@ -365,8 +365,7 @@ func (m Model) visibleStacks() []compose.Stack {
 
 // ---- rendering ----
 
-func renderStackList(m Model, height int) string {
-	width := m.width
+func renderStackList(m Model, height, width int) string {
 	filterBar := m.filterBar()
 	if filterBar != "" {
 		height--
