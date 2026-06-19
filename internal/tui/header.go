@@ -137,11 +137,14 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	stacksInfo := fmt.Sprintf("%s %d [%s%s%s%s%s]",
 		L.Render("📦"),
 		sc.Total,
-		styleGreen.Render(fmt.Sprintf("●%d", sc.Running)),
-		styleYellow.Render(fmt.Sprintf(" ●%d", sc.Partial)),
-		styleOrange.Render(fmt.Sprintf(" ●%d", sc.Unhealthy)),
-		styleRed.Render(fmt.Sprintf(" ●%d", sc.Stopped)),
-		styleCyan.Render(fmt.Sprintf(" ●%d", sc.NotDep)),
+		// Espace entre le rond et le nombre : le glyphe ● est de largeur
+		// « ambiguë » et certains terminaux le rendent sur ~2 cellules, ce qui
+		// faisait chevaucher le chiffre par-dessus le rond quand il était collé.
+		styleGreen.Render(fmt.Sprintf("● %d", sc.Running)),
+		styleYellow.Render(fmt.Sprintf("  ● %d", sc.Partial)),
+		styleOrange.Render(fmt.Sprintf("  ● %d", sc.Unhealthy)),
+		styleRed.Render(fmt.Sprintf("  ● %d", sc.Stopped)),
+		styleCyan.Render(fmt.Sprintf("  ● %d", sc.NotDep)),
 	)
 	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")
 	line1 := title + sep + path + sep + stacksInfo + sep + now
