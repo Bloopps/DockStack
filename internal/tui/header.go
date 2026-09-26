@@ -422,10 +422,14 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 strin
 	swapRow := fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", "Swap")),
 		barStyled(m.SwapPercent, barW, sw), sw.Render(fmt.Sprintf("%4d%%", m.SwapPercent)),
 		fmt.Sprintf("%.1f / %.1f Go", m.SwapUsedGB, m.SwapTotalGB))
-	// Détail en clair (« utilisé / total Go ») ; pour le CPU, rappeler que
-	// c'est la moyenne des cœurs détaillés à droite.
+	// Détail en clair (« utilisé / total Go ») ; pour le CPU, dire sur combien
+	// de cœurs porte le chiffre et pointer vers leur détail à droite.
+	cpuDetail := ""
+	if n := len(m.CPUCores); n > 0 {
+		cpuDetail = styleDim.Render(fmt.Sprintf("%d cœurs →", n))
+	}
 	left := []string{
-		res("CPU", m.CPUPercent, styleDim.Render("moyenne")),
+		res("CPU", m.CPUPercent, cpuDetail),
 		res("RAM", m.MemPercent, fmt.Sprintf("%.1f / %.1f Go", m.MemUsedGB, m.MemTotalGB)),
 		swapRow,
 		res("Disque", m.DiskPercent, fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB)),
@@ -473,7 +477,7 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 strin
 	}
 	titles += strings.Repeat(" ", max(leftW-lipgloss.Width(titles), 0))
 	if len(m.CPUCores) > 0 {
-		titles += "   " + styleDim.Render(fmt.Sprintf("Par cœur (%d)", len(m.CPUCores)))
+		titles += "   " + styleDim.Render("Détail par cœur")
 	}
 	lines := append([]string{line1, titles}, body...)
 	lines = append(lines, dockerLine(du), foot, styleDim.Render(strings.Repeat("─", width)))
