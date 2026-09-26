@@ -171,7 +171,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	line1 := title + sep + path + sep + stacksInfo + sep + now
 
 	if width >= compactHeaderMinWidth {
-		return renderCompactHeader(m, hist, line1, width)
+		return renderCompactHeader(m, line1, width)
 	}
 
 	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
@@ -386,8 +386,8 @@ func compactLeftW(width int) (barW, leftW int) {
 	if width >= 150 {
 		barW = mainBarW
 	}
-	// "  " + libellé 7 + " " + barre + " 100%" + "  " + détail 12
-	return barW, 2 + 7 + 1 + barW + 5 + 2 + 12
+	// "  " + libellé 7 + " " + barre + " 100%" + "  " + détail 14
+	return barW, 2 + 7 + 1 + barW + 5 + 2 + 14
 }
 
 // compactCoreLayout calcule la grille des cœurs (lignes × colonnes, remplie
@@ -409,18 +409,20 @@ func compactCoreLayout(n, width int) (rows, cols int) {
 // renderCompactHeader : en-tête en deux colonnes pour terminal large. À
 // gauche une ligne par ressource (libellés et barres alignés), à droite la
 // grille des cœurs avec barre et pourcentage, puis Load/IO/Uptime en pied.
-func renderCompactHeader(m monitor.Metrics, hist metricsHistory, line1 string, width int) string {
+func renderCompactHeader(m monitor.Metrics, line1 string, width int) string {
 	L := styleCyan
 	barW, leftW := compactLeftW(width)
 	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%4d%%", p)) }
 	res := func(label string, p int, detail string) string {
 		return fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", label)), bar(p, barW), pct(p), detail)
 	}
+	// Détail en clair (« utilisé / total Go ») ; pour le CPU, rappeler que
+	// c'est la moyenne des cœurs détaillés à droite.
 	left := []string{
-		res("CPU", m.CPUPercent, colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth))),
-		res("RAM", m.MemPercent, fmt.Sprintf("%.1f/%.1fG", m.MemUsedGB, m.MemTotalGB)),
-		res("Swap", m.SwapPercent, fmt.Sprintf("%.1f/%.1fG", m.SwapUsedGB, m.SwapTotalGB)),
-		res("Disque", m.DiskPercent, fmt.Sprintf("%d/%dG", m.DiskUsedGB, m.DiskTotalGB)),
+		res("CPU", m.CPUPercent, styleDim.Render("moyenne")),
+		res("RAM", m.MemPercent, fmt.Sprintf("%.1f / %.1f Go", m.MemUsedGB, m.MemTotalGB)),
+		res("Swap", m.SwapPercent, fmt.Sprintf("%.1f / %.1f Go", m.SwapUsedGB, m.SwapTotalGB)),
+		res("Disque", m.DiskPercent, fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB)),
 	}
 
 	rows, cols := compactCoreLayout(len(m.CPUCores), width)
@@ -456,7 +458,14 @@ func renderCompactHeader(m monitor.Metrics, hist metricsHistory, line1 string, w
 		styleDim.Render("·"), L.Render("Uptime"), m.Uptime,
 	)
 
-	lines := append([]string{line1, ""}, body...)
+	// Titres des deux colonnes sur la ligne de respiration : sans eux, les
+	// numéros de cœurs se lisaient comme la suite de la colonne de gauche.
+	titles := "  " + styleDim.Render("Ressources")
+	titles += strings.Repeat(" ", max(leftW-lipgloss.Width(titles), 0))
+	if len(m.CPUCores) > 0 {
+		titles += "   " + styleDim.Render(fmt.Sprintf("Par cœur (%d)", len(m.CPUCores)))
+	}
+	lines := append([]string{line1, titles}, body...)
 	lines = append(lines, foot, styleDim.Render(strings.Repeat("─", width)))
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
