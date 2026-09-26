@@ -39,6 +39,11 @@ const (
 	// narrowBarW cases pour que les lignes RAM/Disk tiennent.
 	wideHeaderMinWidth = 110
 	narrowBarW         = 8
+	// À partir de compactHeaderMinWidth colonnes, l'en-tête tient sur
+	// compactHeaderHeight lignes (au lieu de ~9) : la liste gagne la place.
+	compactHeaderMinWidth = 120
+	compactHeaderHeight   = 4
+	compactBarW           = 10
 )
 
 var sparkRunes = []rune("▁▂▃▄▅▆▇█")
@@ -160,20 +165,13 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
 	title := styleBold.Foreground(lipgloss.Color("2")).Render("🐳 Docker Stack Manager")
 	path := L.Render("📂") + " " + sc.Dir
-	stacksInfo := fmt.Sprintf("%s %d [%s%s%s%s%s]",
-		L.Render("📦"),
-		sc.Total,
-		// Espace entre le rond et le nombre : le glyphe ● est de largeur
-		// « ambiguë » et certains terminaux le rendent sur ~2 cellules, ce qui
-		// faisait chevaucher le chiffre par-dessus le rond quand il était collé.
-		styleGreen.Render(fmt.Sprintf("● %d", sc.Running)),
-		styleYellow.Render(fmt.Sprintf("  ● %d", sc.Partial)),
-		styleOrange.Render(fmt.Sprintf("  ● %d", sc.Unhealthy)),
-		styleRed.Render(fmt.Sprintf("  ● %d", sc.Stopped)),
-		styleCyan.Render(fmt.Sprintf("  ● %d", sc.NotDep)),
-	)
+	stacksInfo := L.Render("📦") + " " + stackLegend(sc)
 	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")
 	line1 := title + sep + path + sep + stacksInfo + sep + now
+
+	if width >= compactHeaderMinWidth {
+		return renderCompactHeader(m, hist, line1, width)
+	}
 
 	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
 	// RAM/Disk dépassent ~95 colonnes et leur fin (Uptime, Load) serait coupée.
@@ -284,6 +282,9 @@ func coreGridCols(n, termW int) int {
 // que progressBodyHeight déclencherait à chaque frappe/molette. Doit rester
 // aligné sur la structure assemblée à la fin de renderHeader.
 func headerHeight(nCores, width int) int {
+	if width >= compactHeaderMinWidth {
+		return compactHeaderHeight
+	}
 	h := 7 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, divider
 	if nCores > 0 {
 		cols := coreGridCols(nCores, width)
@@ -349,4 +350,76 @@ func loadColor(load string, ncores int) lipgloss.Style {
 	fmt.Sscanf(load, "%f", &f)
 	pct := int(f / float64(ncores) * 100)
 	return colorForPct(pct)
+}
+
+// stackLegend résume les états en clair (« 62 stacks · ● 14 en marche · ○ 48
+// non déployées »), sans les états à zéro : une rangée de pastilles colorées
+// sans libellé n'était lisible que si l'on connaissait le code couleur.
+func stackLegend(sc StackCounts) string {
+	parts := []string{fmt.Sprintf("%d stacks", sc.Total)}
+	add := func(n int, st lipgloss.Style, glyph, one, many string) {
+		if n == 0 {
+			return
+		}
+		label := many
+		if n == 1 {
+			label = one
+		}
+		// Espace entre le rond et le nombre : le glyphe ● est de largeur
+		// « ambiguë » et certains terminaux le rendent sur ~2 cellules.
+		parts = append(parts, st.Render(fmt.Sprintf("%s %d %s", glyph, n, label)))
+	}
+	add(sc.Running, styleGreen, "●", "en marche", "en marche")
+	add(sc.Unhealthy, styleOrange, "●", "unhealthy", "unhealthy")
+	add(sc.Partial, styleYellow, "●", "partielle", "partielles")
+	add(sc.Stopped, styleRed, "●", "arrêtée", "arrêtées")
+	add(sc.NotDep, styleDim, "○", "non déployée", "non déployées")
+	return strings.Join(parts, styleDim.Render(" · "))
+}
+
+// renderCompactHeader : en-tête sur 4 lignes pour terminal large — titre,
+// CPU (moyenne + un glyphe par cœur) avec Load/Uptime, mémoire/disque/IO,
+// puis le séparateur.
+func renderCompactHeader(m monitor.Metrics, hist metricsHistory, line1 string, width int) string {
+	L := styleCyan
+	sep := styleSep
+	barW := compactBarW
+	if width >= 150 {
+		barW = mainBarW
+	}
+	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%3d%%", p)) }
+
+	// Un glyphe coloré par cœur : lisible d'un coup d'œil quel que soit le
+	// nombre de cœurs, là où la grille détaillée prenait 2 à 8 lignes.
+	var cores strings.Builder
+	for i, p := range m.CPUCores {
+		if i > 0 && len(m.CPUCores) <= 16 {
+			cores.WriteByte(' ')
+		}
+		cores.WriteString(colorForPct(p).Render(string(sparkRune(p))))
+	}
+	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
+	line2 := fmt.Sprintf("  %s  %s %s %s  %s %s%s%s %s %s %s%s%s %s",
+		L.Render("CPU "), bar(m.CPUPercent, barW), pct(m.CPUPercent),
+		colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth)),
+		styleDim.Render(fmt.Sprintf("%d cœurs", m.NCores)), cores.String(),
+		sep, L.Render("Load"), l1c.Render(m.Load1), l5c.Render(m.Load5), l15c.Render(m.Load15),
+		sep, L.Render("Up"), m.Uptime,
+	)
+
+	ioStr := fmt.Sprintf("%s ↓%s/s ↑%s/s", L.Render("IO"),
+		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)),
+		ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)))
+	line3 := fmt.Sprintf("  %s  %s %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s %s %dG/%dG%s%s",
+		L.Render("RAM "), bar(m.MemPercent, barW), pct(m.MemPercent), m.MemUsedGB, m.MemTotalGB,
+		sep, L.Render("Swap"), pct(m.SwapPercent), m.SwapUsedGB, m.SwapTotalGB,
+		sep, L.Render("Disk"), bar(m.DiskPercent, barW), pct(m.DiskPercent), m.DiskUsedGB, m.DiskTotalGB,
+		sep, ioStr,
+	)
+
+	lines := []string{line1, line2, line3, styleDim.Render(strings.Repeat("─", width))}
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, width, "…")
+	}
+	return strings.Join(lines, "\n")
 }
