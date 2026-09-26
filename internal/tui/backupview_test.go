@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/Bloopps/dockstack/internal/backup"
@@ -67,5 +68,68 @@ func TestRenderBackupViewFits(t *testing.T) {
 		if n := strings.Count(out, "\n") + 1; n > h {
 			t.Errorf("hauteur %d : rendu de %d lignes", h, n)
 		}
+	}
+}
+
+// TestBackupDeleteFlow : x ouvre la confirmation ; esc revient aux captures
+// sans rien supprimer ; y supprime puis la liste rechargée n'a plus la capture.
+func TestBackupDeleteFlow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{StackDir: "/srv"}
+	if err := backup.Save(cfg.ConfigDir(), "/srv", []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	snaps, _ := backup.List(cfg.ConfigDir())
+	m := New(cfg)
+	m.view, m.backups = viewBackup, snaps
+
+	keyX := tea.KeyPressMsg{Code: 'x', Text: "x"}
+	out, _ := m.Update(keyX)
+	if got := out.(Model); got.view != viewConfirm {
+		t.Fatalf("x : view = %v, want viewConfirm", got.view)
+	}
+	// Annulation : retour aux captures, fichier intact.
+	back, _ := out.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := back.(Model); got.view != viewBackup {
+		t.Errorf("esc : view = %v, want viewBackup", got.view)
+	}
+	if s, _ := backup.List(cfg.ConfigDir()); len(s) != 1 {
+		t.Fatal("annuler ne doit rien supprimer")
+	}
+
+	// Confirmation : suppression effective, retour sur la vue captures.
+	out, cmd := out.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if got := out.(Model); got.view != viewBackup || cmd == nil {
+		t.Fatalf("y : view = %v (cmd nil=%v), want viewBackup + commande", got.view, cmd == nil)
+	}
+	if msg, ok := cmd().(backupDeletedMsg); !ok || msg.err != nil {
+		t.Fatalf("y : message %T %+v, want backupDeletedMsg sans erreur", msg, msg)
+	}
+	if s, _ := backup.List(cfg.ConfigDir()); len(s) != 0 {
+		t.Errorf("après y : %d capture(s), want 0", len(s))
+	}
+}
+
+// TestRestorePickFlow : ↩ sur une capture ouvre le sélecteur tout coché ; ␣
+// décoche ; ↩ avec des stacks introuvables le signale au lieu de lancer.
+func TestRestorePickFlow(t *testing.T) {
+	m := New(&config.Config{StackDir: t.TempDir()})
+	m.view = viewBackup
+	m.backups = []backup.Snapshot{{Date: time.Now(), Stacks: []string{"a", "b"}}}
+
+	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := out.(Model)
+	if got.view != viewRestorePick || !got.restoreSel["a"] || !got.restoreSel["b"] {
+		t.Fatalf("↩ : view=%v sel=%v, want sélecteur tout coché", got.view, got.restoreSel)
+	}
+	out, _ = out.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	if got = out.(Model); got.restoreSel["a"] {
+		t.Error("␣ aurait dû décocher a")
+	}
+	// b n'existe pas sur le disque : aucune stack restaurable, pas d'op lancée.
+	out, _ = out.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got = out.(Model)
+	if got.view != viewRestorePick || !got.statusErr || !strings.Contains(got.status, "introuvable") {
+		t.Errorf("↩ avec stack absente : view=%v status=%q, want erreur « introuvable »", got.view, got.status)
 	}
 }
