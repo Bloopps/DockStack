@@ -323,6 +323,7 @@ func renderProgressView(m Model) string {
 	// négatif et ferait paniquer strings.Repeat (viewContent ne garde que 0).
 	sep := styleDim.Render(strings.Repeat("─", max(m.width-2, 0)))
 	body := title + "\n" + sep + "\n" + strings.Join(visible, "\n") + belowHint
+	body = fitHeight(body, m.height-headerHeight(m.metrics.NCores, m.width)-1)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }

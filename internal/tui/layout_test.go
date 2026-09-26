@@ -146,3 +146,20 @@ func TestExcludeFlow(t *testing.T) {
 		t.Error("le curseur doit retomber sur une stack")
 	}
 }
+
+// TestViewFillsScreen : quelle que soit la longueur du contenu, chaque vue
+// occupe exactement la hauteur de l'écran, footer sur la dernière ligne.
+func TestViewFillsScreen(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("a", "a", 1, 1, 0)})
+	m.width, m.height, m.loading = 160, 40, false
+	for _, v := range []view{viewList, viewHelp, viewBackup, viewProgress} {
+		m.view = v
+		if v == viewProgress {
+			m.progress = newProgressState()
+		}
+		out := m.viewContent()
+		if n := strings.Count(out, "\n") + 1; n != m.height {
+			t.Errorf("vue %v : %d lignes, want %d", v, n, m.height)
+		}
+	}
+}

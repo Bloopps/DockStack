@@ -720,7 +720,20 @@ func (m Model) viewContent() string {
 	}
 
 	footer := m.renderFooter()
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, fitHeight(body, bodyH), footer)
+}
+
+// fitHeight complète (ou coupe) s à exactement h lignes : sans ça, une vue
+// plus courte que l'écran remonte le footer au milieu de l'écran.
+func fitHeight(s string, h int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderError(err error) string {
