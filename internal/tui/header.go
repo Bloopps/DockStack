@@ -387,8 +387,8 @@ func compactLeftW(width int) (barW, leftW int) {
 	if width >= 150 {
 		barW = mainBarW
 	}
-	// "  " + libellé 7 + " " + barre + " 100%" + "  " + détail 14
-	return barW, 2 + 7 + 1 + barW + 5 + 2 + 14
+	// "  " + libellé 7 + " " + barre + " 100%" (la valeur est dans la barre)
+	return barW, 2 + 7 + 1 + barW + 5
 }
 
 // compactCoreLayout calcule la grille des cœurs (lignes × colonnes, remplie
@@ -414,25 +414,22 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 strin
 	L := styleCyan
 	barW, leftW := compactLeftW(width)
 	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%4d%%", p)) }
-	res := func(label string, p int, detail string) string {
-		return fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", label)), bar(p, barW), pct(p), detail)
+	// Valeur absolue écrite DANS la barre (« 5.8 / 11.7 Go ») : une colonne
+	// de détail à part élargissait l'en-tête pour peu d'information.
+	res := func(label string, p int, st lipgloss.Style, texts ...string) string {
+		return fmt.Sprintf("  %s %s%s", L.Render(fmt.Sprintf("%-7s", label)),
+			barText(p, barW, st, texts...), st.Render(fmt.Sprintf("%4d%%", p)))
 	}
-	// Swap : neutre tant que la RAM n'est pas sous pression (cf. swapStyle).
-	sw := swapStyle(m)
-	swapRow := fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", "Swap")),
-		barStyled(m.SwapPercent, barW, sw), sw.Render(fmt.Sprintf("%4d%%", m.SwapPercent)),
-		fmt.Sprintf("%.1f / %.1f Go", m.SwapUsedGB, m.SwapTotalGB))
-	// Détail en clair (« utilisé / total Go ») ; pour le CPU, dire sur combien
-	// de cœurs porte le chiffre et pointer vers leur détail à droite.
-	cpuDetail := ""
-	if n := len(m.CPUCores); n > 0 {
-		cpuDetail = styleDim.Render(fmt.Sprintf("%d cœurs →", n))
+	gb := func(used, total float64) []string {
+		return []string{fmt.Sprintf("%.1f / %.1f Go", used, total), fmt.Sprintf("%.1f/%.1fG", used, total)}
 	}
 	left := []string{
-		res("CPU", m.CPUPercent, cpuDetail),
-		res("RAM", m.MemPercent, fmt.Sprintf("%.1f / %.1f Go", m.MemUsedGB, m.MemTotalGB)),
-		swapRow,
-		res("Disque", m.DiskPercent, fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB)),
+		res("CPU", m.CPUPercent, colorForPct(m.CPUPercent)),
+		res("RAM", m.MemPercent, colorForPct(m.MemPercent), gb(m.MemUsedGB, m.MemTotalGB)...),
+		// Swap : neutre tant que la RAM n'est pas sous pression (cf. swapStyle).
+		res("Swap", m.SwapPercent, swapStyle(m), gb(m.SwapUsedGB, m.SwapTotalGB)...),
+		res("Disque", m.DiskPercent, colorForPct(m.DiskPercent),
+			fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB), fmt.Sprintf("%d/%dG", m.DiskUsedGB, m.DiskTotalGB)),
 	}
 
 	rows, cols := compactCoreLayout(len(m.CPUCores), width)
@@ -498,8 +495,11 @@ func swapStyle(m monitor.Metrics) lipgloss.Style {
 	return styleDim
 }
 
-// barStyled : comme bar, mais remplie dans la couleur de st.
-func barStyled(pct, width int, st lipgloss.Style) string {
+// barText : barre remplie dans la couleur de st, avec un texte centré écrit
+// dedans — le premier des textes proposés qui tient (du plus lisible au plus
+// court), aucun si rien ne tient. Noir sur la partie remplie, gris clair sur
+// le sillon.
+func barText(pct, width int, st lipgloss.Style, texts ...string) string {
 	pct = max(0, min(pct, 100))
 	filled := (pct*width + 50) / 100
 	if pct > 0 && filled == 0 {
@@ -509,8 +509,15 @@ func barStyled(pct, width int, st lipgloss.Style) string {
 	if _, none := fill.(lipgloss.NoColor); none || fill == nil {
 		fill = lipgloss.Color("244") // styleDim n'a pas de couleur propre
 	}
-	return lipgloss.NewStyle().Background(fill).Render(strings.Repeat(" ", filled)) +
-		styleTrack.Render(strings.Repeat(" ", width-filled))
+	cells := []rune(strings.Repeat(" ", width))
+	for _, t := range texts {
+		if r := []rune(t); len(r) <= width-2 {
+			copy(cells[(width-len(r))/2:], r)
+			break
+		}
+	}
+	return lipgloss.NewStyle().Background(fill).Foreground(lipgloss.Color("0")).Render(string(cells[:filled])) +
+		styleTrack.Foreground(lipgloss.Color("252")).Render(string(cells[filled:]))
 }
 
 // fmtBytes : taille lisible en Go (Mo en dessous de 1 Go).
