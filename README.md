@@ -34,19 +34,24 @@ de l'utiliser sur des stacks importantes.
 
 ## Prérequis
 
-- Accès au socket Docker (le binaire utilise l'API `docker/compose/v5`, pas
-  le binaire `docker compose`)
+- Accès au socket Docker via le groupe `docker`
+  (`sudo usermod -aG docker $USER`) — **ne pas lancer DockStack avec `sudo`** :
+  `~/.dockstack` serait créé en root et les captures ne pourraient plus y être
+  écrites. Le binaire utilise l'API `docker/compose/v5`, pas le binaire
+  `docker compose`.
 - Pour compiler depuis les sources : Go 1.26+
 
 ## Installation
 
-Binaire statique linux/amd64, sans dépendance :
+Binaire statique Linux (amd64 ou arm64), sans dépendance :
 
 ```bash
 curl -L https://github.com/Bloopps/DockStack/releases/latest/download/dockstack-linux-amd64 -o dockstack
 chmod +x dockstack
 ./dockstack
 ```
+
+Pour arm64, remplacer `dockstack-linux-amd64` par `dockstack-linux-arm64`.
 
 ## Lancer depuis les sources
 
@@ -67,7 +72,8 @@ lancement) :
 ```
 
 - `stack_dir` : dossier racine scanné pour trouver les fichiers
-  `compose.yaml` / `compose.yml` / `docker-compose.yml`
+  `compose.yaml` / `compose.yml` / `docker-compose.yml` / `docker-compose.yaml`
+  (un seul par dossier, dans cet ordre de priorité, comme la CLI)
 - `max_parallel` : nombre d'opérations simultanées lors des actions groupées
 
 ## Raccourcis principaux
@@ -82,8 +88,9 @@ lancement) :
 | `esc`                 | Désélectionner / fermer                              |
 | `←` / `→`             | Replier / déplier un groupe                          |
 | `/`                   | Filtrer                                              |
-| `R`                   | Rafraîchir (auto toutes les 15 s)                    |
-| `b`                   | Captures d'état                                      |
+| `v` / `vv`            | Aperçu compose (volet) / plein écran                 |
+| `R`                   | Rafraîchir (auto sur événement Docker + toutes les 60 s) |
+| `b`                   | Captures d'état (`c` capturer, `↩` restaurer, `x` supprimer) |
 | `o`                   | Changer de répertoire                                |
 | `?`                   | Aide                                                 |
 | `q`                   | Quitter                                              |
