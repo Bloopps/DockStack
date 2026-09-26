@@ -26,6 +26,14 @@ go build ./...
 go test -race ./...
 ```
 
+Tests d'intégration contre un vrai démon Docker (hors CI) : ils créent puis
+suppriment des projets jetables `zzdsprobe*` avec l'image `busybox`, sans
+toucher aux stacks existantes.
+
+```bash
+go test -tags integration -count=1 ./internal/compose/
+```
+
 ## Style de code
 
 - Commentaires et docstrings **en français**.
