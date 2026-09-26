@@ -137,6 +137,7 @@ type Model struct {
 	// Logs (canal et annulation portés par le Model, pas par des globals).
 	// logSeq numérote la session courante pour invalider les messages en vol
 	// d'une session précédente.
+	logStack  string
 	logLines  []string
 	logScroll int
 	logCh     <-chan compose.LogEntry
@@ -315,7 +316,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case backupsLoadedMsg:
 		m.backups = []backup.Snapshot(msg)
-		m.spinning = false
 		// Après une suppression, le curseur ne doit pas pointer au-delà.
 		m.actionCursor = max(0, min(m.actionCursor, len(m.backups)-1))
 
@@ -328,11 +328,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(clearStatusIn(4*time.Second), loadBackups(m.cfg.ConfigDir()))
 
 	case opDoneMsg:
-		// Backup save/restore result (stack actions use the live progress view).
-		// Pas de retour forcé à la liste : capture et restauration y sont déjà
-		// (leurs handlers posent viewList avant startOp) ; écraser la vue ici
-		// éjecterait l'utilisateur de là où il a navigué pendant l'opération
-		// (vue de progression d'une autre op, aide, dossier…).
+		// Résultat d'une capture (les actions sur les stacks et la restauration
+		// passent par la vue de progression). La vue n'est pas forcée :
+		// l'utilisateur a pu naviguer ailleurs pendant l'écriture.
 		m.spinning = false
 		if msg.err != nil {
 			m.setStatus(m.opLabel+" : "+msg.err.Error(), true)
@@ -741,7 +739,8 @@ func (m Model) viewContent() string {
 
 func renderError(err error) string {
 	msg := err.Error()
-	if strings.Contains(msg, "docker.sock") || strings.Contains(msg, "permission denied") {
+	// « permission denied » seul viserait aussi un dossier de stacks illisible.
+	if strings.Contains(msg, "docker.sock") || (strings.Contains(msg, "permission denied") && strings.Contains(msg, "docker")) {
 		box := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("1")).
@@ -751,8 +750,9 @@ func renderError(err error) string {
 		content := strings.Join([]string{
 			styleRed.Bold(true).Render("Accès Docker refusé"),
 			"",
-			styleDim.Render("Relancer en sudo :") + "  " + styleYellow.Render("sudo dockstack"),
-			styleDim.Render("Ou rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
+			// Pas de « sudo dockstack » : lancé en root, l'outil crée ~/.dockstack
+			// en root et l'utilisateur ne peut plus y écrire ses captures ensuite.
+			styleDim.Render("Rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
 			styleDim.Render("Ou démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}, "\n")
 

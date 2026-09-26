@@ -455,12 +455,10 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 		Start:  api.StartOptions{Project: proj},
 	}
 	err = c.upWithReadopt(ctx, stack, proj, svc, opts, ch)
-	if err != nil {
-		errStr := err.Error()
-		if strings.Contains(errStr, "has no container to start") ||
-			strings.Contains(errStr, "already in use") {
-			err = c.startByContainerName(ctx, proj, err)
-		}
+	// « already in use » restant après upWithReadopt = le nom est pris par le
+	// conteneur d'un AUTRE projet : ne surtout pas le démarrer à sa place.
+	if err != nil && strings.Contains(err.Error(), "has no container to start") {
+		err = c.startByContainerName(ctx, proj, err)
 	}
 	return err
 }
@@ -492,7 +490,6 @@ func (c *Client) startByContainerName(ctx context.Context, proj *types.Project, 
 			svc.ContainerName,
 			proj.Name + "-" + svcName + "-1",
 			proj.Name + "_" + svcName + "_1",
-			svcName,
 		}
 		for _, name := range candidates {
 			if name == "" {
@@ -517,6 +514,11 @@ func (c *Client) startByContainerName(ctx context.Context, proj *types.Project, 
 					}
 				}
 				if !found {
+					continue
+				}
+				// Même nom mais rattaché à un autre projet : pas le nôtre.
+				if p := ctr.Labels["com.docker.compose.project"]; p != "" && p != proj.Name {
+					found = false
 					continue
 				}
 				handled = true
@@ -644,7 +646,9 @@ func (c *Client) pullLive(ctx context.Context, stack Stack, ch chan<- ProgressEv
 	if err != nil {
 		return err
 	}
-	return svc.Pull(ctx, proj, api.PullOptions{IgnoreFailures: true})
+	// Parité CLI (--ignore-pull-failures désactivé par défaut) : une image
+	// introuvable fait échouer la stack au lieu de s'afficher « OK ».
+	return svc.Pull(ctx, proj, api.PullOptions{})
 }
 
 // removeLive = down + orphelins + volumes : les données des volumes sont détruites.
@@ -659,6 +663,9 @@ func (c *Client) removeLive(ctx context.Context, stack Stack, ch chan<- Progress
 	}
 	return svc.Down(ctx, proj.Name, api.DownOptions{RemoveOrphans: true, Volumes: true})
 }
+
+// logTail : lignes d'historique par conteneur à l'ouverture des logs.
+const logTail = "500"
 
 // LogsAsync starts streaming logs and returns a channel of log entries.
 // The channel is closed when streaming ends or ctx is cancelled.
@@ -675,7 +682,9 @@ func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, e
 		// d'autre canal de retour ici, et sans elle un échec immédiat
 		// s'afficherait comme un simple « Logs terminés ». L'annulation par
 		// l'utilisateur (ctx.Err() != nil) n'est pas une erreur.
-		if err := c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true}); err != nil && ctx.Err() == nil {
+		// Tail borné : sans lui, tout l'historique est relu à l'ouverture alors
+		// que la vue n'en garde que maxLogLines.
+		if err := c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true, Tail: logTail}); err != nil && ctx.Err() == nil {
 			consumer.send(LogEntry{Name: "⚠", Line: "flux de logs interrompu : " + err.Error(), IsErr: true})
 		}
 	}()

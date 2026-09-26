@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -241,25 +242,12 @@ func (col *collector) diskIO(m *Metrics) {
 	col.prevDiskAt = now
 }
 
+// physicalDiskRe : disques entiers (pas les partitions sda1, nvme0n1p1…),
+// y compris sdaa, xvda (Xen/AWS) et nvme10n1.
+var physicalDiskRe = regexp.MustCompile(`^((sd|vd|hd|xvd)[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$`)
+
 func isPhysicalDisk(name string) bool {
-	if len(name) < 3 {
-		return false
-	}
-	prefixes := []string{"sd", "vd", "hd"}
-	for _, p := range prefixes {
-		if strings.HasPrefix(name, p) && len(name) == len(p)+1 {
-			return true
-		}
-	}
-	// nvme0n1 — exactly 7 chars like nvme0n1
-	if strings.HasPrefix(name, "nvme") && len(name) == 7 {
-		return true
-	}
-	// mmcblk0
-	if strings.HasPrefix(name, "mmcblk") && len(name) == 7 {
-		return true
-	}
-	return false
+	return physicalDiskRe.MatchString(name)
 }
 
 func load(m *Metrics) {

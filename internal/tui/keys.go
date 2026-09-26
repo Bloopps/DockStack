@@ -350,6 +350,7 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 		return m.startProgressOp("Pull: "+stack.Name, cancel, client.PullManyLive(ctx, one, 1))
 	case "logs":
 		m.view = viewLogs
+		m.logStack = stack.Name
 		m.logLines = nil
 		m.logScroll = 0
 		m.logSeq++ // nouvelle session : invalide les messages en vol de la précédente

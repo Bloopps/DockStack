@@ -503,12 +503,24 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 		indent = "   "
 	}
 
+	// Nom tronqué : une ligne plus large que la colonne passerait à la ligne
+	// (volet d'aperçu ouvert) et décalerait toute la liste.
+	nameMax := width - len(indent) - 4 - len(countText) - 3
+	if s.Orphaned {
+		nameMax -= 2
+	}
+	displayName = truncate(displayName, max(nameMax, 1))
+
 	if isCursor {
 		// Ligne curseur : flèche cyan HORS de la zone inversée, et contenu en
 		// TEXTE BRUT dans un unique style reverse — toute séquence de couleur
 		// imbriquée dans le reverse laisse des artefacts (resets au milieu).
 		// L'état reste lisible via le glyphe ●/○ et le compteur.
-		prefix := indent + styleCursorMark.Render("▶") + " "
+		mark := " "
+		if isSelected {
+			mark = styleYellow.Render("┃") // sinon la sélection est invisible sous le curseur
+		}
+		prefix := indent + styleCursorMark.Render("▶") + mark
 		body := dot + " " + displayName
 		if s.Orphaned {
 			body += " ⟳"

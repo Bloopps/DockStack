@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"errors"
+	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/config"
@@ -146,5 +150,43 @@ func TestFoldHidesMembers(t *testing.T) {
 	}
 	if !hasHeader {
 		t.Error("l'en-tête du groupe replié devrait rester affiché")
+	}
+}
+
+// TestRenderStackLineFits : un nom trop long est tronqué pour que la ligne
+// tienne dans la colonne (sinon elle wrappe et décale la liste).
+func TestRenderStackLineFits(t *testing.T) {
+	s := compose.Stack{Name: strings.Repeat("tres-long-nom/", 10), Running: 1, Total: 1, Orphaned: true}
+	for _, cursor := range []bool{false, true} {
+		for _, indented := range []bool{false, true} {
+			if w := lipgloss.Width(renderStackLine(s, cursor, true, 40, indented)); w > 40 {
+				t.Errorf("cursor=%v indented=%v : largeur %d > 40", cursor, indented, w)
+			}
+		}
+	}
+}
+
+// TestRenderStackLineCursorShowsSelection : sous le curseur, une stack
+// sélectionnée garde son marqueur ┃.
+func TestRenderStackLineCursorShowsSelection(t *testing.T) {
+	s := compose.Stack{Name: "a", Running: 1, Total: 1}
+	if !strings.Contains(renderStackLine(s, true, true, 40, false), "┃") {
+		t.Error("marqueur de sélection absent sous le curseur")
+	}
+	if strings.Contains(renderStackLine(s, true, false, 40, false), "┃") {
+		t.Error("marqueur affiché sur une stack non sélectionnée")
+	}
+}
+
+// TestRenderErrorNoSudo : l'écran d'accès refusé ne conseille pas sudo (il
+// créerait ~/.dockstack en root), et un « permission denied » hors Docker
+// n'est pas présenté comme un refus d'accès Docker.
+func TestRenderErrorNoSudo(t *testing.T) {
+	out := renderError(errors.New("permission denied while trying to connect to the docker API at unix:///var/run/docker.sock"))
+	if !strings.Contains(out, "Accès Docker refusé") || strings.Contains(out, "sudo dockstack") {
+		t.Errorf("écran d'accès Docker inattendu :\n%s", out)
+	}
+	if strings.Contains(renderError(errors.New("open /srv/stacks: permission denied")), "Accès Docker refusé") {
+		t.Error("un dossier illisible ne doit pas s'afficher comme un refus d'accès Docker")
 	}
 }
