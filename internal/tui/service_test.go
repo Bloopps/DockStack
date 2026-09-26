@@ -55,7 +55,7 @@ func TestLoadStacksCmd(t *testing.T) {
 	fake := &fakeClient{stacks: []compose.Stack{{Name: "a"}}}
 
 	// Succès -> stacksLoadedMsg.
-	switch msg := loadStacks(fake, "/x")().(type) {
+	switch msg := loadStacks(fake, "/x", nil)().(type) {
 	case stacksLoadedMsg:
 		if len(msg) != 1 || msg[0].Name != "a" {
 			t.Errorf("stacks = %v, want [a]", []compose.Stack(msg))
@@ -66,12 +66,12 @@ func TestLoadStacksCmd(t *testing.T) {
 
 	// Erreur de listing -> fatalErrMsg (écran d'erreur, R pour réessayer).
 	fake.listErr = errors.New("daemon HS")
-	if _, ok := loadStacks(fake, "/x")().(fatalErrMsg); !ok {
-		t.Errorf("erreur de listing : type = %T, want fatalErrMsg", loadStacks(fake, "/x")())
+	if _, ok := loadStacks(fake, "/x", nil)().(fatalErrMsg); !ok {
+		t.Errorf("erreur de listing : type = %T, want fatalErrMsg", loadStacks(fake, "/x", nil)())
 	}
 
 	// Client nil -> fatalErrMsg (garde anti-panic).
-	if _, ok := loadStacks(nil, "/x")().(fatalErrMsg); !ok {
+	if _, ok := loadStacks(nil, "/x", nil)().(fatalErrMsg); !ok {
 		t.Error("client nil devrait produire un fatalErrMsg")
 	}
 }

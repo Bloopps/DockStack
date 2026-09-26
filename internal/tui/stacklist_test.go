@@ -159,7 +159,7 @@ func TestRenderStackLineFits(t *testing.T) {
 	s := compose.Stack{Name: strings.Repeat("tres-long-nom/", 10), Running: 1, Total: 1, Orphaned: true}
 	for _, cursor := range []bool{false, true} {
 		for _, indented := range []bool{false, true} {
-			if w := lipgloss.Width(renderStackLine(s, cursor, true, 40, indented)); w > 40 {
+			if w := lipgloss.Width(renderStackLine(s, cursor, true, 40, indented, 200)); w > 40 {
 				t.Errorf("cursor=%v indented=%v : largeur %d > 40", cursor, indented, w)
 			}
 		}
@@ -170,10 +170,10 @@ func TestRenderStackLineFits(t *testing.T) {
 // sélectionnée garde son marqueur ┃.
 func TestRenderStackLineCursorShowsSelection(t *testing.T) {
 	s := compose.Stack{Name: "a", Running: 1, Total: 1}
-	if !strings.Contains(renderStackLine(s, true, true, 40, false), "┃") {
+	if !strings.Contains(renderStackLine(s, true, true, 40, false, 1), "┃") {
 		t.Error("marqueur de sélection absent sous le curseur")
 	}
-	if strings.Contains(renderStackLine(s, true, false, 40, false), "┃") {
+	if strings.Contains(renderStackLine(s, true, false, 40, false, 1), "┃") {
 		t.Error("marqueur affiché sur une stack non sélectionnée")
 	}
 }

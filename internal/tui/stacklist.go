@@ -137,6 +137,7 @@ func groupSizes(stacks []compose.Stack) map[string]int {
 type listRow struct {
 	header   bool
 	sep      bool
+	note     string // texte d'une ligne séparatrice informative (non navigable)
 	group    string
 	size     int
 	folded   bool
@@ -183,12 +184,48 @@ type rowsCacheBox struct {
 
 	counts   StackCounts
 	countsOK bool
+
+	// Stacks affichées (non déployées masquées) et nombre de masquées.
+	shown   []compose.Stack
+	hidden  int
+	shownOK bool
+
+	nameW int // largeur de la colonne des noms (calculée avec rows)
 }
 
 func (m Model) invalidateRows() {
 	m.rowsCache.rowsOK = false
 	m.rowsCache.filteredOK = false
 	m.rowsCache.countsOK = false
+	m.rowsCache.shownOK = false
+}
+
+// hidingInactive : les stacks jamais déployées sont masquées, sauf si
+// l'utilisateur les affiche (a) ou filtre (on doit pouvoir tout retrouver).
+func (m Model) hidingInactive() bool {
+	return !m.cfg.ShowInactive && m.filter.Value() == ""
+}
+
+// shownStacks : stacks filtrées, moins les non déployées si elles sont masquées.
+// C'est la liste que voit l'utilisateur : lignes, groupes, position i/N.
+func (m Model) shownStacks() []compose.Stack {
+	if m.rowsCache.shownOK {
+		return m.rowsCache.shown
+	}
+	all := m.filteredStacks()
+	shown, hidden := all, 0
+	if m.hidingInactive() {
+		shown = make([]compose.Stack, 0, len(all))
+		for _, s := range all {
+			if s.State() == compose.StateUnknown {
+				hidden++
+				continue
+			}
+			shown = append(shown, s)
+		}
+	}
+	m.rowsCache.shown, m.rowsCache.hidden, m.rowsCache.shownOK = shown, hidden, true
+	return shown
 }
 
 // listRows renvoie les lignes affichables, depuis le cache si valide.
@@ -197,7 +234,23 @@ func (m Model) listRows() []listRow {
 		return m.rowsCache.rows
 	}
 	rows := m.buildListRows()
+	// Colonne des noms commune à toutes les lignes (pas seulement aux lignes
+	// visibles) : sinon elle bougerait en faisant défiler.
+	nameW := 0
+	for _, r := range rows {
+		if !r.header && !r.sep {
+			w := lipgloss.Width(r.stack.Name)
+			if r.stack.Orphaned {
+				w += 2
+			}
+			if r.indented {
+				w += 2
+			}
+			nameW = max(nameW, w)
+		}
+	}
 	m.rowsCache.rows = rows
+	m.rowsCache.nameW = nameW
 	m.rowsCache.rowsOK = true
 	return rows
 }
@@ -207,7 +260,7 @@ func (m Model) listRows() []listRow {
 // inactifs, puis les stacks. Les membres d'un groupe replié sont masqués ;
 // un filtre actif ignore le repli pour que les résultats restent visibles.
 func (m Model) buildListRows() []listRow {
-	stacks := m.filteredStacks()
+	stacks := m.shownStacks()
 	filtering := m.filter.Value() != ""
 
 	// Find where fully-inactive groups begin: first stack of the first all-inactive group
@@ -262,6 +315,10 @@ func (m Model) buildListRows() []listRow {
 		}
 		rows = append(rows, listRow{stack: s, indented: inMulti})
 	}
+	if n := m.rowsCache.hidden; n > 0 {
+		rows = append(rows, listRow{sep: true,
+			note: fmt.Sprintf("○ %d stack(s) non déployée(s) masquée(s) — a pour afficher", n)})
+	}
 	return rows
 }
 
@@ -309,7 +366,7 @@ func (m Model) cursorGroup() (string, bool) {
 
 func (m Model) groupStacks(group string) []compose.Stack {
 	var out []compose.Stack
-	for _, s := range m.filteredStacks() {
+	for _, s := range m.shownStacks() {
 		if s.Group == group {
 			out = append(out, s)
 		}
@@ -349,6 +406,16 @@ func (m *Model) moveCursor(delta int) {
 			m.cursor = c
 			return
 		}
+	}
+}
+
+// clampCursor ramène le curseur dans la liste (qui a pu rétrécir) et hors
+// d'un séparateur.
+func (m *Model) clampCursor() {
+	rows := m.listRows()
+	m.cursor = max(0, min(m.cursor, len(rows)-1))
+	if m.cursor < len(rows) && rows[m.cursor].sep {
+		m.moveCursor(-1)
 	}
 }
 
@@ -424,12 +491,14 @@ func renderStackList(m Model, height, width int) string {
 	for i := start; i < end; i++ {
 		row := rows[i]
 		switch {
+		case row.sep && row.note != "":
+			lines = append(lines, styleDim.Render(truncate("  "+row.note, max(width, 1))))
 		case row.sep:
 			lines = append(lines, styleDim.Render("  "+strings.Repeat("─", max(width-6, 1))))
 		case row.header:
 			lines = append(lines, renderGroupHeader(row, i == cursor, width))
 		default:
-			lines = append(lines, renderStackLine(row.stack, i == cursor, m.selected[row.stack.Name], width, row.indented))
+			lines = append(lines, renderStackLine(row.stack, i == cursor, m.selected[row.stack.Name], width, row.indented, m.rowsCache.nameW))
 		}
 	}
 	if moreBelow > 0 {
@@ -481,111 +550,112 @@ func renderGroupHeader(row listRow, isCursor bool, width int) string {
 	return styleGroup.Render(text) + dotStyle.Render(dotGlyph)
 }
 
-// renderStackLine styles a single stack row: marker, state dot, name and a
-// right-aligned count, with full-width highlight on the cursor line.
-func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, indented bool) string {
-	// Display name: show full relative path so immich/immich stays distinct from immich
-	displayName := s.Name
+// stateWord : libellé d'état court affiché dans la colonne de droite.
+func stateWord(st compose.State) string {
+	switch st {
+	case compose.StateUnhealthy:
+		return "unhealthy"
+	case compose.StateRunning:
+		return "en marche"
+	case compose.StatePartial:
+		return "partielle"
+	case compose.StateStopped:
+		return "arrêtée"
+	default:
+		return "non déployée"
+	}
+}
 
+// renderStackLine rend une ligne de stack : marqueur, pastille, nom, puis le
+// compteur de conteneurs et l'état alignés en colonne juste après le nom le
+// plus long (nameW) — et non collés au bord droit, loin des noms sur un écran
+// large. La ligne sous le curseur est surlignée sur toute la largeur.
+func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, indented bool, nameW int) string {
 	dot, dotStyle := stateStyle(s.State())
 
-	// Compteur en texte brut ; il n'est stylé que hors ligne curseur.
 	var countText string
-	switch s.State() {
-	case compose.StateUnhealthy, compose.StateRunning, compose.StatePartial:
+	if s.Total > 0 {
 		countText = fmt.Sprintf("%d/%d", s.Running, s.Total)
-	case compose.StateStopped:
-		countText = fmt.Sprintf("0/%d", s.Total)
 	}
+	word := stateWord(s.State())
 
 	indent := " "
 	if indented {
 		indent = "   "
 	}
+	// Colonnes : [indent][marque][ ][●][ ][nom…][  ][compteur 5][  ][état]
+	const countW = 5
+	lead := len(indent) + 4 // indent + marque + espace + pastille + espace
+	tailW := 2 + countW + 2 + lipgloss.Width(word)
 
-	// Nom tronqué : une ligne plus large que la colonne passerait à la ligne
-	// (volet d'aperçu ouvert) et décalerait toute la liste.
-	nameMax := width - len(indent) - 4 - len(countText) - 3
-	if s.Orphaned {
-		nameMax -= 2
+	// Largeur réservée au nom sur cette ligne : colonne commune, réduite si
+	// la ligne ne tient pas (volet d'aperçu, terminal étroit) ; l'état est
+	// abandonné en premier, puis le nom est tronqué.
+	colW := nameW - (len(indent) - 1)
+	if colW < 1 {
+		colW = 1
 	}
-	displayName = truncate(displayName, max(nameMax, 1))
+	showWord := true
+	if lead+colW+tailW > width {
+		showWord = false
+		tailW = 2 + countW
+	}
+	if lead+colW+tailW > width {
+		colW = max(width-lead-tailW, 1)
+	}
+	orphan := ""
+	if s.Orphaned {
+		orphan = " ⟳"
+	}
+	name := truncate(s.Name, max(colW-lipgloss.Width(orphan), 1))
+	namePad := max(colW-lipgloss.Width(name)-lipgloss.Width(orphan), 0)
+
+	tail := "  " + fmt.Sprintf("%*s", countW, countText)
+	if showWord {
+		tail += "  " + word
+	}
 
 	if isCursor {
-		// Ligne curseur : flèche cyan HORS de la zone inversée, et contenu en
-		// TEXTE BRUT dans un unique style reverse — toute séquence de couleur
-		// imbriquée dans le reverse laisse des artefacts (resets au milieu).
-		// L'état reste lisible via le glyphe ●/○ et le compteur.
+		// Ligne curseur : flèche cyan HORS de la zone surlignée, et contenu en
+		// TEXTE BRUT dans un unique style — toute séquence de couleur imbriquée
+		// laisse des artefacts (resets au milieu).
 		mark := " "
 		if isSelected {
 			mark = styleYellow.Render("┃") // sinon la sélection est invisible sous le curseur
 		}
 		prefix := indent + styleCursorMark.Render("▶") + mark
-		body := dot + " " + displayName
-		if s.Orphaned {
-			body += " ⟳"
-		}
-		prefixW := lipgloss.Width(prefix)
-		bodyW := lipgloss.Width(body)
-
-		var rest string
-		if countText != "" {
-			pad := width - prefixW - bodyW - len(countText) - 2
-			if pad < 1 {
-				pad = 1
-			}
-			rest = body + strings.Repeat(" ", pad) + countText + "  "
-		} else {
-			pad := width - prefixW - bodyW
-			if pad < 0 {
-				pad = 0
-			}
-			rest = body + strings.Repeat(" ", pad)
-		}
-		return prefix + styleSelected.Render(rest)
+		body := dot + " " + name + orphan + strings.Repeat(" ", namePad) + tail
+		pad := max(width-lipgloss.Width(prefix)-lipgloss.Width(body), 0)
+		return prefix + styleSelected.Render(body+strings.Repeat(" ", pad))
 	}
 
-	// Name style + count badge based on state
-	var nameStyled, count string
+	var nameStyle, countStyle lipgloss.Style
 	switch s.State() {
 	case compose.StateUnhealthy:
-		nameStyled = styleNameUnhealthy.Render(displayName)
-		count = styleCountUnhealthy.Render(countText)
+		nameStyle, countStyle = styleNameUnhealthy, styleCountUnhealthy
 	case compose.StateRunning:
-		nameStyled = styleNameRunning.Render(displayName)
-		count = styleCountRunning.Render(countText)
+		nameStyle, countStyle = styleNameRunning, styleCountRunning
 	case compose.StatePartial:
-		nameStyled = styleNamePartial.Render(displayName)
-		count = styleCountPartial.Render(countText)
+		nameStyle, countStyle = styleNamePartial, styleCountPartial
 	case compose.StateStopped:
-		nameStyled = styleNameStopped.Render(displayName)
-		count = styleCountStopped.Render(countText)
+		nameStyle, countStyle = styleNameStopped, styleCountStopped
 	default:
-		nameStyled = styleNameInactive.Render(displayName)
-		count = ""
+		nameStyle, countStyle = styleNameInactive, styleDim
 	}
 
 	marker := " "
 	if isSelected {
 		marker = styleYellow.Render("┃")
 	}
-
-	// Build line with right-aligned count
-	left := fmt.Sprintf("%s%s %s %s", indent, marker, dotStyle.Render(dot), nameStyled)
-	if s.Orphaned {
+	line := indent + marker + " " + dotStyle.Render(dot) + " " + nameStyle.Render(name)
+	if orphan != "" {
 		// Conteneur(s) rattaché(s) par nom faute de label projet (orphelin
 		// watchtower) : sera ré-adopté au prochain up/recreate.
-		left += " " + styleDim.Render("⟳")
+		line += styleDim.Render(orphan)
 	}
-	leftW := lipgloss.Width(left)
-
-	if count != "" {
-		countW := lipgloss.Width(count)
-		pad := width - leftW - countW - 2
-		if pad < 1 {
-			pad = 1
-		}
-		return left + strings.Repeat(" ", pad) + count
+	line += strings.Repeat(" ", namePad) + "  " + countStyle.Render(fmt.Sprintf("%*s", countW, countText))
+	if showWord {
+		line += "  " + styleDim.Render(word)
 	}
-	return left
+	return line
 }

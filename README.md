@@ -75,6 +75,11 @@ lancement) :
   `compose.yaml` / `compose.yml` / `docker-compose.yml` / `docker-compose.yaml`
   (un seul par dossier, dans cet ordre de priorité, comme la CLI)
 - `max_parallel` : nombre d'opérations simultanées lors des actions groupées
+- `show_inactive` : afficher les stacks jamais déployées (défaut `false`,
+  bascule avec `a`)
+- `exclude` : chemins relatifs à `stack_dir` ignorés par le scan, avec tout
+  ce qu'ils contiennent (ajout avec `x` ; retirer l'entrée pour annuler),
+  par ex. `["dockerstack", "tests/fixtures"]`
 
 ## Raccourcis principaux
 
@@ -91,6 +96,8 @@ lancement) :
 | `v` / `vv`            | Aperçu compose (volet) / plein écran                 |
 | `R`                   | Rafraîchir (auto sur événement Docker + toutes les 60 s) |
 | `b`                   | Captures d'état (`c` capturer, `↩` restaurer, `x` supprimer) |
+| `a`                   | Afficher / masquer les stacks non déployées (masquées par défaut) |
+| `x`                   | Exclure du scan la stack ou le dossier sous le curseur |
 | `o`                   | Changer de répertoire                                |
 | `?`                   | Aide                                                 |
 | `q`                   | Quitter                                              |

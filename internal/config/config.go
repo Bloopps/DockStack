@@ -4,11 +4,28 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
 	StackDir    string `json:"stack_dir"`
 	MaxParallel int    `json:"max_parallel"`
+	// ShowInactive affiche les stacks jamais déployées (masquées par défaut :
+	// sur un home, ce sont surtout des dépôts de dev et d'exemples).
+	ShowInactive bool `json:"show_inactive,omitempty"`
+	// Exclude liste des chemins relatifs au dossier des stacks à ignorer
+	// (le chemin lui-même et tout ce qui est en dessous).
+	Exclude []string `json:"exclude,omitempty"`
+}
+
+// IsExcluded dit si la stack de chemin relatif name tombe sous une exclusion.
+func (c *Config) IsExcluded(name string) bool {
+	for _, e := range c.Exclude {
+		if name == e || strings.HasPrefix(name, e+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func dir() string {

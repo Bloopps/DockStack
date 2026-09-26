@@ -274,19 +274,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// La liste est l'écran d'accueil ; les stacks se chargent en arrière-plan
 		m.view = viewList
-		return m, tea.Batch(loadStacks(m.client, m.cfg.StackDir), subscribeDockerEvents(m.client))
+		return m, tea.Batch(m.loadStacksCmd(), subscribeDockerEvents(m.client))
 
 	case stacksLoadedMsg:
 		// Restaure la position du curseur par identité de ligne (stack ou
 		// en-tête de groupe) : les indices bougent à chaque re-tri/refresh.
-		var curStack, curGroup string
-		if row, ok := m.cursorRow(); ok {
-			if row.header {
-				curGroup = row.group
-			} else if !row.sep {
-				curStack = row.stack.Name
-			}
-		}
+		anchor := m.cursorAnchor()
 		// Ne pas toucher à m.spinning : il appartient aux opérations backup
 		// (startOp/opDoneMsg) ; un refresh auto qui aboutit pendant une
 		// capture/restauration effacerait son spinner avant la fin.
@@ -299,14 +292,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.refreshing = false
 		m.lastRefresh = time.Now()
-		m.cursor = 0
-		for i, r := range m.listRows() {
-			if (curStack != "" && !r.header && !r.sep && r.stack.Name == curStack) ||
-				(curGroup != "" && r.header && r.group == curGroup) {
-				m.cursor = i
-				break
-			}
-		}
+		m.seekCursor(anchor)
 		// Un refresh manuel (R) confirme sa fin ; l'auto-refresh reste discret.
 		if m.manualR {
 			m.manualR = false
@@ -334,7 +320,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinning = false
 		if msg.err != nil {
 			m.setStatus(m.opLabel+" : "+msg.err.Error(), true)
-			return m, tea.Batch(clearStatusIn(6*time.Second), loadStacks(m.client, m.cfg.StackDir))
+			return m, tea.Batch(clearStatusIn(6*time.Second), m.loadStacksCmd())
 		}
 		// Le footer préfixe déjà « ✓ ».
 		m.setStatus(fmt.Sprintf("Capture enregistrée — %d stack(s) en marche", msg.n), false)
@@ -343,7 +329,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.view == viewBackup {
 			m.actionCursor = 0
 		}
-		return m, tea.Batch(clearStatusIn(4*time.Second), loadStacks(m.client, m.cfg.StackDir), loadBackups(m.cfg.ConfigDir()))
+		return m, tea.Batch(clearStatusIn(4*time.Second), m.loadStacksCmd(), loadBackups(m.cfg.ConfigDir()))
 
 	case progressEventMsg:
 		// Message d'une op périmée : ne pas l'appliquer ni ré-armer sa pompe
@@ -372,7 +358,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.progressCancel()
 			m.progressCancel = nil
 		}
-		return m, loadStacks(m.client, m.cfg.StackDir)
+		return m, m.loadStacksCmd()
 
 	case logLinesMsg:
 		if msg.seq != m.logSeq {
@@ -422,7 +408,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// moment d'exécuter l'action.
 		if m.client != nil && m.cfg.StackDir != "" && !m.spinning && m.view == viewList {
 			m.refreshing = true
-			return m, tea.Batch(loadStacks(m.client, m.cfg.StackDir), tickStacks())
+			return m, tea.Batch(m.loadStacksCmd(), tickStacks())
 		}
 		return m, tickStacks()
 
@@ -467,7 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPending = false
 		if m.client != nil && m.cfg.StackDir != "" && !m.spinning && m.view == viewList {
 			m.refreshing = true
-			return m, loadStacks(m.client, m.cfg.StackDir)
+			return m, m.loadStacksCmd()
 		}
 		return m, nil
 
@@ -636,7 +622,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			compose.InvalidateComposeCache()
 			m.refreshing = true
 			m.manualR = true
-			return m, loadStacks(m.client, m.cfg.StackDir)
+			return m, m.loadStacksCmd()
 		}
 	}
 	switch m.view {
@@ -911,30 +897,7 @@ func (m Model) renderFooter() string {
 		case !m.lastRefresh.IsZero():
 			right = "maj " + m.lastRefresh.Format("15:04:05") + "   " + right
 		}
-		if n := len(m.selectedStacks()); n > 0 {
-			return renderFooterKeysRight([]struct{ key, desc string }{
-				{fmt.Sprintf("%d", n), "sélectionnées"},
-				{"↩", "actions"},
-				{"esc", "désélect"},
-				{"b", "backup"},
-				{"?", "aide"},
-				{"q", "quitter"},
-			}, m.width, right)
-		}
-		// Sur terminal étroit, les chips juste avant « ? aide » tombent en
-		// premier (R, o, v, /…) : les plus utiles sont donc placés en tête.
-		keys := []struct{ key, desc string }{
-			{"↩", "actions"},
-			{"␣", "sélect"},
-			{"b", "backup"},
-			{"/", "filtre"},
-			{"v", "aperçu"},
-			{"o", "dossier"},
-			{"R", "rafraîchir"},
-			{"?", "aide"},
-			{"q", "quitter"},
-		}
-		return renderFooterKeysRight(keys, m.width, right)
+		return renderFooterKeysRight(m.listFooterKeys(), m.width, right)
 	}
 	return renderFooterRefresh(m.width, m.refreshing)
 }
@@ -990,7 +953,7 @@ func sanitizeLogLine(s string) string {
 // listPosition renvoie « i/N » pour la stack sous le curseur (indices dans la
 // liste filtrée complète, repli ignoré pour que N reste stable).
 func (m Model) listPosition() string {
-	all := m.filteredStacks()
+	all := m.shownStacks()
 	if len(all) == 0 {
 		return ""
 	}
@@ -1029,6 +992,34 @@ func (m Model) armOrQuit() (tea.Model, tea.Cmd) {
 	m.quitSeq++
 	seq := m.quitSeq
 	return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return quitDisarmMsg(seq) })
+}
+
+// rowAnchor identifie la ligne sous le curseur indépendamment de son index.
+type rowAnchor struct{ stack, group string }
+
+func (m Model) cursorAnchor() rowAnchor {
+	row, ok := m.cursorRow()
+	switch {
+	case !ok || row.sep:
+		return rowAnchor{}
+	case row.header:
+		return rowAnchor{group: row.group}
+	default:
+		return rowAnchor{stack: row.stack.Name}
+	}
+}
+
+// seekCursor replace le curseur sur la ligne identifiée par a (tête de liste
+// si elle a disparu).
+func (m *Model) seekCursor(a rowAnchor) {
+	m.cursor = 0
+	for i, r := range m.listRows() {
+		if (a.stack != "" && !r.header && !r.sep && r.stack.Name == a.stack) ||
+			(a.group != "" && r.header && r.group == a.group) {
+			m.cursor = i
+			return
+		}
+	}
 }
 
 // opInProgress dit si une opération court déjà : spinner du footer

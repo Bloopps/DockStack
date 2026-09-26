@@ -3,12 +3,14 @@ package tui
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/config"
 	"github.com/Bloopps/dockstack/internal/monitor"
 )
 
@@ -118,7 +120,9 @@ func prewarmStacks(stackDir string) tea.Cmd {
 	}
 }
 
-func loadStacks(client dockerService, stackDir string) tea.Cmd {
+// loadStacks liste les stacks puis retire celles qui tombent sous exclude
+// (copie de cfg.Exclude : le Cmd tourne hors de la boucle Update).
+func loadStacks(client dockerService, stackDir string, exclude []string) tea.Cmd {
 	return func() tea.Msg {
 		// Défense en profondeur : un appelant qui passerait un client nil
 		// (init Docker échoué) ferait paniquer ListStacks dans ce Cmd.
@@ -131,8 +135,23 @@ func loadStacks(client dockerService, stackDir string) tea.Cmd {
 		if err != nil {
 			return fatalErrMsg(err)
 		}
+		if len(exclude) > 0 {
+			ex := config.Config{Exclude: exclude}
+			kept := stacks[:0]
+			for _, st := range stacks {
+				if !ex.IsExcluded(st.Name) {
+					kept = append(kept, st)
+				}
+			}
+			stacks = kept
+		}
 		return stacksLoadedMsg(stacks)
 	}
+}
+
+// loadStacksCmd recharge la liste avec la config courante.
+func (m Model) loadStacksCmd() tea.Cmd {
+	return loadStacks(m.client, m.cfg.StackDir, slices.Clone(m.cfg.Exclude))
 }
 
 func loadBackups(configDir string) tea.Cmd {

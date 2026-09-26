@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/Bloopps/dockstack/internal/compose"
@@ -46,6 +47,102 @@ func TestHeaderFooterFitWidth(t *testing.T) {
 			if !strings.Contains(f, "aide") || !strings.Contains(f, "quitter") {
 				t.Errorf("w=%d sélection=%v : aide/quitter absents du footer %q", w, sel, f)
 			}
+			if w >= 100 && !strings.Contains(f, "captures") {
+				t.Errorf("w=%d sélection=%v : b captures absent du footer %q", w, sel, f)
+			}
 		}
+	}
+}
+
+// TestListFooterContext : le footer de la liste montre les actions directes
+// adaptées à la ligne sous le curseur, et le raccourci des captures (b) reste
+// présent avec ou sans sélection.
+func TestListFooterContext(t *testing.T) {
+	m := newTestModel([]compose.Stack{
+		stack("solo", "solo", 1, 1, 0),
+		stack("g/a", "g", 1, 1, 0), stack("g/b", "g", 0, 1, 0),
+	})
+	m.width = 400
+	has := func(f, s string) bool { return strings.Contains(f, s) }
+
+	for i, r := range m.listRows() {
+		m.cursor = i
+		f := m.renderFooter()
+		switch {
+		case r.header:
+			if !has(f, "up dossier") || has(f, "logs") {
+				t.Errorf("en-tête : footer %q", f)
+			}
+		case !r.sep:
+			if !has(f, "logs") || !has(f, "restart") {
+				t.Errorf("stack : footer %q", f)
+			}
+		}
+		if !has(f, "captures") {
+			t.Errorf("ligne %d : b captures absent", i)
+		}
+	}
+	m.selected["solo"] = true
+	if f := m.renderFooter(); !has(f, "sélectionnées") || !has(f, "captures") {
+		t.Errorf("sélection : footer %q", f)
+	}
+}
+
+// TestInactiveHiddenByDefault : les stacks jamais déployées sont masquées et
+// résumées en une ligne non navigable ; a les réaffiche ; un filtre les inclut.
+func TestInactiveHiddenByDefault(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("up", "up", 1, 1, 0), stack("dev", "dev", 0, 0, 0)})
+	rows := m.listRows()
+	if len(rows) != 2 || !rows[1].sep || !strings.Contains(rows[1].note, "1 stack") {
+		t.Fatalf("lignes = %+v, want [up, note « 1 stack… »]", rows)
+	}
+	m.moveCursor(1)
+	if m.cursor != 0 {
+		t.Error("la ligne de note ne doit pas être navigable")
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	out, _ := m.handleListKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = out.(Model)
+	if len(m.shownStacks()) != 2 || !m.cfg.ShowInactive {
+		t.Errorf("après a : %d stacks affichées, ShowInactive=%v", len(m.shownStacks()), m.cfg.ShowInactive)
+	}
+
+	m.cfg.ShowInactive = false
+	m.filter.SetValue("dev")
+	m.invalidateRows()
+	if s := m.shownStacks(); len(s) != 1 || s[0].Name != "dev" {
+		t.Errorf("filtre « dev » : %v, want la stack inactive trouvée", s)
+	}
+}
+
+// TestExcludeFlow : x puis confirmation retire la stack (et, sur un en-tête,
+// tout le dossier) de la liste et l'enregistre dans la config.
+func TestExcludeFlow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel([]compose.Stack{
+		stack("keep", "keep", 1, 1, 0),
+		stack("dev/a", "dev", 1, 1, 0), stack("dev/b", "dev", 1, 1, 0),
+	})
+	for i, r := range m.listRows() {
+		if r.header && r.group == "dev" {
+			m.cursor = i
+		}
+	}
+	out, _ := m.handleListKey(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	m = out.(Model)
+	if m.view != viewConfirm {
+		t.Fatalf("x : view = %v, want viewConfirm", m.view)
+	}
+	out, _ = m.handleConfirmKey(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	m = out.(Model)
+	if len(m.stacks) != 1 || m.stacks[0].Name != "keep" {
+		t.Errorf("après exclusion : %v, want [keep]", m.stacks)
+	}
+	if len(m.cfg.Exclude) != 1 || m.cfg.Exclude[0] != "dev" || !m.cfg.IsExcluded("dev/a") {
+		t.Errorf("Exclude = %v", m.cfg.Exclude)
+	}
+	if _, ok := m.cursorStack(); !ok {
+		t.Error("le curseur doit retomber sur une stack")
 	}
 }

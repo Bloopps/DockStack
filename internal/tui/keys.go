@@ -216,6 +216,18 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, clearStatusIn(4 * time.Second)
 		}
 		m.previewOn = !m.previewOn
+	case "a":
+		// Affiche/masque les stacks jamais déployées ; le choix est mémorisé.
+		anchor := m.cursorAnchor()
+		m.cfg.ShowInactive = !m.cfg.ShowInactive
+		m.invalidateRows()
+		m.seekCursor(anchor)
+		if err := m.cfg.Save(); err != nil {
+			m.setStatus("Config non sauvegardée : "+err.Error(), true)
+			return m, clearStatusIn(6 * time.Second)
+		}
+	case "x":
+		return m.confirmExclude()
 	case "b":
 		m.view = viewBackup
 		m.actionCursor = 0
@@ -229,6 +241,48 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, loadDirCmd(start)
 	}
 	return m, nil
+}
+
+// confirmExclude propose d'exclure du scan la stack ou le dossier sous le
+// curseur (dépôts de dev, exemples…). Réversible via config.json.
+func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
+	row, ok := m.cursorRow()
+	if !ok || row.sep {
+		return m, nil
+	}
+	target := row.stack.Name
+	var names []string
+	if row.header {
+		target = row.group
+		for _, s := range m.groupStacks(row.group) {
+			names = append(names, s.Name)
+		}
+	} else {
+		names = []string{target}
+	}
+	return m.askConfirm("Exclure du scan — "+target,
+		"Réversible : retirer « "+target+" » de exclude dans ~/.dockstack/config.json",
+		names,
+		func(m Model) (tea.Model, tea.Cmd) {
+			m.cfg.Exclude = append(m.cfg.Exclude, target)
+			kept := m.stacks[:0:0]
+			for _, s := range m.stacks {
+				if m.cfg.IsExcluded(s.Name) {
+					delete(m.selected, s.Name)
+					continue
+				}
+				kept = append(kept, s)
+			}
+			m.stacks = kept
+			m.invalidateRows()
+			m.clampCursor()
+			if err := m.cfg.Save(); err != nil {
+				m.setStatus("Exclu pour cette session seulement : "+err.Error(), true)
+			} else {
+				m.setStatus("Exclu du scan : "+target, false)
+			}
+			return m, clearStatusIn(4 * time.Second)
+		})
 }
 
 // ---- action menu (stack courante ou sélection) ----
@@ -644,7 +698,7 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = nil
 				cmds = []tea.Cmd{initClient()}
 			} else {
-				cmds = []tea.Cmd{loadStacks(m.client, m.cfg.StackDir)}
+				cmds = []tea.Cmd{m.loadStacksCmd()}
 			}
 			// Le choix vaut pour la session même si l'écriture échoue ;
 			// prévenir qu'il ne survivra pas au prochain lancement.

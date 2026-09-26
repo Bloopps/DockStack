@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -19,7 +20,7 @@ var (
 
 	styleFooterSep = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238")).
-			SetString("  ·  ")
+			SetString(" · ")
 )
 
 func renderFooterRefresh(width int, refreshing bool) string {
@@ -80,4 +81,54 @@ func renderFooterKeysRight(keys []struct{ key, desc string }, width int, right s
 		line = ansi.Truncate(line, width, "")
 	}
 	return line
+}
+
+type footerKey = struct{ key, desc string }
+
+// listFooterKeys : raccourcis de la liste selon ce qui est sous le curseur. Les
+// actions directes (u/d/r/l) y figurent : ce sont les touches les plus
+// utilisées, et sans elles il fallait ouvrir l'aide pour les découvrir. Sur
+// terminal étroit, les chips précédant « ? aide » tombent en premier : l'ordre
+// va donc du plus utile au moins utile.
+func (m Model) listFooterKeys() []footerKey {
+	tail := []footerKey{{"?", "aide"}, {"q", "quitter"}}
+	if n := len(m.selectedStacks()); n > 0 {
+		return append([]footerKey{
+			{fmt.Sprintf("%d", n), "sélectionnées"},
+			{"u", "up"}, {"d", "down"}, {"r", "restart"},
+			{"b", "captures"},
+			{"↩", "plus"},
+			{"esc", "désélect"},
+		}, tail...)
+	}
+	var keys []footerKey
+	row, ok := m.cursorRow()
+	switch {
+	case ok && row.header:
+		keys = []footerKey{
+			{"u", "up dossier"}, {"d", "down"}, {"r", "restart"},
+			{"b", "captures"}, {"↩", "replier"}, {"␣", "sélect. dossier"},
+		}
+	case ok && !row.sep:
+		keys = []footerKey{
+			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"},
+			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"},
+		}
+	}
+	inactive := "afficher inactives"
+	if m.cfg.ShowInactive {
+		inactive = "masquer inactives"
+	}
+	if !ok || row.sep {
+		keys = append(keys, footerKey{"b", "captures"})
+	}
+	keys = append(keys,
+		footerKey{"/", "filtre"},
+		footerKey{"a", inactive},
+		footerKey{"v", "aperçu"},
+		footerKey{"x", "exclure"},
+		footerKey{"o", "dossier"},
+		footerKey{"R", "rafraîchir"},
+	)
+	return append(keys, tail...)
 }
