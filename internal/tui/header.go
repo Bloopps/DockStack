@@ -39,11 +39,12 @@ const (
 	// narrowBarW cases pour que les lignes RAM/Disk tiennent.
 	wideHeaderMinWidth = 110
 	narrowBarW         = 8
-	// À partir de compactHeaderMinWidth colonnes, l'en-tête tient sur
-	// compactHeaderHeight lignes (au lieu de ~9) : la liste gagne la place.
+	// À partir de compactHeaderMinWidth colonnes, l'en-tête passe en deux
+	// colonnes (ressources | cœurs), plus lisible et plus court.
 	compactHeaderMinWidth = 120
-	compactHeaderHeight   = 4
-	compactBarW           = 10
+	compactBarW           = 12
+	coreBarW              = 6
+	resourceRows          = 4 // CPU, RAM, Swap, Disque
 )
 
 var sparkRunes = []rune("▁▂▃▄▅▆▇█")
@@ -283,7 +284,8 @@ func coreGridCols(n, termW int) int {
 // aligné sur la structure assemblée à la fin de renderHeader.
 func headerHeight(nCores, width int) int {
 	if width >= compactHeaderMinWidth {
-		return compactHeaderHeight
+		rows, _ := compactCoreLayout(nCores, width)
+		return 2 + rows + 2 // titre + vide, lignes ressources/cœurs, pied + séparateur
 	}
 	h := 7 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, divider
 	if nCores > 0 {
@@ -377,47 +379,85 @@ func stackLegend(sc StackCounts) string {
 	return strings.Join(parts, styleDim.Render(" · "))
 }
 
-// renderCompactHeader : en-tête sur 4 lignes pour terminal large — titre,
-// CPU (moyenne + un glyphe par cœur) avec Load/Uptime, mémoire/disque/IO,
-// puis le séparateur.
-func renderCompactHeader(m monitor.Metrics, hist metricsHistory, line1 string, width int) string {
-	L := styleCyan
-	sep := styleSep
-	barW := compactBarW
+// compactLeftW renvoie la largeur de barre et la largeur totale de la
+// colonne des ressources pour une largeur de terminal donnée.
+func compactLeftW(width int) (barW, leftW int) {
+	barW = compactBarW
 	if width >= 150 {
 		barW = mainBarW
 	}
-	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%3d%%", p)) }
+	// "  " + libellé 7 + " " + barre + " 100%" + "  " + détail 12
+	return barW, 2 + 7 + 1 + barW + 5 + 2 + 12
+}
 
-	// Un glyphe coloré par cœur : lisible d'un coup d'œil quel que soit le
-	// nombre de cœurs, là où la grille détaillée prenait 2 à 8 lignes.
-	var cores strings.Builder
-	for i, p := range m.CPUCores {
-		if i > 0 && len(m.CPUCores) <= 16 {
-			cores.WriteByte(' ')
-		}
-		cores.WriteString(colorForPct(p).Render(string(sparkRune(p))))
+// compactCoreLayout calcule la grille des cœurs (lignes × colonnes, remplie
+// colonne par colonne) : au moins resourceRows lignes pour s'aligner sur les
+// ressources, davantage si les colonnes ne tiennent pas dans la largeur.
+func compactCoreLayout(n, width int) (rows, cols int) {
+	if n <= 0 {
+		return resourceRows, 0
 	}
+	_, leftW := compactLeftW(width)
+	labelW := len(fmt.Sprintf("%d", n-1))
+	cellW := labelW + 1 + coreBarW + 1 + 4 + 3
+	maxCols := max(1, (width-leftW-3)/cellW)
+	rows = max(resourceRows, (n+maxCols-1)/maxCols)
+	cols = (n + rows - 1) / rows
+	return rows, cols
+}
+
+// renderCompactHeader : en-tête en deux colonnes pour terminal large. À
+// gauche une ligne par ressource (libellés et barres alignés), à droite la
+// grille des cœurs avec barre et pourcentage, puis Load/IO/Uptime en pied.
+func renderCompactHeader(m monitor.Metrics, hist metricsHistory, line1 string, width int) string {
+	L := styleCyan
+	barW, leftW := compactLeftW(width)
+	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%4d%%", p)) }
+	res := func(label string, p int, detail string) string {
+		return fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", label)), bar(p, barW), pct(p), detail)
+	}
+	left := []string{
+		res("CPU", m.CPUPercent, colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth))),
+		res("RAM", m.MemPercent, fmt.Sprintf("%.1f/%.1fG", m.MemUsedGB, m.MemTotalGB)),
+		res("Swap", m.SwapPercent, fmt.Sprintf("%.1f/%.1fG", m.SwapUsedGB, m.SwapTotalGB)),
+		res("Disque", m.DiskPercent, fmt.Sprintf("%d/%dG", m.DiskUsedGB, m.DiskTotalGB)),
+	}
+
+	rows, cols := compactCoreLayout(len(m.CPUCores), width)
+	labelW := len(fmt.Sprintf("%d", max(len(m.CPUCores)-1, 0)))
+	sep := styleMagenta.Render(" │ ")
+	body := make([]string, rows)
+	for r := 0; r < rows; r++ {
+		l := ""
+		if r < len(left) {
+			l = left[r]
+		}
+		l += strings.Repeat(" ", max(leftW-lipgloss.Width(l), 0))
+		var cells []string
+		for c := 0; c < cols; c++ {
+			i := c*rows + r // remplissage colonne par colonne : 0 1 2 3 | 4 5 6 7
+			if i >= len(m.CPUCores) {
+				break
+			}
+			p := m.CPUCores[i]
+			cells = append(cells, fmt.Sprintf("%s %s%s",
+				styleDim.Render(fmt.Sprintf("%*d", labelW, i)), bar(p, coreBarW), pct(p)))
+		}
+		body[r] = l + sep + strings.Join(cells, "   ")
+	}
+
+	dot := styleDim.Render(" · ")
 	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
-	line2 := fmt.Sprintf("  %s  %s %s %s  %s %s%s%s %s %s %s%s%s %s",
-		L.Render("CPU "), bar(m.CPUPercent, barW), pct(m.CPUPercent),
-		colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth)),
-		styleDim.Render(fmt.Sprintf("%d cœurs", m.NCores)), cores.String(),
-		sep, L.Render("Load"), l1c.Render(m.Load1), l5c.Render(m.Load5), l15c.Render(m.Load15),
-		sep, L.Render("Up"), m.Uptime,
+	foot := fmt.Sprintf("  %s %s%s%s%s%s %s  %s  %s ↓%s/s ↑%s/s  %s  %s %s",
+		L.Render("Load"), l1c.Render(m.Load1), dot, l5c.Render(m.Load5), dot, l15c.Render(m.Load15),
+		styleDim.Render("(1/5/15 min)"),
+		styleDim.Render("·"), L.Render("IO"),
+		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)), ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)),
+		styleDim.Render("·"), L.Render("Uptime"), m.Uptime,
 	)
 
-	ioStr := fmt.Sprintf("%s ↓%s/s ↑%s/s", L.Render("IO"),
-		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)),
-		ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)))
-	line3 := fmt.Sprintf("  %s  %s %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s %s %dG/%dG%s%s",
-		L.Render("RAM "), bar(m.MemPercent, barW), pct(m.MemPercent), m.MemUsedGB, m.MemTotalGB,
-		sep, L.Render("Swap"), pct(m.SwapPercent), m.SwapUsedGB, m.SwapTotalGB,
-		sep, L.Render("Disk"), bar(m.DiskPercent, barW), pct(m.DiskPercent), m.DiskUsedGB, m.DiskTotalGB,
-		sep, ioStr,
-	)
-
-	lines := []string{line1, line2, line3, styleDim.Render(strings.Repeat("─", width))}
+	lines := append([]string{line1, ""}, body...)
+	lines = append(lines, foot, styleDim.Render(strings.Repeat("─", width)))
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
