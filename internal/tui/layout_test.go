@@ -197,3 +197,26 @@ func TestViewFillsScreen(t *testing.T) {
 		}
 	}
 }
+
+// TestUppercaseQQuits : Q (verrouillage majuscules) quitte comme q, en deux
+// frappes ; dans le filtre, Q reste une lettre.
+func TestUppercaseQQuits(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("a", "a", 1, 1, 0)})
+	keyQ := tea.KeyPressMsg{Code: 'Q', Text: "Q"}
+	out, _ := m.Update(keyQ)
+	if !out.(Model).quitArmed {
+		t.Fatal("premier Q : la sortie doit être armée")
+	}
+	if _, cmd := out.Update(keyQ); cmd == nil {
+		t.Fatal("second Q : tea.Quit attendu")
+	} else if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("second Q : tea.Quit attendu")
+	}
+
+	m.filtering = true
+	m.filter.Focus()
+	out, _ = m.Update(keyQ)
+	if got := out.(Model); got.quitArmed || got.filter.Value() != "Q" {
+		t.Errorf("dans le filtre : quitArmed=%v valeur=%q, want lettre Q saisie", got.quitArmed, got.filter.Value())
+	}
+}

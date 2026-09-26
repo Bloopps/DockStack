@@ -585,6 +585,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Q (Maj ou verrouillage des majuscules) vaut q partout — sauf pendant la
+	// saisie du filtre, où c'est une lettre comme une autre.
+	if msg.String() == "Q" && !m.filtering {
+		msg = tea.KeyPressMsg{Code: 'q', Text: "q"}
+	}
 	if m.view == viewProgress {
 		switch msg.String() {
 		case "up", "k":
