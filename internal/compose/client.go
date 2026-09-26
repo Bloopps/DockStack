@@ -553,6 +553,28 @@ func (c *Client) startByContainerName(ctx context.Context, proj *types.Project, 
 // un conteneur déjà rattaché à un projet. doneStatus décrit l'effet dans la
 // vue de progression. Renvoie le nombre d'orphelins retirés.
 func (c *Client) removeProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus string) int {
+	return c.eachProjectOrphan(ctx, stackName, proj, ch, doneStatus, "ré-adoption impossible : ",
+		func(id string) error {
+			_, err := c.cli.Client().ContainerRemove(ctx, id, mobyclient.ContainerRemoveOptions{Force: true})
+			return err
+		})
+}
+
+// restartProjectOrphans redémarre sur place les orphelins du projet : compose
+// restart ne les voit pas (label projet absent), sans ça Restart serait un
+// no-op silencieux sur une stack ⟳.
+func (c *Client) restartProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent) {
+	c.eachProjectOrphan(ctx, stackName, proj, ch, "redémarré (orphelin)", "redémarrage impossible : ",
+		func(id string) error {
+			_, err := c.cli.Client().ContainerRestart(ctx, id, mobyclient.ContainerRestartOptions{})
+			return err
+		})
+}
+
+// eachProjectOrphan applique act à chaque conteneur portant un nom du projet
+// mais sans label com.docker.compose.project, et publie le résultat dans la
+// vue de progression. Renvoie le nombre de succès.
+func (c *Client) eachProjectOrphan(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus, failPrefix string, act func(id string) error) int {
 	cand := projectContainerNames(proj)
 	if len(cand) == 0 {
 		return 0
@@ -561,23 +583,23 @@ func (c *Client) removeProjectOrphans(ctx context.Context, stackName string, pro
 	if err != nil {
 		return 0
 	}
-	removed := 0
+	ok := 0
 	for _, ctr := range result.Items {
 		if strings.TrimSpace(ctr.Labels["com.docker.compose.project"]) != "" {
 			continue // déjà rattaché à un projet : ne jamais voler
 		}
-		if _, ok := matchByNames(cand, ctr.Names); !ok {
+		if _, match := matchByNames(cand, ctr.Names); !match {
 			continue
 		}
 		id := "Orphelin " + primaryName(ctr.Names)
-		if _, rmErr := c.cli.Client().ContainerRemove(ctx, ctr.ID, mobyclient.ContainerRemoveOptions{Force: true}); rmErr != nil {
-			ch <- ProgressEvent{StackName: stackName, Container: id, Status: "ré-adoption impossible : " + rmErr.Error(), State: "warning"}
+		if err := act(ctr.ID); err != nil {
+			ch <- ProgressEvent{StackName: stackName, Container: id, Status: failPrefix + err.Error(), State: "warning"}
 			continue
 		}
-		removed++
+		ok++
 		ch <- ProgressEvent{StackName: stackName, Container: id, Status: doneStatus, State: "done"}
 	}
-	return removed
+	return ok
 }
 
 // primaryName renvoie le nom principal d'un conteneur (premier de la liste,
@@ -619,7 +641,15 @@ func (c *Client) restartLive(ctx context.Context, stack Stack, ch chan<- Progres
 	if err != nil {
 		return err
 	}
-	return svc.Restart(ctx, proj.Name, api.RestartOptions{})
+	// Project fourni comme la CLI : sans lui, compose le reconstruit depuis les
+	// conteneurs labellisés et échoue si la stack n'a que des orphelins.
+	if err := svc.Restart(ctx, proj.Name, api.RestartOptions{Project: proj}); err != nil {
+		return err
+	}
+	if stack.Orphaned {
+		c.restartProjectOrphans(ctx, stack.Name, proj, ch)
+	}
+	return nil
 }
 
 func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {

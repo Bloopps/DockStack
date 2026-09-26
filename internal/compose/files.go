@@ -173,10 +173,10 @@ func FindComposeFile(dir string) string {
 
 // composeOverrideNames liste les fichiers d'override que docker compose charge
 // automatiquement par-dessus le fichier de base (le premier présent l'emporte).
-// Même ordre de priorité que composeNamesByPriority.
+// Ordre de compose-go (cli.DefaultOverrideFileNames) : .yml avant .yaml.
 var composeOverrideNames = []string{
-	"compose.override.yaml",
 	"compose.override.yml",
+	"compose.override.yaml",
 	"docker-compose.override.yml",
 	"docker-compose.override.yaml",
 }
@@ -264,7 +264,13 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		Environment: env,
 	}, func(o *loader.Options) {
 		o.SkipValidation = true
-		o.SetProjectName(fallback, false)
+		// Parité CLI : COMPOSE_PROJECT_NAME (process ou .env) l'emporte même
+		// sur le name: du fichier ; sinon le basename sert de repli.
+		if n := env["COMPOSE_PROJECT_NAME"]; n != "" {
+			o.SetProjectName(n, true)
+		} else {
+			o.SetProjectName(fallback, false)
+		}
 	})
 	if err != nil {
 		return nil, err

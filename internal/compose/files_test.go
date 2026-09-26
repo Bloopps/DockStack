@@ -98,3 +98,49 @@ func TestLoadProjectNoOverride(t *testing.T) {
 		t.Errorf("ComposeFiles = %v, want 1 fichier", proj.ComposeFiles)
 	}
 }
+
+// TestFindOverrideFilePriority : les deux variantes présentes, .yml l'emporte
+// comme dans compose-go (cli.DefaultOverrideFileNames).
+func TestFindOverrideFilePriority(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "compose.override.yaml"), "services: {}\n")
+	want := filepath.Join(dir, "compose.override.yml")
+	writeFile(t, want, "services: {}\n")
+	if got := findOverrideFile(dir); got != want {
+		t.Errorf("findOverrideFile = %q, want %q", got, want)
+	}
+}
+
+// TestLoadProjectName : parité CLI sur le nom du projet — COMPOSE_PROJECT_NAME
+// du .env > name: du fichier > basename du dossier.
+func TestLoadProjectName(t *testing.T) {
+	t.Setenv("COMPOSE_PROJECT_NAME", "") // isole du process
+	os.Unsetenv("COMPOSE_PROJECT_NAME")
+	for _, tc := range []struct {
+		desc, yaml, dotenv, want string
+	}{
+		{"basename", "services:\n  web:\n    image: x\n", "", "mystack"},
+		{"name: du fichier", "name: fromyaml\nservices:\n  web:\n    image: x\n", "", "fromyaml"},
+		{".env prioritaire", "name: fromyaml\nservices:\n  web:\n    image: x\n", "COMPOSE_PROJECT_NAME=fromenv\n", "fromenv"},
+	} {
+		dir := filepath.Join(t.TempDir(), "mystack")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		base := filepath.Join(dir, "compose.yaml")
+		writeFile(t, base, tc.yaml)
+		if tc.dotenv != "" {
+			writeFile(t, filepath.Join(dir, ".env"), tc.dotenv)
+		}
+		proj, err := loadProject(Stack{Name: "mystack", Dir: dir, ComposeFile: base})
+		if err != nil {
+			t.Fatalf("%s : %v", tc.desc, err)
+		}
+		if proj.Name != tc.want {
+			t.Errorf("%s : nom = %q, want %q", tc.desc, proj.Name, tc.want)
+		}
+		if got := proj.Services["web"].CustomLabels["com.docker.compose.project"]; got != tc.want {
+			t.Errorf("%s : label projet = %q, want %q", tc.desc, got, tc.want)
+		}
+	}
+}

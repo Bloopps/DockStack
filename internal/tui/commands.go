@@ -49,8 +49,8 @@ const debounceDelay = 300 * time.Millisecond
 const reconnectDelay = 2 * time.Second
 
 // loadStacksTimeout borne le rechargement de la liste : sans lui, un daemon
-// qui ne répond plus bloquerait le refresh (et l'indicateur « actualisation… »)
-// pour toujours — les ticks suivants étant inhibés tant que m.refreshing dure.
+// qui ne répond plus bloquerait ce refresh (et l'indicateur « actualisation… »)
+// indéfiniment.
 const loadStacksTimeout = 30 * time.Second
 
 type dockerEventsStartedMsg struct{ ch <-chan compose.DockerEvent }
