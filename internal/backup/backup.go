@@ -2,7 +2,9 @@ package backup
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -98,15 +100,42 @@ func Save(configDir, stackDir string, stacks []string) error {
 	)
 	data := []byte(content)
 
+	// Erreur courte « dossier : cause » : le chemin complet du fichier
+	// horodaté, tronqué dans le footer, masquait la cause (permission denied).
 	if err := os.WriteFile(base+"."+ts, data, 0o644); err != nil {
-		return err
+		return writeErr(configDir, err)
 	}
 	if err := os.WriteFile(base, data, 0o644); err != nil {
-		return err
+		return writeErr(configDir, err)
 	}
 
 	pruneOld(base, 10)
 	return nil
+}
+
+// Delete supprime la capture datée date : son archive et, s'il en est le
+// doublon (cf. List), le fichier `active_stacks` du dernier état.
+func Delete(configDir string, date time.Time) error {
+	base := filepath.Join(configDir, "active_stacks")
+	matches, _ := filepath.Glob(base + ".*")
+	for _, p := range append(matches, base) {
+		s, err := load(p)
+		if err != nil || !s.Date.Equal(date) {
+			continue
+		}
+		if err := os.Remove(p); err != nil {
+			return writeErr(configDir, err)
+		}
+	}
+	return nil
+}
+
+func writeErr(dir string, err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return fmt.Errorf("écriture impossible dans %s : %w", dir, err)
 }
 
 func pruneOld(base string, max int) {

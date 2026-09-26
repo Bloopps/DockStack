@@ -95,3 +95,26 @@ func TestPruneOld(t *testing.T) {
 		}
 	}
 }
+
+// TestDelete : supprimer la dernière capture retire son archive ET son doublon
+// `active_stacks`, sans toucher aux autres captures.
+func TestDelete(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "active_stacks")
+	writeSnap(t, base+".2026-06-13_10-00-00", "2026-06-13_10-00-00", []string{"a"})
+	writeSnap(t, base+".2026-06-13_12-00-00", "2026-06-13_12-00-00", []string{"a", "b"})
+	writeSnap(t, base, "2026-06-13_12-00-00", []string{"a", "b"})
+
+	snaps, _ := List(dir)
+	if err := Delete(dir, snaps[0].Date); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	snaps, _ = List(dir)
+	if len(snaps) != 1 || len(snaps[0].Stacks) != 1 {
+		t.Fatalf("après Delete : %v, want seule la capture de 10h", snaps)
+	}
+	if _, err := os.Stat(base); !os.IsNotExist(err) {
+		t.Error("le doublon active_stacks aurait dû être supprimé")
+	}
+}

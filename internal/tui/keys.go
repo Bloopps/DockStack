@@ -40,13 +40,6 @@ var groupActions = []string{
 	"←  Retour",
 }
 
-// La restauration ne passe pas par une entrée de menu : la liste des
-// captures est navigable directement (↩ sur une capture = restaurer).
-var backupMenuActions = []string{
-	"💾 Capturer l'état actuel",
-	"←  Retour",
-}
-
 // ---- list ----
 
 func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -491,45 +484,49 @@ func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ---- backup ----
 
+// Dans la vue des captures, actionCursor indexe directement m.backups.
 func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Le curseur parcourt les entrées de menu puis la liste des sauvegardes.
-	total := len(backupMenuActions) + len(m.backups)
 	switch msg.String() {
 	case "up", "k":
 		if m.actionCursor > 0 {
 			m.actionCursor--
 		}
 	case "down", "j":
-		if m.actionCursor < total-1 {
+		if m.actionCursor < len(m.backups)-1 {
 			m.actionCursor++
 		}
 	case "esc", "q":
 		m.view = viewList
+	case "c":
+		// On reste sur la vue : la nouvelle capture doit y apparaître,
+		// sinon rien ne prouve à l'utilisateur qu'elle a été faite.
+		// startOp arme aussi spinner.Tick, sans quoi le spinner reste figé.
+		return m.startOp("Capture de l'état", saveBackup(m.cfg.ConfigDir(), m.cfg.StackDir, m.stacks))
+	case "x", "delete":
+		if m.actionCursor >= len(m.backups) {
+			return m, nil
+		}
+		snap := m.backups[m.actionCursor]
+		dir := m.cfg.ConfigDir()
+		return m.askConfirm("Supprimer la capture du "+snap.Date.Format("02/01/2006 15:04"),
+			"", snap.Stacks,
+			func(m Model) (tea.Model, tea.Cmd) {
+				m.view = viewBackup
+				return m, deleteBackup(dir, snap.Date)
+			})
 	case "enter":
-		return m.execBackupAction()
+		return m.openRestorePick()
 	}
 	return m, nil
 }
 
-func (m Model) execBackupAction() (tea.Model, tea.Cmd) {
-	if m.actionCursor < len(backupMenuActions) {
-		m.view = viewList
-		if backupMenuActions[m.actionCursor] == "💾 Capturer l'état actuel" {
-			// startOp arme aussi spinner.Tick, sans quoi le spinner reste figé.
-			return m.startOp("Capture de l'état...", saveBackup(m.cfg.ConfigDir(), m.cfg.StackDir, m.stacks))
-		}
-		// "←  Retour"
-		return m, nil
-	}
-
-	idx := m.actionCursor - len(backupMenuActions)
-	if idx >= len(m.backups) {
-		m.view = viewList
+func (m Model) openRestorePick() (tea.Model, tea.Cmd) {
+	if m.actionCursor >= len(m.backups) {
 		return m, nil
 	}
 	// Ouvre le sélecteur de restauration : tout est coché par défaut,
 	// l'utilisateur peut décocher avant de relancer (↩).
-	snap := m.backups[idx]
+	snap := m.backups[m.actionCursor]
 	m.view = viewRestorePick
 	m.restoreLabel = fmt.Sprintf("Capture du %s", snap.Date.Format("02/01/2006 15:04"))
 	m.restoreNames = snap.Stacks

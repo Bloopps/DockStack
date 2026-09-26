@@ -154,7 +154,15 @@ func saveBackup(configDir, stackDir string, stacks []compose.Stack) tea.Cmd {
 				running = append(running, s.Name)
 			}
 		}
-		return opDoneMsg{err: backup.Save(configDir, stackDir, running)}
+		return opDoneMsg{err: backup.Save(configDir, stackDir, running), n: len(running)}
+	}
+}
+
+type backupDeletedMsg struct{ err error }
+
+func deleteBackup(configDir string, date time.Time) tea.Cmd {
+	return func() tea.Msg {
+		return backupDeletedMsg{err: backup.Delete(configDir, date)}
 	}
 }
 

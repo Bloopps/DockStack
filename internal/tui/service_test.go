@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/config"
 )
@@ -155,5 +157,47 @@ func TestUpdateOpDone(t *testing.T) {
 	out, _ = m.Update(opDoneMsg{})
 	if got := out.(Model); got.statusErr {
 		t.Error("opDone réussi ne devrait pas marquer statusErr")
+	}
+}
+
+// TestCaptureStaysOnBackupView : capturer ne renvoie pas à la liste — la
+// capture est écrite, et la vue la montre en tête avec le curseur dessus.
+func TestCaptureStaysOnBackupView(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{StackDir: "/tmp"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	m := New(cfg)
+	m.view = viewBackup
+	m.actionCursor = 0
+
+	out, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if got := out.(Model); got.view != viewBackup {
+		t.Fatalf("view = %v après capture, want viewBackup", got.view)
+	}
+	var done opDoneMsg
+	for _, c := range cmd().(tea.BatchMsg) {
+		if msg, ok := c().(opDoneMsg); ok {
+			done = msg
+		}
+	}
+	if done.err != nil {
+		t.Fatalf("capture en erreur : %v", done.err)
+	}
+
+	out, cmd = out.Update(done)
+	got := out.(Model)
+	if got.view != viewBackup || got.actionCursor != 0 {
+		t.Errorf("view=%v cursor=%d, want viewBackup curseur sur la 1re capture", got.view, got.actionCursor)
+	}
+	loaded := false
+	for _, c := range cmd().(tea.BatchMsg) {
+		if msg, ok := c().(backupsLoadedMsg); ok {
+			loaded = len(msg) == 1
+		}
+	}
+	if !loaded {
+		t.Error("la liste des captures devrait être rechargée avec la nouvelle capture")
 	}
 }

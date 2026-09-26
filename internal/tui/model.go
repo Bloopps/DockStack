@@ -47,6 +47,7 @@ type stacksLoadedMsg []compose.Stack
 type backupsLoadedMsg []backup.Snapshot
 type opDoneMsg struct {
 	err error
+	n   int // nombre de stacks capturées
 }
 
 type clearStatusMsg struct{}
@@ -315,6 +316,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case backupsLoadedMsg:
 		m.backups = []backup.Snapshot(msg)
 		m.spinning = false
+		// Après une suppression, le curseur ne doit pas pointer au-delà.
+		m.actionCursor = max(0, min(m.actionCursor, len(m.backups)-1))
+
+	case backupDeletedMsg:
+		if msg.err != nil {
+			m.setStatus("Suppression : "+msg.err.Error(), true)
+		} else {
+			m.setStatus("Capture supprimée", false)
+		}
+		return m, tea.Batch(clearStatusIn(4*time.Second), loadBackups(m.cfg.ConfigDir()))
 
 	case opDoneMsg:
 		// Backup save/restore result (stack actions use the live progress view).
@@ -324,12 +335,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (vue de progression d'une autre op, aide, dossier…).
 		m.spinning = false
 		if msg.err != nil {
-			s := truncate(m.opLabel+": "+msg.err.Error(), 80)
-			m.setStatus(s, true)
+			m.setStatus(m.opLabel+" : "+msg.err.Error(), true)
 			return m, tea.Batch(clearStatusIn(6*time.Second), loadStacks(m.client, m.cfg.StackDir))
 		}
-		m.setStatus("✓ "+m.opLabel, false)
-		return m, tea.Batch(clearStatusIn(3*time.Second), loadStacks(m.client, m.cfg.StackDir))
+		// Le footer préfixe déjà « ✓ ».
+		m.setStatus(fmt.Sprintf("Capture enregistrée — %d stack(s) en marche", msg.n), false)
+		// Recharge la liste des captures : la nouvelle arrive en tête, le
+		// curseur s'y pose pour que l'utilisateur la voie.
+		if m.view == viewBackup {
+			m.actionCursor = 0
+		}
+		return m, tea.Batch(clearStatusIn(4*time.Second), loadStacks(m.client, m.cfg.StackDir), loadBackups(m.cfg.ConfigDir()))
 
 	case progressEventMsg:
 		// Message d'une op périmée : ne pas l'appliquer ni ré-armer sa pompe
@@ -850,7 +866,18 @@ func (m Model) renderFooter() string {
 			{"n / esc", "annuler"},
 		}, m.width)
 	}
-	if m.view == viewAction || m.view == viewBackup {
+	if m.view == viewBackup {
+		keys := []struct{ key, desc string }{{"c", "capturer"}}
+		if len(m.backups) > 0 {
+			keys = append(keys,
+				struct{ key, desc string }{"↑↓", "naviguer"},
+				struct{ key, desc string }{"↩", "restaurer"},
+				struct{ key, desc string }{"x", "supprimer"})
+		}
+		keys = append(keys, struct{ key, desc string }{"esc", "retour"})
+		return renderFooterKeys(keys, m.width)
+	}
+	if m.view == viewAction {
 		return renderFooterKeys([]struct{ key, desc string }{
 			{"↑↓", "naviguer"},
 			{"↩", "valider"},
@@ -889,6 +916,7 @@ func (m Model) renderFooter() string {
 				{fmt.Sprintf("%d", n), "sélectionnées"},
 				{"↩", "actions"},
 				{"esc", "désélect"},
+				{"b", "backup"},
 				{"?", "aide"},
 				{"q", "quitter"},
 			}, m.width, right)
