@@ -59,10 +59,9 @@ jobs:
   vulncheck:
     name: Vulnerabilities (govulncheck)
     runs-on: ubuntu-latest
-    # Non-bloquant : certaines CVE de github.com/docker/docker sont « Fixed in: N/A »
-    # (aucun correctif amont), donc impossibles à résoudre. Le job informe sans
-    # faire échouer la CI ; à repasser bloquant quand ces CVE seront corrigées.
-    continue-on-error: true
+    # Bloquant : depuis compose v5.5, github.com/docker/docker (CVE « Fixed in:
+    # N/A ») ne fait plus partie des dépendances ; toute CVE atteignable doit
+    # désormais être corrigée (Renovate ouvre les PR, y compris transitives).
     steps:
       - name: Checkout
         uses: actions/checkout@v4

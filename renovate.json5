@@ -6,7 +6,8 @@
     'config:recommended',
     // Regroupe les mises à jour patch + mineures en une seule PR par gestionnaire.
     'group:allNonMajor',
-    // Limite le bruit : ne rouvre pas une PR ignorée pendant 2 semaines.
+    // Ignore les dépendances déclarées dans vendor/, node_modules/ et les
+    // dossiers de tests.
     ':ignoreModulesAndTests',
   ],
 
@@ -23,7 +24,18 @@
   // Une PR de synthèse listant tout ce qui est en attente.
   dependencyDashboard: true,
 
+  // PR dédiées pour les dépendances ayant une vulnérabilité connue (base OSV),
+  // y compris transitives.
+  osvVulnerabilityAlerts: true,
+
   packageRules: [
+    {
+      // Les dépendances Go indirectes sont ignorées par défaut : c'est par
+      // elles (containerd, grpc, buildkit…) qu'arrivent la plupart des CVE.
+      matchManagers: ['gomod'],
+      matchDepTypes: ['indirect'],
+      enabled: true,
+    },
     {
       // Auto-merge des mises à jour patch des dépendances Go (faible risque),
       // une fois la CI passée.
