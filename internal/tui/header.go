@@ -19,6 +19,10 @@ var (
 	styleOrange  = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
 	styleBold    = lipgloss.NewStyle().Bold(true)
 	styleDim     = lipgloss.NewStyle().Faint(true)
+	// Sillon des barres (partie non remplie) : un gris discret peint en fond
+	// rend une gouttière nette et pleine (pas d'interstices entre glyphes).
+	trackColor = lipgloss.Color("236")
+	styleTrack = lipgloss.NewStyle().Background(trackColor)
 )
 
 var styleSep = styleMagenta.Render(" │ ")
@@ -26,6 +30,10 @@ var styleSep = styleMagenta.Render(" │ ")
 const (
 	metricsHistoryLen = 60 // samples kept (≈2 min at the 2s tick)
 	avgSparkWidth     = 12 // trend width for CPU avg / RAM
+	// Largeur des jauges principales (CPU avg, RAM, Disk). Plus large = plus de
+	// cases pleines = plus de finesse sans recourir à un glyphe partiel (qui
+	// casserait la netteté). 20 cases ⇒ 5 % par case.
+	mainBarW = 20
 )
 
 var sparkRunes = []rune("▁▂▃▄▅▆▇█")
@@ -108,12 +116,25 @@ func colorForPct(pct int) lipgloss.Style {
 }
 
 func bar(pct, width int) string {
-	filled := pct * width / 100
-	if pct > 0 && filled == 0 {
-		filled = 1
+	// Cases pleines uniquement, arrondi au plus proche. Peindre une fraction de
+	// case imposerait un glyphe partiel (▏▎▍…) dont la teinte et la forme
+	// diffèrent du fond plein voisin et cassent la netteté ; la valeur exacte
+	// étant affichée en chiffres à côté, la barre n'a qu'un rôle de coup d'œil.
+	// Remplissage peint en fond (espaces colorés) plutôt qu'avec le glyphe « █ »
+	// qui, selon la police, laisse de fins liserés noirs entre les cases.
+	if pct < 0 {
+		pct = 0
 	}
-	empty := width - filled
-	return colorForPct(pct).Render(strings.Repeat("█", filled)) + strings.Repeat("░", empty)
+	if pct > 100 {
+		pct = 100
+	}
+	filled := (pct*width + 50) / 100
+	if pct > 0 && filled == 0 {
+		filled = 1 // garde une trace visible pour les valeurs très faibles
+	}
+	c := colorForPct(pct).GetForeground()
+	return lipgloss.NewStyle().Background(c).Render(strings.Repeat(" ", filled)) +
+		styleTrack.Render(strings.Repeat(" ", width-filled))
 }
 
 func fmtRate(kbs int) string {
@@ -150,7 +171,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	line1 := title + sep + path + sep + stacksInfo + sep + now
 
 	// ── Ligne 2 : CPU avg + grille par cœur ───────────────────────────────
-	cpuBar := bar(m.CPUPercent, 8)
+	cpuBar := bar(m.CPUPercent, mainBarW)
 	cpuPct := colorForPct(m.CPUPercent).Render(fmt.Sprintf("%3d%%", m.CPUPercent))
 	cpuLabel := L.Render("CPU")
 	cpuSpark := colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth))
@@ -162,7 +183,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	coreGrid := renderCoreGrid(m.CPUCores, width)
 
 	// ── Ligne 3 : RAM │ Swap │ Uptime ─────────────────────────────────────
-	memBar := bar(m.MemPercent, 8)
+	memBar := bar(m.MemPercent, mainBarW)
 	memPct := colorForPct(m.MemPercent).Render(fmt.Sprintf("%3d%%", m.MemPercent))
 	swapCol := colorForPct(m.SwapPercent)
 	line3 := fmt.Sprintf("  %s %s  %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s",
@@ -176,7 +197,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	)
 
 	// ── Ligne 4 : Disk │ IO │ Load ────────────────────────────────────────
-	diskBar := bar(m.DiskPercent, 8)
+	diskBar := bar(m.DiskPercent, mainBarW)
 	diskPct := colorForPct(m.DiskPercent).Render(fmt.Sprintf("%3d%%", m.DiskPercent))
 
 	ioRCol := ioColor(m.DiskReadKBs)
