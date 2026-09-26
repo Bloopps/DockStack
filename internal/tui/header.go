@@ -23,7 +23,9 @@ var (
 	styleDim     = lipgloss.NewStyle().Faint(true)
 	// Sillon des barres (partie non remplie) : un gris discret peint en fond
 	// rend une gouttière nette et pleine (pas d'interstices entre glyphes).
-	trackColor = lipgloss.Color("236")
+	// 238 et non 236 : sur un thème sombre, 236 se confondait avec le fond et
+	// la longueur totale des barres devenait invisible.
+	trackColor = lipgloss.Color("238")
 	styleTrack = lipgloss.NewStyle().Background(trackColor)
 )
 
@@ -468,9 +470,10 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 strin
 	// Titres des deux colonnes sur la ligne de respiration : sans eux, les
 	// numéros de cœurs se lisaient comme la suite de la colonne de gauche.
 	titles := "  " + styleDim.Render("Ressources")
-	if m.DiskMount != "" {
-		// Le disque mesuré est la partition des données Docker (cf. monitor).
-		titles += styleDim.Render(" · disque : " + m.DiskMount)
+	if m.DiskMount != "" && m.DiskMount != "/" {
+		// Le disque mesuré est la partition des données Docker (cf. monitor) ;
+		// ne le préciser que lorsque ce n'est pas simplement la racine.
+		titles += styleDim.Render(" · Disque = partition " + m.DiskMount + " (données Docker)")
 	}
 	titles += strings.Repeat(" ", max(leftW-lipgloss.Width(titles), 0))
 	if len(m.CPUCores) > 0 {
