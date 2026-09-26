@@ -220,3 +220,16 @@ func TestUppercaseQQuits(t *testing.T) {
 		t.Errorf("dans le filtre : quitArmed=%v valeur=%q, want lettre Q saisie", got.quitArmed, got.filter.Value())
 	}
 }
+
+// TestHelpFits : sur un terminal large de hauteur modeste, l'aide tient
+// entière (la fin — captures, quitter — était coupée sur une colonne).
+func TestHelpFits(t *testing.T) {
+	m := newTestModel(nil)
+	m.width, m.height, m.loading, m.view = 200, 30, false, viewHelp
+	out := ansi.Strip(m.viewContent())
+	for _, want := range []string{"Captures d'état", "quitter", "↩ sur leur ligne", "╰"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("aide coupée : %q absent", want)
+		}
+	}
+}
