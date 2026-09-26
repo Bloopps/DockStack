@@ -177,6 +177,36 @@ func saveBackup(configDir, stackDir string, stacks []compose.Stack) tea.Cmd {
 	}
 }
 
+// ---- occupation Docker (en-tête) ----
+
+// usageInterval : compteurs et images (≈150 ms côté démon) ;
+// volumesInterval : la taille des volumes oblige le démon à parcourir leurs
+// données (≈1,5 s ici, bien plus sur de gros volumes) — on l'espace.
+const (
+	usageInterval   = 30 * time.Second
+	volumesInterval = 10 * time.Minute
+	usageTimeout    = 2 * time.Minute
+)
+
+type usageMsg struct {
+	usage compose.DockerUsage
+	err   error
+}
+type usageTickMsg struct{}
+
+func fetchUsage(client dockerService, withVolumes bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), usageTimeout)
+		defer cancel()
+		u, err := client.Usage(ctx, withVolumes)
+		return usageMsg{usage: u, err: err}
+	}
+}
+
+func tickUsage() tea.Cmd {
+	return tea.Tick(usageInterval, func(time.Time) tea.Msg { return usageTickMsg{} })
+}
+
 type backupDeletedMsg struct{ err error }
 
 func deleteBackup(configDir string, date time.Time) tea.Cmd {

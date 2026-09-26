@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/monitor"
 )
 
@@ -159,7 +160,7 @@ func fmtRate(kbs int) string {
 	}
 }
 
-func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width int) string {
+func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *compose.DockerUsage, width int) string {
 	L := styleCyan
 	sep := styleSep
 
@@ -171,7 +172,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	line1 := title + sep + path + sep + stacksInfo + sep + now
 
 	if width >= compactHeaderMinWidth {
-		return renderCompactHeader(m, line1, width)
+		return renderCompactHeader(m, du, line1, width)
 	}
 
 	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
@@ -196,7 +197,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	// ── Ligne 3 : RAM │ Swap │ Uptime ─────────────────────────────────────
 	memBar := bar(m.MemPercent, barW)
 	memPct := colorForPct(m.MemPercent).Render(fmt.Sprintf("%3d%%", m.MemPercent))
-	swapCol := colorForPct(m.SwapPercent)
+	swapCol := swapStyle(m)
 	line3 := fmt.Sprintf("  %s %s  %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s",
 		memBar, memPct,
 		L.Render("RAM"), m.MemUsedGB, m.MemTotalGB,
@@ -242,7 +243,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	if coreGrid != "" {
 		parts = append(parts, coreGrid)
 	}
-	parts = append(parts, innerSep, line3, line4, divider)
+	parts = append(parts, innerSep, line3, line4, dockerLine(du), divider)
 	// Filet de sécurité : le moteur de rendu coupe au bord de l'écran, autant
 	// couper nous-mêmes proprement (chemin long, terminal très étroit).
 	// Ligne par ligne : la grille des cœurs est un bloc multi-lignes.
@@ -285,9 +286,9 @@ func coreGridCols(n, termW int) int {
 func headerHeight(nCores, width int) int {
 	if width >= compactHeaderMinWidth {
 		rows, _ := compactCoreLayout(nCores, width)
-		return 2 + rows + 2 // titre + vide, lignes ressources/cœurs, pied + séparateur
+		return 2 + rows + 3 // titre + titres de colonnes, ressources/cœurs, Docker + Système + séparateur
 	}
-	h := 7 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, divider
+	h := 8 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, Docker, divider
 	if nCores > 0 {
 		cols := coreGridCols(nCores, width)
 		h += (nCores + cols - 1) / cols
@@ -409,19 +410,24 @@ func compactCoreLayout(n, width int) (rows, cols int) {
 // renderCompactHeader : en-tête en deux colonnes pour terminal large. À
 // gauche une ligne par ressource (libellés et barres alignés), à droite la
 // grille des cœurs avec barre et pourcentage, puis Load/IO/Uptime en pied.
-func renderCompactHeader(m monitor.Metrics, line1 string, width int) string {
+func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 string, width int) string {
 	L := styleCyan
 	barW, leftW := compactLeftW(width)
 	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%4d%%", p)) }
 	res := func(label string, p int, detail string) string {
 		return fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", label)), bar(p, barW), pct(p), detail)
 	}
+	// Swap : neutre tant que la RAM n'est pas sous pression (cf. swapStyle).
+	sw := swapStyle(m)
+	swapRow := fmt.Sprintf("  %s %s%s  %s", L.Render(fmt.Sprintf("%-7s", "Swap")),
+		barStyled(m.SwapPercent, barW, sw), sw.Render(fmt.Sprintf("%4d%%", m.SwapPercent)),
+		fmt.Sprintf("%.1f / %.1f Go", m.SwapUsedGB, m.SwapTotalGB))
 	// Détail en clair (« utilisé / total Go ») ; pour le CPU, rappeler que
 	// c'est la moyenne des cœurs détaillés à droite.
 	left := []string{
 		res("CPU", m.CPUPercent, styleDim.Render("moyenne")),
 		res("RAM", m.MemPercent, fmt.Sprintf("%.1f / %.1f Go", m.MemUsedGB, m.MemTotalGB)),
-		res("Swap", m.SwapPercent, fmt.Sprintf("%.1f / %.1f Go", m.SwapUsedGB, m.SwapTotalGB)),
+		swapRow,
 		res("Disque", m.DiskPercent, fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB)),
 	}
 
@@ -450,8 +456,8 @@ func renderCompactHeader(m monitor.Metrics, line1 string, width int) string {
 
 	dot := styleDim.Render(" · ")
 	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
-	foot := fmt.Sprintf("  %s %s%s%s%s%s %s  %s  %s ↓%s/s ↑%s/s  %s  %s %s",
-		L.Render("Load"), l1c.Render(m.Load1), dot, l5c.Render(m.Load5), dot, l15c.Render(m.Load15),
+	foot := fmt.Sprintf("  %s %s %s%s%s%s%s %s  %s  %s ↓%s/s ↑%s/s  %s  %s %s",
+		L.Render(fmt.Sprintf("%-7s", "Système")), L.Render("Load"), l1c.Render(m.Load1), dot, l5c.Render(m.Load5), dot, l15c.Render(m.Load15),
 		styleDim.Render("(1/5/15 min)"),
 		styleDim.Render("·"), L.Render("IO"),
 		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)), ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)),
@@ -461,14 +467,78 @@ func renderCompactHeader(m monitor.Metrics, line1 string, width int) string {
 	// Titres des deux colonnes sur la ligne de respiration : sans eux, les
 	// numéros de cœurs se lisaient comme la suite de la colonne de gauche.
 	titles := "  " + styleDim.Render("Ressources")
+	if m.DiskMount != "" {
+		// Le disque mesuré est la partition des données Docker (cf. monitor).
+		titles += styleDim.Render(" · disque : " + m.DiskMount)
+	}
 	titles += strings.Repeat(" ", max(leftW-lipgloss.Width(titles), 0))
 	if len(m.CPUCores) > 0 {
 		titles += "   " + styleDim.Render(fmt.Sprintf("Par cœur (%d)", len(m.CPUCores)))
 	}
 	lines := append([]string{line1, titles}, body...)
-	lines = append(lines, foot, styleDim.Render(strings.Repeat("─", width)))
+	lines = append(lines, dockerLine(du), foot, styleDim.Render(strings.Repeat("─", width)))
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// swapStyle : le Swap n'est coloré (vert→rouge) que si la RAM est elle-même
+// sous pression. Sous Linux, un Swap rempli avec de la RAM libre est courant
+// et sans gravité (pages froides déplacées) : l'afficher en orange alarmait
+// pour rien.
+func swapStyle(m monitor.Metrics) lipgloss.Style {
+	if m.MemPercent >= 60 {
+		return colorForPct(m.SwapPercent)
+	}
+	return styleDim
+}
+
+// barStyled : comme bar, mais remplie dans la couleur de st.
+func barStyled(pct, width int, st lipgloss.Style) string {
+	pct = max(0, min(pct, 100))
+	filled := (pct*width + 50) / 100
+	if pct > 0 && filled == 0 {
+		filled = 1
+	}
+	fill := st.GetForeground()
+	if _, none := fill.(lipgloss.NoColor); none || fill == nil {
+		fill = lipgloss.Color("244") // styleDim n'a pas de couleur propre
+	}
+	return lipgloss.NewStyle().Background(fill).Render(strings.Repeat(" ", filled)) +
+		styleTrack.Render(strings.Repeat(" ", width-filled))
+}
+
+// fmtBytes : taille lisible en Go (Mo en dessous de 1 Go).
+func fmtBytes(b int64) string {
+	if b >= 1<<30 {
+		return fmt.Sprintf("%.1f Go", float64(b)/(1<<30))
+	}
+	return fmt.Sprintf("%d Mo", b>>20)
+}
+
+// dockerLine : conteneurs en marche et place prise par Docker — ce qu'on
+// regarde avant un Pull ou un nettoyage.
+func dockerLine(du *compose.DockerUsage) string {
+	label := "  " + styleCyan.Render(fmt.Sprintf("%-7s", "Docker")) + " "
+	if du == nil {
+		return label + styleDim.Render("mesure en cours…")
+	}
+	dot := styleDim.Render("  ·  ")
+	running := styleGreen
+	if du.Running < du.Containers {
+		running = styleYellow
+	}
+	s := label + running.Render(fmt.Sprintf("%d / %d", du.Running, du.Containers)) + " conteneurs en marche" +
+		dot + "images " + fmtBytes(du.ImagesSize)
+	if du.ImagesReclaimable > 0 {
+		s += styleDim.Render(" (dont " + fmtBytes(du.ImagesReclaimable) + " inutilisées)")
+	}
+	s += dot + "volumes "
+	if du.VolumesOK {
+		s += fmtBytes(du.VolumesSize)
+	} else {
+		s += styleDim.Render("…")
+	}
+	return s
 }

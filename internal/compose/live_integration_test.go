@@ -288,3 +288,19 @@ func TestLiveNameConflictNotStolen(t *testing.T) {
 		t.Fatalf("le conteneur du projet A a été démarré par Up B (Running=%s)", state)
 	}
 }
+
+// TestLiveUsage : la mesure d'occupation répond et reste cohérente.
+func TestLiveUsage(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Skip(err)
+	}
+	u, err := c.Usage(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.RootDir == "" || u.Running > u.Containers || !u.VolumesOK || u.ImagesSize <= 0 {
+		t.Fatalf("usage incohérent : %+v", u)
+	}
+	t.Logf("%+v", u)
+}

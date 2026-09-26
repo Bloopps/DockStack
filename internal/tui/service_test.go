@@ -27,6 +27,9 @@ func (f *fakeClient) SubscribeEvents(context.Context) <-chan compose.DockerEvent
 func (f *fakeClient) LogsAsync(context.Context, compose.Stack) (<-chan compose.LogEntry, error) {
 	return f.logsCh, f.logsErr
 }
+func (f *fakeClient) Usage(context.Context, bool) (compose.DockerUsage, error) {
+	return compose.DockerUsage{}, nil
+}
 func (f *fakeClient) UpManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
 	return nil
 }

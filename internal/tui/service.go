@@ -15,6 +15,7 @@ type dockerService interface {
 	ListStacks(ctx context.Context, stackDir string) ([]compose.Stack, error)
 	SubscribeEvents(ctx context.Context) <-chan compose.DockerEvent
 	LogsAsync(ctx context.Context, stack compose.Stack) (<-chan compose.LogEntry, error)
+	Usage(ctx context.Context, withVolumes bool) (compose.DockerUsage, error)
 
 	// Actions groupées streamées vers la vue de progression : un canal
 	// d'événements par opération, fermé par la sentinelle AllDone.

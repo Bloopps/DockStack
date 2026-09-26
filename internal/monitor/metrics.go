@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,7 @@ type Metrics struct {
 	DiskUsedGB   int
 	DiskTotalGB  int
 	DiskPercent  int
+	DiskMount    string // point de montage mesuré (partition des données Docker)
 	DiskReadKBs  int
 	DiskWriteKBs int
 	Load1        string
@@ -45,6 +47,14 @@ type collector struct {
 }
 
 var c collector
+
+// diskPath : chemin dont on mesure la partition. « / » par défaut ; la TUI y
+// place le dossier de données Docker dès qu'elle le connaît, car c'est lui
+// qui se remplit (images, volumes) et il peut être sur une autre partition.
+var diskPath atomic.Value
+
+// SetDiskPath change le chemin mesuré par Collect (sûr en concurrence).
+func SetDiskPath(p string) { diskPath.Store(p) }
 
 func parseUint(s string) uint64 {
 	v, _ := strconv.ParseUint(s, 10, 64)
@@ -181,10 +191,19 @@ func memswap(m *Metrics) {
 }
 
 func disk(m *Metrics) {
-	var stat syscallStatfs
-	if err := statfs("/", &stat); err != nil {
-		return
+	path := "/"
+	if p, ok := diskPath.Load().(string); ok && p != "" {
+		path = p
 	}
+	var stat syscallStatfs
+	if err := statfs(path, &stat); err != nil {
+		// Dossier inaccessible (droits) : repli sur la racine plutôt que rien.
+		path = "/"
+		if err := statfs(path, &stat); err != nil {
+			return
+		}
+	}
+	m.DiskMount = mountPoint(path)
 	total := stat.Blocks * uint64(stat.Bsize)
 	avail := stat.Bavail * uint64(stat.Bsize)
 	used := total - avail
@@ -281,4 +300,29 @@ func uptime(m *Metrics) {
 	default:
 		m.Uptime = fmt.Sprintf("%dm", min)
 	}
+}
+
+// mountPoint renvoie le point de montage qui contient path : le plus long
+// préfixe parmi les montages de /proc/self/mounts (« / » à défaut).
+func mountPoint(path string) string {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return "/"
+	}
+	return longestMount(path, string(data))
+}
+
+func longestMount(path, mounts string) string {
+	best := "/"
+	for _, line := range strings.Split(mounts, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		mp := strings.ReplaceAll(f[1], "\\040", " ")
+		if (path == mp || strings.HasPrefix(path, strings.TrimSuffix(mp, "/")+"/")) && len(mp) > len(best) {
+			best = mp
+		}
+	}
+	return best
 }

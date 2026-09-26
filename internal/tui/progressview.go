@@ -265,7 +265,7 @@ func (m Model) renderResourceLine(r *resourceProgress, stackDone bool, now time.
 }
 
 func renderProgressView(m Model) string {
-	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.width)
+	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.usage, m.width)
 	bodyH := m.progressBodyHeight()
 
 	scrollHint := ""

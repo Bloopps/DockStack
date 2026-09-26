@@ -202,6 +202,13 @@ type Model struct {
 	metrics monitor.Metrics
 	history metricsHistory
 
+	// Occupation Docker de l'en-tête (nil tant qu'inconnue). usageBusy évite
+	// d'empiler des requêtes si le démon est lent ; volumesAt date la
+	// dernière mesure des volumes (coûteuse, espacée).
+	usage     *compose.DockerUsage
+	usageBusy bool
+	volumesAt time.Time
+
 	// Terminal
 	width  int
 	height int
@@ -270,11 +277,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cfg.StackDir == "" {
 			m.loading = false
 			m.view = viewDirPicker
-			return m, tea.Batch(loadDirCmd("/"), subscribeDockerEvents(m.client))
+			m.usageBusy = true
+			return m, tea.Batch(loadDirCmd("/"), subscribeDockerEvents(m.client),
+				fetchUsage(m.client, true), tickUsage())
 		}
 		// La liste est l'écran d'accueil ; les stacks se chargent en arrière-plan
 		m.view = viewList
-		return m, tea.Batch(m.loadStacksCmd(), subscribeDockerEvents(m.client))
+		m.usageBusy = true
+		return m, tea.Batch(m.loadStacksCmd(), subscribeDockerEvents(m.client),
+			fetchUsage(m.client, true), tickUsage())
 
 	case stacksLoadedMsg:
 		// Restaure la position du curseur par identité de ligne (stack ou
@@ -299,6 +310,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("Liste actualisée", false)
 			return m, clearStatusIn(2 * time.Second)
 		}
+
+	case usageMsg:
+		m.usageBusy = false
+		if msg.err != nil {
+			return m, nil // on garde la dernière mesure ; nouvel essai au tick
+		}
+		u := msg.usage
+		if u.VolumesOK {
+			m.volumesAt = time.Now()
+		} else if m.usage != nil && m.usage.VolumesOK {
+			u.VolumesSize, u.VolumesOK = m.usage.VolumesSize, true
+		}
+		if u.RootDir != "" && (m.usage == nil || m.usage.RootDir != u.RootDir) {
+			monitor.SetDiskPath(u.RootDir)
+		}
+		m.usage = &u
+
+	case usageTickMsg:
+		if m.client == nil || m.usageBusy {
+			return m, tickUsage()
+		}
+		m.usageBusy = true
+		return m, tea.Batch(fetchUsage(m.client, time.Since(m.volumesAt) >= volumesInterval), tickUsage())
 
 	case backupsLoadedMsg:
 		m.backups = []backup.Snapshot(msg)
@@ -678,7 +712,7 @@ func (m Model) viewContent() string {
 		return renderComposeView(m)
 	}
 
-	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.width)
+	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.usage, m.width)
 
 	headerH := lipgloss.Height(header)
 	footerH := 1

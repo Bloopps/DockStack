@@ -14,3 +14,17 @@ func TestIsPhysicalDisk(t *testing.T) {
 		}
 	}
 }
+
+func TestLongestMount(t *testing.T) {
+	mounts := "/dev/sda1 / ext4 rw 0 0\n/dev/sdb1 /var/lib/docker ext4 rw 0 0\n/dev/sdc1 /var/lib/dockerx ext4 rw 0 0\ntmpfs /run tmpfs rw 0 0\n"
+	for path, want := range map[string]string{
+		"/var/lib/docker":         "/var/lib/docker",
+		"/var/lib/docker/volumes": "/var/lib/docker",
+		"/var/lib/dock":           "/",
+		"/home/ubuntu":            "/",
+	} {
+		if got := longestMount(path, mounts); got != want {
+			t.Errorf("longestMount(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

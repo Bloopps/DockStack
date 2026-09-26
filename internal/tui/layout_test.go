@@ -28,7 +28,7 @@ func TestHeaderFooterFitWidth(t *testing.T) {
 		m.stacks = []compose.Stack{{Name: "a", Running: 1, Total: 1}}
 		m.invalidateRows()
 
-		h := renderHeader(m.metrics, m.history, m.stackCounts(), w)
+		h := renderHeader(m.metrics, m.history, m.stackCounts(), &compose.DockerUsage{Running: 39, Containers: 40, ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, VolumesSize: 5 << 30, VolumesOK: true}, w)
 		for _, l := range strings.Split(h, "\n") {
 			if lw := lipgloss.Width(l); lw > w {
 				t.Errorf("w=%d : ligne d'en-tête de %d colonnes", w, lw)

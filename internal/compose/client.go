@@ -854,3 +854,38 @@ func (c *Client) PullManyLive(ctx context.Context, stacks []Stack, parallel int)
 func (c *Client) RemoveManyLive(ctx context.Context, stacks []Stack, parallel int) <-chan ProgressEvent {
 	return c.manyLive(ctx, stacks, parallel, c.removeLive)
 }
+
+// DockerUsage résume l'occupation Docker affichée dans l'en-tête.
+type DockerUsage struct {
+	Running, Containers int   // conteneurs en marche / total (tous, hors stacks compris)
+	ImagesSize          int64 // octets
+	ImagesReclaimable   int64 // octets libérables (images inutilisées)
+	VolumesSize         int64 // octets ; valide seulement si VolumesOK
+	VolumesOK           bool
+	RootDir             string // dossier de données du démon (ex. /var/lib/docker)
+}
+
+// Usage interroge le démon : Info (compteurs, dossier de données) et l'espace
+// des images, peu coûteux. La taille des volumes oblige le démon à parcourir
+// leurs données (≈1,5 s pour 5 Go ici, davantage sur de gros volumes) : elle
+// n'est demandée que si withVolumes, à charge pour l'appelant de l'espacer.
+func (c *Client) Usage(ctx context.Context, withVolumes bool) (DockerUsage, error) {
+	api := c.cli.Client()
+	info, err := api.Info(ctx, mobyclient.InfoOptions{})
+	if err != nil {
+		return DockerUsage{}, err
+	}
+	du, err := api.DiskUsage(ctx, mobyclient.DiskUsageOptions{Images: true, Volumes: withVolumes})
+	if err != nil {
+		return DockerUsage{}, err
+	}
+	return DockerUsage{
+		Running:           info.Info.ContainersRunning,
+		Containers:        info.Info.Containers,
+		ImagesSize:        du.Images.TotalSize,
+		ImagesReclaimable: du.Images.Reclaimable,
+		VolumesSize:       du.Volumes.TotalSize,
+		VolumesOK:         withVolumes,
+		RootDir:           info.Info.DockerRootDir,
+	}, nil
+}
