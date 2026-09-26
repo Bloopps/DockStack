@@ -169,12 +169,13 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
 	title := styleBold.Foreground(lipgloss.Color("2")).Render("🐳 Docker Stack Manager")
 	path := L.Render("📂") + " " + sc.Dir
-	stacksInfo := L.Render("📦") + " " + stackLegend(sc)
+	// L'état des stacks est sur la ligne Docker (dockerLine), avec les
+	// conteneurs : un seul endroit pour « est-ce que tout tourne ? ».
 	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")
-	line1 := title + sep + path + sep + stacksInfo + sep + now
+	line1 := title + sep + path + sep + now
 
 	if width >= compactHeaderMinWidth {
-		return renderCompactHeader(m, du, line1, width)
+		return renderCompactHeader(m, du, sc, line1, width)
 	}
 
 	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
@@ -245,7 +246,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 	if coreGrid != "" {
 		parts = append(parts, coreGrid)
 	}
-	parts = append(parts, innerSep, line3, line4, dockerLine(du), divider)
+	parts = append(parts, innerSep, line3, line4, dockerLine(du, sc), divider)
 	// Filet de sécurité : le moteur de rendu coupe au bord de l'écran, autant
 	// couper nous-mêmes proprement (chemin long, terminal très étroit).
 	// Ligne par ligne : la grille des cœurs est un bloc multi-lignes.
@@ -357,12 +358,20 @@ func loadColor(load string, ncores int) lipgloss.Style {
 	return colorForPct(pct)
 }
 
-// stackLegend résume les états en clair (« 62 stacks · ● 14 en marche · ○ 48
-// non déployées »), sans les états à zéro : une rangée de pastilles colorées
-// sans libellé n'était lisible que si l'on connaissait le code couleur.
-func stackLegend(sc StackCounts) string {
-	parts := []string{fmt.Sprintf("%d stacks", sc.Total)}
-	add := func(n int, st lipgloss.Style, glyph, one, many string) {
+// stacksSummary : verdict sur les stacks déployées. « ✔ 15/15 en marche »
+// si tout tourne, sinon « ⚠ 14/15 en marche (● 1 arrêtée) » avec chaque
+// problème dans sa couleur. Les stacks jamais déployées n'y figurent pas :
+// la liste les résume déjà, et elles gonflaient le total pour rien.
+func stacksSummary(sc StackCounts) string {
+	deployed := sc.Total - sc.NotDep
+	if deployed == 0 {
+		return styleDim.Render("aucune déployée")
+	}
+	if sc.Running == deployed {
+		return styleGreen.Render(fmt.Sprintf("✔ %d/%d en marche", sc.Running, deployed))
+	}
+	var probs []string
+	add := func(n int, st lipgloss.Style, one, many string) {
 		if n == 0 {
 			return
 		}
@@ -370,16 +379,13 @@ func stackLegend(sc StackCounts) string {
 		if n == 1 {
 			label = one
 		}
-		// Espace entre le rond et le nombre : le glyphe ● est de largeur
-		// « ambiguë » et certains terminaux le rendent sur ~2 cellules.
-		parts = append(parts, st.Render(fmt.Sprintf("%s %d %s", glyph, n, label)))
+		probs = append(probs, st.Render(fmt.Sprintf("● %d %s", n, label)))
 	}
-	add(sc.Running, styleGreen, "●", "en marche", "en marche")
-	add(sc.Unhealthy, styleOrange, "●", "unhealthy", "unhealthy")
-	add(sc.Partial, styleYellow, "●", "partielle", "partielles")
-	add(sc.Stopped, styleRed, "●", "arrêtée", "arrêtées")
-	add(sc.NotDep, styleDim, "○", "non déployée", "non déployées")
-	return strings.Join(parts, styleDim.Render(" · "))
+	add(sc.Unhealthy, styleOrange, "unhealthy", "unhealthy")
+	add(sc.Partial, styleYellow, "partielle", "partielles")
+	add(sc.Stopped, styleRed, "arrêtée", "arrêtées")
+	return styleYellow.Render(fmt.Sprintf("⚠ %d/%d en marche", sc.Running, deployed)) +
+		" (" + strings.Join(probs, styleDim.Render(" · ")) + ")"
 }
 
 // compactLeftW renvoie la largeur de barre et la largeur totale de la
@@ -412,7 +418,7 @@ func compactCoreLayout(n, width int) (rows, cols int) {
 // renderCompactHeader : en-tête en deux colonnes pour terminal large. À
 // gauche une ligne par ressource (libellés et barres alignés), à droite la
 // grille des cœurs avec barre et pourcentage, puis Load/IO/Uptime en pied.
-func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 string, width int) string {
+func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCounts, line1 string, width int) string {
 	L := styleCyan
 	barW, leftW := compactLeftW(width)
 	pct := func(p int) string { return colorForPct(p).Render(fmt.Sprintf("%4d%%", p)) }
@@ -480,7 +486,7 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, line1 strin
 		titles += "   " + styleDim.Render("Détail par cœur")
 	}
 	lines := append([]string{line1, titles}, body...)
-	lines = append(lines, dockerLine(du), foot, styleDim.Render(strings.Repeat("─", width)))
+	lines = append(lines, dockerLine(du, sc), foot, styleDim.Render(strings.Repeat("─", width)))
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
@@ -531,19 +537,19 @@ func fmtBytes(b int64) string {
 	return fmt.Sprintf("%d Mo", b>>20)
 }
 
-// dockerLine : conteneurs en marche et place prise par Docker — ce qu'on
-// regarde avant un Pull ou un nettoyage.
-func dockerLine(du *compose.DockerUsage) string {
-	label := "  " + styleCyan.Render(fmt.Sprintf("%-7s", "Docker")) + " "
-	if du == nil {
-		return label + styleDim.Render("mesure en cours…")
-	}
+// dockerLine : état des stacks et des conteneurs, puis place prise par
+// Docker — ce qu'on regarde avant d'agir ou de faire le ménage.
+func dockerLine(du *compose.DockerUsage, sc StackCounts) string {
 	dot := styleDim.Render("  ·  ")
+	s := "  " + styleCyan.Render(fmt.Sprintf("%-7s", "Docker")) + " stacks " + stacksSummary(sc)
+	if du == nil {
+		return s + dot + styleDim.Render("conteneurs et espace : mesure en cours…")
+	}
 	running := styleGreen
 	if du.Running < du.Containers {
 		running = styleYellow
 	}
-	s := label + running.Render(fmt.Sprintf("%d / %d", du.Running, du.Containers)) + " conteneurs en marche" +
+	s += dot + "conteneurs " + running.Render(fmt.Sprintf("%d/%d", du.Running, du.Containers)) +
 		dot + "images " + fmtBytes(du.ImagesSize)
 	if du.ImagesReclaimable > 0 {
 		s += styleDim.Render(" (dont " + fmtBytes(du.ImagesReclaimable) + " inutilisées)")
