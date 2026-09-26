@@ -118,3 +118,14 @@ func TestDelete(t *testing.T) {
 		t.Error("le doublon active_stacks aurait dû être supprimé")
 	}
 }
+
+// TestSaveCreatesDir : la capture crée le dossier de config s'il manque.
+func TestSaveCreatesDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	if err := Save(dir, "/srv", []string{"a"}); err != nil {
+		t.Fatalf("Save dans un dossier absent : %v", err)
+	}
+	if snaps, _ := List(dir); len(snaps) != 1 {
+		t.Errorf("List = %d capture(s), want 1", len(snaps))
+	}
+}

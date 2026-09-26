@@ -100,6 +100,10 @@ func Save(configDir, stackDir string, stacks []string) error {
 	)
 	data := []byte(content)
 
+	// Le dossier n'existe que si la config a déjà été enregistrée.
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return writeErr(configDir, err)
+	}
 	// Erreur courte « dossier : cause » : le chemin complet du fichier
 	// horodaté, tronqué dans le footer, masquait la cause (permission denied).
 	if err := os.WriteFile(base+"."+ts, data, 0o644); err != nil {
