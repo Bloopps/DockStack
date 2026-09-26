@@ -24,12 +24,12 @@ func TestSwapStyle(t *testing.T) {
 
 func TestDockerLine(t *testing.T) {
 	sc := StackCounts{Total: 62, Running: 14, Stopped: 1, NotDep: 47}
-	if got := ansi.Strip(dockerLine(nil, sc)); !strings.Contains(got, "mesure en cours") || !strings.Contains(got, "14/15") {
+	if got := ansi.Strip(dockerLine(nil, sc)); !strings.Contains(got, "Conteneurs …") || !strings.Contains(got, "14/15") {
 		t.Errorf("sans mesure : %q", got)
 	}
 	got := ansi.Strip(dockerLine(&compose.DockerUsage{Running: 39, Containers: 40,
 		ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, VolumesSize: 512 << 20, VolumesOK: true}, sc))
-	for _, want := range []string{"⚠ 14/15 en marche (● 1 arrêtée)", "conteneurs 39/40", "images 85.0 Go", "dont 24.0 Go inutilisées", "volumes 512 Mo"} {
+	for _, want := range []string{"Stacks ⚠ 14/15 (● 1 arrêtée)", "Conteneurs 39/40", "Images 85.0 Go (24.0 Go libres)", "Volumes 512 Mo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ligne Docker %q : %q absent", got, want)
 		}
@@ -64,9 +64,9 @@ func TestStacksSummary(t *testing.T) {
 		sc   StackCounts
 		want string
 	}{
-		{StackCounts{Total: 63, Running: 15, NotDep: 48}, "✔ 15/15 en marche"},
+		{StackCounts{Total: 63, Running: 15, NotDep: 48}, "✔ 15/15"},
 		{StackCounts{Total: 63, Running: 12, Unhealthy: 1, Partial: 1, Stopped: 1, NotDep: 48},
-			"⚠ 12/15 en marche (● 1 unhealthy · ● 1 partielle · ● 1 arrêtée)"},
+			"⚠ 12/15 (● 1 unhealthy · ● 1 partielle · ● 1 arrêtée)"},
 		{StackCounts{Total: 5, NotDep: 5}, "aucune déployée"},
 	} {
 		if got := ansi.Strip(stacksSummary(tc.sc)); got != tc.want {

@@ -288,8 +288,12 @@ func coreGridCols(n, termW int) int {
 // aligné sur la structure assemblée à la fin de renderHeader.
 func headerHeight(nCores, width int) int {
 	if width >= compactHeaderMinWidth {
-		rows, _ := compactCoreLayout(nCores, width)
-		return 2 + rows + 3 // titre + titres de colonnes, ressources/cœurs, Docker + Système + séparateur
+		rows, _, dockerCol := compactLayout(nCores, width)
+		h := 2 + rows + 2 // titre + titres de colonnes, ressources/cœurs, Système + séparateur
+		if !dockerCol {
+			h++ // Docker repasse en ligne
+		}
+		return h
 	}
 	h := 8 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, Docker, divider
 	if nCores > 0 {
@@ -358,8 +362,8 @@ func loadColor(load string, ncores int) lipgloss.Style {
 	return colorForPct(pct)
 }
 
-// stacksSummary : verdict sur les stacks déployées. « ✔ 15/15 en marche »
-// si tout tourne, sinon « ⚠ 14/15 en marche (● 1 arrêtée) » avec chaque
+// stacksSummary : verdict sur les stacks déployées. « ✔ 15/15 » si tout
+// tourne, sinon « ⚠ 14/15 (● 1 arrêtée) » avec chaque
 // problème dans sa couleur. Les stacks jamais déployées n'y figurent pas :
 // la liste les résume déjà, et elles gonflaient le total pour rien.
 func stacksSummary(sc StackCounts) string {
@@ -368,7 +372,7 @@ func stacksSummary(sc StackCounts) string {
 		return styleDim.Render("aucune déployée")
 	}
 	if sc.Running == deployed {
-		return styleGreen.Render(fmt.Sprintf("✔ %d/%d en marche", sc.Running, deployed))
+		return styleGreen.Render(fmt.Sprintf("✔ %d/%d", sc.Running, deployed))
 	}
 	var probs []string
 	add := func(n int, st lipgloss.Style, one, many string) {
@@ -384,7 +388,7 @@ func stacksSummary(sc StackCounts) string {
 	add(sc.Unhealthy, styleOrange, "unhealthy", "unhealthy")
 	add(sc.Partial, styleYellow, "partielle", "partielles")
 	add(sc.Stopped, styleRed, "arrêtée", "arrêtées")
-	return styleYellow.Render(fmt.Sprintf("⚠ %d/%d en marche", sc.Running, deployed)) +
+	return styleYellow.Render(fmt.Sprintf("⚠ %d/%d", sc.Running, deployed)) +
 		" (" + strings.Join(probs, styleDim.Render(" · ")) + ")"
 }
 
@@ -399,20 +403,33 @@ func compactLeftW(width int) (barW, leftW int) {
 	return barW, 2 + 7 + 1 + barW + 5
 }
 
-// compactCoreLayout calcule la grille des cœurs (lignes × colonnes, remplie
-// colonne par colonne) : au moins resourceRows lignes pour s'aligner sur les
-// ressources, davantage si les colonnes ne tiennent pas dans la largeur.
-func compactCoreLayout(n, width int) (rows, cols int) {
-	if n <= 0 {
-		return resourceRows, 0
-	}
+// dockerColW : largeur de la colonne Docker (libellé 11 + valeur).
+const dockerColW = 36
+
+// coreCellW : largeur d'une cellule de cœur (« 12 ██████ 100% »), hors
+// espacement.
+func coreCellW(n int) int {
+	return len(fmt.Sprintf("%d", max(n-1, 0))) + 1 + coreBarW + 5
+}
+
+// compactLayout calcule la grille des cœurs (lignes × colonnes, remplie
+// colonne par colonne) et dit si la colonne Docker tient à droite. Priorité :
+// cœurs sur resourceRows lignes + colonne Docker ; sinon (terminal trop
+// étroit, beaucoup de cœurs) la grille s'allonge et Docker repasse en ligne.
+func compactLayout(n, width int) (rows, cols int, dockerCol bool) {
 	_, leftW := compactLeftW(width)
-	labelW := len(fmt.Sprintf("%d", n-1))
-	cellW := labelW + 1 + coreBarW + 1 + 4 + 3
-	maxCols := max(1, (width-leftW-3)/cellW)
+	cellW := coreCellW(n)
+	gridW := func(c int) int { return c*cellW + max(c-1, 0)*3 }
+	need := (n + resourceRows - 1) / resourceRows
+	if leftW+3+gridW(need)+3+dockerColW <= width {
+		return resourceRows, need, true
+	}
+	if n <= 0 {
+		return resourceRows, 0, false
+	}
+	maxCols := max(1, (width-leftW-3+3)/(cellW+3))
 	rows = max(resourceRows, (n+maxCols-1)/maxCols)
-	cols = (n + rows - 1) / rows
-	return rows, cols
+	return rows, (n + rows - 1) / rows, false
 }
 
 // renderCompactHeader : en-tête en deux colonnes pour terminal large. À
@@ -440,9 +457,14 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCou
 			fmt.Sprintf("%d / %d Go", m.DiskUsedGB, m.DiskTotalGB), fmt.Sprintf("%d/%dG", m.DiskUsedGB, m.DiskTotalGB)),
 	}
 
-	rows, cols := compactCoreLayout(len(m.CPUCores), width)
+	rows, cols, dockerCol := compactLayout(len(m.CPUCores), width)
 	labelW := len(fmt.Sprintf("%d", max(len(m.CPUCores)-1, 0)))
+	gridW := cols*coreCellW(len(m.CPUCores)) + max(cols-1, 0)*3
 	sep := styleMagenta.Render(" │ ")
+	var dockerRows []string
+	if dockerCol {
+		dockerRows = dockerItems(du, sc, true)
+	}
 	body := make([]string, rows)
 	for r := 0; r < rows; r++ {
 		l := ""
@@ -461,6 +483,12 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCou
 				styleDim.Render(fmt.Sprintf("%*d", labelW, i)), bar(p, coreBarW), pct(p)))
 		}
 		body[r] = l + sep + strings.Join(cells, "   ")
+		if dockerCol {
+			body[r] += strings.Repeat(" ", max(leftW+3+gridW-lipgloss.Width(body[r]), 0)) + sep
+			if r < len(dockerRows) {
+				body[r] += dockerRows[r]
+			}
+		}
 	}
 
 	dot := styleDim.Render(" · ")
@@ -485,8 +513,14 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCou
 	if len(m.CPUCores) > 0 {
 		titles += "   " + styleDim.Render("Détail par cœur")
 	}
+	if dockerCol {
+		titles += strings.Repeat(" ", max(leftW+3+gridW+3-lipgloss.Width(titles), 0)) + styleDim.Render("Docker")
+	}
 	lines := append([]string{line1, titles}, body...)
-	lines = append(lines, dockerLine(du, sc), foot, styleDim.Render(strings.Repeat("─", width)))
+	if !dockerCol {
+		lines = append(lines, dockerLine(du, sc))
+	}
+	lines = append(lines, foot, styleDim.Render(strings.Repeat("─", width)))
 	for i, l := range lines {
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
@@ -537,28 +571,42 @@ func fmtBytes(b int64) string {
 	return fmt.Sprintf("%d Mo", b>>20)
 }
 
-// dockerLine : état des stacks et des conteneurs, puis place prise par
-// Docker — ce qu'on regarde avant d'agir ou de faire le ménage.
+// dockerItems : paires libellé/valeur de l'état Docker. En colonne (col),
+// une paire par ligne avec libellés alignés ; sinon libellés courts pour la
+// ligne de repli.
+func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
+	item := func(label, value string) string {
+		if col {
+			return styleCyan.Render(fmt.Sprintf("%-11s", label)) + value
+		}
+		return styleCyan.Render(label) + " " + value
+	}
+	wait := styleDim.Render("…")
+	ctrs, images, volumes := wait, wait, wait
+	if du != nil {
+		st := styleGreen
+		if du.Running < du.Containers {
+			st = styleYellow
+		}
+		ctrs = st.Render(fmt.Sprintf("%d/%d", du.Running, du.Containers))
+		images = fmtBytes(du.ImagesSize)
+		if du.ImagesReclaimable > 0 {
+			images += styleDim.Render(" (" + fmtBytes(du.ImagesReclaimable) + " libres)")
+		}
+		if du.VolumesOK {
+			volumes = fmtBytes(du.VolumesSize)
+		}
+	}
+	return []string{
+		item("Stacks", stacksSummary(sc)),
+		item("Conteneurs", ctrs),
+		item("Images", images),
+		item("Volumes", volumes),
+	}
+}
+
+// dockerLine : repli sur une ligne quand la colonne Docker ne tient pas.
 func dockerLine(du *compose.DockerUsage, sc StackCounts) string {
-	dot := styleDim.Render("  ·  ")
-	s := "  " + styleCyan.Render(fmt.Sprintf("%-7s", "Docker")) + " stacks " + stacksSummary(sc)
-	if du == nil {
-		return s + dot + styleDim.Render("conteneurs et espace : mesure en cours…")
-	}
-	running := styleGreen
-	if du.Running < du.Containers {
-		running = styleYellow
-	}
-	s += dot + "conteneurs " + running.Render(fmt.Sprintf("%d/%d", du.Running, du.Containers)) +
-		dot + "images " + fmtBytes(du.ImagesSize)
-	if du.ImagesReclaimable > 0 {
-		s += styleDim.Render(" (dont " + fmtBytes(du.ImagesReclaimable) + " inutilisées)")
-	}
-	s += dot + "volumes "
-	if du.VolumesOK {
-		s += fmtBytes(du.VolumesSize)
-	} else {
-		s += styleDim.Render("…")
-	}
-	return s
+	return "  " + styleCyan.Render(fmt.Sprintf("%-7s", "Docker")) + " " +
+		strings.Join(dockerItems(du, sc, false), styleMagenta.Render(" │ "))
 }
