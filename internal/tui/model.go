@@ -1047,7 +1047,7 @@ type rowAnchor struct{ stack, group string }
 func (m Model) cursorAnchor() rowAnchor {
 	row, ok := m.cursorRow()
 	switch {
-	case !ok || row.sep:
+	case !ok || row.sep || row.more:
 		return rowAnchor{}
 	case row.header:
 		return rowAnchor{group: row.group}
@@ -1061,7 +1061,7 @@ func (m Model) cursorAnchor() rowAnchor {
 func (m *Model) seekCursor(a rowAnchor) {
 	m.cursor = 0
 	for i, r := range m.listRows() {
-		if (a.stack != "" && !r.header && !r.sep && r.stack.Name == a.stack) ||
+		if (a.stack != "" && r.isStack() && r.stack.Name == a.stack) ||
 			(a.group != "" && r.header && r.group == a.group) {
 			m.cursor = i
 			return

@@ -19,25 +19,35 @@ import (
 // du volet d'aperçu vers la vue compose plein écran.
 const doubleVDelay = 700 * time.Millisecond
 
-var stackActions = []string{
-	"▶  Up",
-	"▪  Down",
-	"↺  Restart",
-	"↻  Recreate",
-	"↓  Pull",
-	"≡  Logs",
-	"📄  Compose",
-	"✕  Remove",
-	"←  Retour",
+// menuAction : une entrée de panneau d'actions. Une SEULE liste sert au rendu
+// et à l'exécution : deux listes parallèles avaient divergé (« Compose » ajouté
+// à l'une seulement), décalant tout le menu — « Retour » lançait Remove.
+type menuAction struct {
+	id    string // action canonique ("up", "compose", "back"…)
+	icon  string
+	label string
+	color string // index de couleur ANSI
 }
 
-var groupActions = []string{
-	"▶  Up (sélection)",
-	"▪  Down (sélection)",
-	"↺  Restart (sélection)",
-	"↻  Recreate (sélection)",
-	"↓  Pull (sélection)",
-	"←  Retour",
+var stackActions = []menuAction{
+	{"up", "▶", "Up", "2"},
+	{"down", "▪", "Down", "1"},
+	{"restart", "↺", "Restart", "3"},
+	{"recreate", "↻", "Recreate", "3"},
+	{"pull", "↓", "Pull", "6"},
+	{"logs", "≡", "Logs", "6"},
+	{"compose", "▤", "Compose", "6"},
+	{"remove", "✕", "Remove", "1"},
+	{"back", "←", "Retour", "8"},
+}
+
+var groupActions = []menuAction{
+	{"up", "▶", "Up", "2"},
+	{"down", "▪", "Down", "1"},
+	{"restart", "↺", "Restart", "3"},
+	{"recreate", "↻", "Recreate", "3"},
+	{"pull", "↓", "Pull", "6"},
+	{"back", "←", "Retour", "8"},
 }
 
 // ---- list ----
@@ -123,7 +133,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// en-tête, où espace sélectionnerait tout le groupe).
 			rows := m.listRows()
 			for c := m.cursor + 1; c < len(rows); c++ {
-				if !rows[c].sep && !rows[c].header {
+				if rows[c].isStack() {
 					m.cursor = c
 					break
 				}
@@ -142,6 +152,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.view = viewAction
 			m.actionCursor = 0
 			return m, nil
+		}
+		if row, ok := m.cursorRow(); ok && row.more {
+			return m.toggleInactive()
 		}
 		if row, ok := m.cursorRow(); ok && row.header {
 			if m.foldedGroups[row.group] {
@@ -217,15 +230,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.previewOn = !m.previewOn
 	case "a":
-		// Affiche/masque les stacks jamais déployées ; le choix est mémorisé.
-		anchor := m.cursorAnchor()
-		m.cfg.ShowInactive = !m.cfg.ShowInactive
-		m.invalidateRows()
-		m.seekCursor(anchor)
-		if err := m.cfg.Save(); err != nil {
-			m.setStatus("Config non sauvegardée : "+err.Error(), true)
-			return m, clearStatusIn(6 * time.Second)
-		}
+		return m.toggleInactive()
 	case "x":
 		return m.confirmExclude()
 	case "b":
@@ -243,11 +248,38 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// toggleInactive affiche/masque les stacks jamais déployées (choix mémorisé).
+// Depuis la ligne « N masquées », le curseur se pose sur la première
+// d'entre elles : c'est pour en déployer une qu'on les affiche.
+func (m Model) toggleInactive() (tea.Model, tea.Cmd) {
+	anchor := m.cursorAnchor()
+	fromMore := false
+	if row, ok := m.cursorRow(); ok && row.more {
+		fromMore = true
+	}
+	m.cfg.ShowInactive = !m.cfg.ShowInactive
+	m.invalidateRows()
+	m.seekCursor(anchor)
+	if fromMore {
+		for i, r := range m.listRows() {
+			if r.isStack() && r.stack.State() == compose.StateUnknown {
+				m.cursor = i
+				break
+			}
+		}
+	}
+	if err := m.cfg.Save(); err != nil {
+		m.setStatus("Config non sauvegardée : "+err.Error(), true)
+		return m, clearStatusIn(6 * time.Second)
+	}
+	return m, nil
+}
+
 // confirmExclude propose d'exclure du scan la stack ou le dossier sous le
 // curseur (dépôts de dev, exemples…). Réversible via config.json.
 func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 	row, ok := m.cursorRow()
-	if !ok || row.sep {
+	if !ok || row.sep || row.more {
 		return m, nil
 	}
 	target := row.stack.Name
@@ -289,7 +321,7 @@ func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 
 // actionLabels renvoie les entrées du panneau d'actions selon la cible :
 // la sélection (actions groupées) ou la stack sous le curseur.
-func (m Model) actionLabels() []string {
+func (m Model) actionLabels() []menuAction {
 	if len(m.selectedStacks()) > 0 {
 		return groupActions
 	}
@@ -324,22 +356,16 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch stackActions[m.actionCursor] {
-	case "▶  Up":
+	switch stackActions[m.actionCursor].id {
+	case "up":
 		return m.startOrConfirmUp(stack)
-	case "▪  Down":
-		return m.confirmStackAction("down", stack)
-	case "↺  Restart":
-		return m.confirmStackAction("restart", stack)
-	case "↻  Recreate":
-		return m.confirmStackAction("recreate", stack)
-	case "↓  Pull":
-		return m.startStackAction("pull", stack)
-	case "≡  Logs":
-		return m.startStackAction("logs", stack)
-	case "📄  Compose":
+	case "down", "restart", "recreate":
+		return m.confirmStackAction(stackActions[m.actionCursor].id, stack)
+	case "pull", "logs":
+		return m.startStackAction(stackActions[m.actionCursor].id, stack)
+	case "compose":
 		return m.openComposeView(stack)
-	case "✕  Remove":
+	case "remove":
 		// Destructif : confirmation obligatoire, et Remove supprime aussi
 		// les volumes (down --volumes --remove-orphans).
 		return m.askConfirm("Remove — "+stack.Name,
@@ -347,7 +373,7 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 			[]string{stack.Name},
 			func(m Model) (tea.Model, tea.Cmd) { return m.startStackAction("remove", stack) })
 	}
-	// "←  Retour" and any other case: back to the list.
+	// "back" (Retour) : retour à la liste.
 	m.view = viewList
 	return m, nil
 }
@@ -430,19 +456,15 @@ func (m Model) execGroupAction() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch groupActions[m.actionCursor] {
-	case "▶  Up (sélection)":
+	switch id := groupActions[m.actionCursor].id; id {
+	case "up":
 		return m.startOrConfirmGroupUp(stacks)
-	case "▪  Down (sélection)":
-		return m.confirmGroupAction("down", stacks)
-	case "↺  Restart (sélection)":
-		return m.confirmGroupAction("restart", stacks)
-	case "↻  Recreate (sélection)":
-		return m.confirmGroupAction("recreate", stacks)
-	case "↓  Pull (sélection)":
+	case "down", "restart", "recreate":
+		return m.confirmGroupAction(id, stacks)
+	case "pull":
 		return m.startGroupAction("pull", stacks)
 	}
-	// "←  Retour" and any other case: back to the list.
+	// "back" (Retour) : retour à la liste.
 	m.view = viewList
 	return m, nil
 }

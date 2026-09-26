@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/config"
@@ -89,23 +90,30 @@ func TestListFooterContext(t *testing.T) {
 }
 
 // TestInactiveHiddenByDefault : les stacks jamais déployées sont masquées et
-// résumées en une ligne non navigable ; a les réaffiche ; un filtre les inclut.
+// résumées en une ligne navigable ; ↩ dessus les affiche et pose le curseur
+// sur la première (pour pouvoir la déployer) ; un filtre les inclut.
 func TestInactiveHiddenByDefault(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	m := newTestModel([]compose.Stack{stack("up", "up", 1, 1, 0), stack("dev", "dev", 0, 0, 0)})
 	rows := m.listRows()
-	if len(rows) != 2 || !rows[1].sep || !strings.Contains(rows[1].note, "1 stack") {
-		t.Fatalf("lignes = %+v, want [up, note « 1 stack… »]", rows)
+	if len(rows) != 2 || !rows[1].more || !strings.Contains(rows[1].note, "1 non déployée") {
+		t.Fatalf("lignes = %+v, want [up, ligne « 1 non déployée… »]", rows)
 	}
 	m.moveCursor(1)
-	if m.cursor != 0 {
-		t.Error("la ligne de note ne doit pas être navigable")
+	if m.cursor != 1 {
+		t.Fatal("la ligne « non déployées » doit être navigable")
+	}
+	if _, ok := m.cursorStack(); ok {
+		t.Fatal("la ligne « non déployées » n'est pas une stack")
 	}
 
-	t.Setenv("HOME", t.TempDir())
-	out, _ := m.handleListKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	out, _ := m.handleListKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = out.(Model)
-	if len(m.shownStacks()) != 2 || !m.cfg.ShowInactive {
-		t.Errorf("après a : %d stacks affichées, ShowInactive=%v", len(m.shownStacks()), m.cfg.ShowInactive)
+	if !m.cfg.ShowInactive {
+		t.Fatal("↩ sur la ligne doit afficher les non déployées")
+	}
+	if s, ok := m.cursorStack(); !ok || s.Name != "dev" {
+		t.Errorf("curseur sur %+v, want la stack non déployée « dev »", s)
 	}
 
 	m.cfg.ShowInactive = false
@@ -113,6 +121,32 @@ func TestInactiveHiddenByDefault(t *testing.T) {
 	m.invalidateRows()
 	if s := m.shownStacks(); len(s) != 1 || s[0].Name != "dev" {
 		t.Errorf("filtre « dev » : %v, want la stack inactive trouvée", s)
+	}
+}
+
+// TestActionPanelMatchesExec : chaque entrée affichée du panneau d'actions
+// exécute l'action qu'elle annonce (régression : « Compose » manquait à
+// l'affichage, et « Retour » lançait Remove).
+func TestActionPanelMatchesExec(t *testing.T) {
+	s := stack("web", "web", 1, 1, 0)
+	s.ComposeFile = ""
+	m := newTestModel([]compose.Stack{s})
+	m.client = &fakeClient{}
+	panel := ansi.Strip(buildActionPanel(s, -1))
+	for _, a := range stackActions {
+		if !strings.Contains(panel, a.label) {
+			t.Errorf("entrée %q absente du panneau", a.label)
+		}
+	}
+	for i, a := range stackActions {
+		m.view, m.actionCursor = viewAction, i
+		out, _ := m.execStackAction()
+		got := out.(Model).view
+		want := map[string]view{"compose": viewCompose, "back": viewList, "remove": viewConfirm,
+			"down": viewConfirm, "restart": viewConfirm, "recreate": viewConfirm}[a.id]
+		if want != 0 && got != want {
+			t.Errorf("entrée %d « %s » : vue %v, want %v", i, a.label, got, want)
+		}
 	}
 }
 

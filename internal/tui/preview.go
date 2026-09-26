@@ -99,7 +99,7 @@ func renderPreviewPane(m Model, height, paneW int) string {
 
 	var content []string
 	switch row, ok := m.cursorRow(); {
-	case !ok || row.sep:
+	case !ok || row.sep || row.more:
 		content = []string{styleDim.Render("(rien à afficher)")}
 	case row.header:
 		content = previewGroup(m, row.group, inner, height)

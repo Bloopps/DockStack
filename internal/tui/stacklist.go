@@ -138,6 +138,7 @@ type listRow struct {
 	header   bool
 	sep      bool
 	note     string // texte d'une ligne séparatrice informative (non navigable)
+	more     bool   // ligne « N non déployées masquées » : navigable, ↩ les affiche
 	group    string
 	size     int
 	folded   bool
@@ -145,6 +146,10 @@ type listRow struct {
 	stack    compose.Stack
 	indented bool
 }
+
+// isStack : la ligne représente une stack (ni en-tête, ni séparateur, ni
+// ligne « non déployées masquées »).
+func (r listRow) isStack() bool { return !r.header && !r.sep && !r.more }
 
 type groupCounts struct{ run, part, unhealthy, stop, off int }
 
@@ -238,7 +243,7 @@ func (m Model) listRows() []listRow {
 	// visibles) : sinon elle bougerait en faisant défiler.
 	nameW := 0
 	for _, r := range rows {
-		if !r.header && !r.sep {
+		if r.isStack() {
 			w := lipgloss.Width(r.stack.Name)
 			if r.stack.Orphaned {
 				w += 2
@@ -316,8 +321,8 @@ func (m Model) buildListRows() []listRow {
 		rows = append(rows, listRow{stack: s, indented: inMulti})
 	}
 	if n := m.rowsCache.hidden; n > 0 {
-		rows = append(rows, listRow{sep: true,
-			note: fmt.Sprintf("○ %d stack(s) non déployée(s) masquée(s) — a pour afficher", n)})
+		rows = append(rows, listRow{more: true,
+			note: fmt.Sprintf("○ %d non déployée%s masquée%s — ↩ ou a pour afficher", n, plural(n), plural(n))})
 	}
 	return rows
 }
@@ -342,7 +347,7 @@ func (m Model) cursorRow() (listRow, bool) {
 // en-tête de groupe).
 func (m Model) cursorStack() (compose.Stack, bool) {
 	row, ok := m.cursorRow()
-	if !ok || row.header || row.sep {
+	if !ok || !row.isStack() {
 		return compose.Stack{}, false
 	}
 	return row.stack, true
@@ -352,7 +357,7 @@ func (m Model) cursorStack() (compose.Stack, bool) {
 // ou n'importe lequel de ses membres.
 func (m Model) cursorGroup() (string, bool) {
 	row, ok := m.cursorRow()
-	if !ok || row.sep {
+	if !ok || row.sep || row.more {
 		return "", false
 	}
 	if row.header {
@@ -423,7 +428,7 @@ func (m *Model) clampCursor() {
 func (m Model) visibleStacks() []compose.Stack {
 	var out []compose.Stack
 	for _, r := range m.listRows() {
-		if !r.header && !r.sep {
+		if r.isStack() {
 			out = append(out, r.stack)
 		}
 	}
@@ -491,8 +496,13 @@ func renderStackList(m Model, height, width int) string {
 	for i := start; i < end; i++ {
 		row := rows[i]
 		switch {
-		case row.sep && row.note != "":
-			lines = append(lines, styleDim.Render(truncate("  "+row.note, max(width, 1))))
+		case row.more:
+			text := truncate("  "+row.note, max(width, 1))
+			if i == cursor {
+				lines = append(lines, styleSelected.Render(text+strings.Repeat(" ", max(width-lipgloss.Width(text), 0))))
+			} else {
+				lines = append(lines, styleDim.Render(text))
+			}
 		case row.sep:
 			lines = append(lines, styleDim.Render("  "+strings.Repeat("─", max(width-6, 1))))
 		case row.header:
@@ -658,4 +668,11 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 		line += "  " + styleDim.Render(word)
 	}
 	return line
+}
+
+func plural(n int) string {
+	if n > 1 {
+		return "s"
+	}
+	return ""
 }

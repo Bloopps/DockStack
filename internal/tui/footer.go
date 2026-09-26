@@ -109,7 +109,9 @@ func (m Model) listFooterKeys() []footerKey {
 			{"u", "up dossier"}, {"d", "down"}, {"r", "restart"},
 			{"b", "captures"}, {"↩", "replier"}, {"␣", "sélect. dossier"},
 		}
-	case ok && !row.sep:
+	case ok && row.more:
+		keys = []footerKey{{"↩", "afficher les non déployées"}}
+	case ok && row.isStack():
 		keys = []footerKey{
 			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"},
 			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"},
@@ -119,7 +121,7 @@ func (m Model) listFooterKeys() []footerKey {
 	if m.cfg.ShowInactive {
 		inactive = "masquer inactives"
 	}
-	if !ok || row.sep {
+	if !ok || !row.isStack() && !row.header {
 		keys = append(keys, footerKey{"b", "captures"})
 	}
 	keys = append(keys,

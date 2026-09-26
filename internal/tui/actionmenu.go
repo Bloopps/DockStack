@@ -20,34 +20,6 @@ var (
 	stylePanelTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 )
 
-// Per-action styling: icon color, label color when selected
-type actionStyle struct {
-	icon string
-	// color is an ANSI color index (e.g. "2"); v2's lipgloss.Color is a function,
-	// so we keep the raw string and convert at use sites.
-	color string
-}
-
-var stackActionStyles = []actionStyle{
-	{"▶", "2"}, // Up       — vert
-	{"▪", "1"}, // Down     — rouge
-	{"↺", "3"}, // Restart  — jaune
-	{"↻", "3"}, // Recreate — jaune
-	{"↓", "6"}, // Pull     — cyan
-	{"≡", "6"}, // Logs     — cyan
-	{"✕", "1"}, // Remove   — rouge
-	{"←", "8"}, // Retour   — gris
-}
-
-var groupActionStyles = []actionStyle{
-	{"▶", "2"},
-	{"▪", "1"},
-	{"↺", "3"},
-	{"↻", "3"},
-	{"↓", "6"},
-	{"←", "8"},
-}
-
 func renderActionMenu(m Model, height int) string {
 	sel := m.selectedStacks()
 	stack, okStack := m.cursorStack()
@@ -86,10 +58,8 @@ func buildActionPanel(stack compose.Stack, cursor int) string {
 	}
 	rows = append(rows, divider, "")
 
-	labels := []string{"Up", "Down", "Restart", "Recreate", "Pull", "Logs", "Remove", "Retour"}
-
-	for i, lbl := range labels {
-		st := stackActionStyles[i]
+	for i, st := range stackActions {
+		lbl := st.label
 		col := lipgloss.NewStyle().Foreground(lipgloss.Color(st.color))
 		icon := col.Render(st.icon)
 
@@ -137,10 +107,8 @@ func buildGroupPanel(selected []compose.Stack, cursor int) string {
 	title := stylePanelTitle.Render(fmt.Sprintf("%d stacks sélectionnées", len(selected)))
 	rows := []string{title, divider, ""}
 
-	labels := []string{"Up", "Down", "Restart", "Recreate", "Pull", "Retour"}
-
-	for i, lbl := range labels {
-		st := groupActionStyles[i]
+	for i, st := range groupActions {
+		lbl := st.label
 		col := lipgloss.NewStyle().Foreground(lipgloss.Color(st.color))
 		icon := col.Render(st.icon)
 
