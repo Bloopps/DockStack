@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/monitor"
 )
@@ -34,6 +35,10 @@ const (
 	// cases pleines = plus de finesse sans recourir à un glyphe partiel (qui
 	// casserait la netteté). 20 cases ⇒ 5 % par case.
 	mainBarW = 20
+	// En dessous de wideHeaderMinWidth colonnes, les jauges repassent à
+	// narrowBarW cases pour que les lignes RAM/Disk tiennent.
+	wideHeaderMinWidth = 110
+	narrowBarW         = 8
 )
 
 var sparkRunes = []rune("▁▂▃▄▅▆▇█")
@@ -170,8 +175,15 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")
 	line1 := title + sep + path + sep + stacksInfo + sep + now
 
+	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
+	// RAM/Disk dépassent ~95 colonnes et leur fin (Uptime, Load) serait coupée.
+	barW := mainBarW
+	if width < wideHeaderMinWidth {
+		barW = narrowBarW
+	}
+
 	// ── Ligne 2 : CPU avg + grille par cœur ───────────────────────────────
-	cpuBar := bar(m.CPUPercent, mainBarW)
+	cpuBar := bar(m.CPUPercent, barW)
 	cpuPct := colorForPct(m.CPUPercent).Render(fmt.Sprintf("%3d%%", m.CPUPercent))
 	cpuLabel := L.Render("CPU")
 	cpuSpark := colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth))
@@ -183,7 +195,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	coreGrid := renderCoreGrid(m.CPUCores, width)
 
 	// ── Ligne 3 : RAM │ Swap │ Uptime ─────────────────────────────────────
-	memBar := bar(m.MemPercent, mainBarW)
+	memBar := bar(m.MemPercent, barW)
 	memPct := colorForPct(m.MemPercent).Render(fmt.Sprintf("%3d%%", m.MemPercent))
 	swapCol := colorForPct(m.SwapPercent)
 	line3 := fmt.Sprintf("  %s %s  %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s",
@@ -197,7 +209,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 	)
 
 	// ── Ligne 4 : Disk │ IO │ Load ────────────────────────────────────────
-	diskBar := bar(m.DiskPercent, mainBarW)
+	diskBar := bar(m.DiskPercent, barW)
 	diskPct := colorForPct(m.DiskPercent).Render(fmt.Sprintf("%3d%%", m.DiskPercent))
 
 	ioRCol := ioColor(m.DiskReadKBs)
@@ -232,7 +244,14 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, width 
 		parts = append(parts, coreGrid)
 	}
 	parts = append(parts, innerSep, line3, line4, divider)
-	return strings.Join(parts, "\n")
+	// Filet de sécurité : le moteur de rendu coupe au bord de l'écran, autant
+	// couper nous-mêmes proprement (chemin long, terminal très étroit).
+	// Ligne par ligne : la grille des cœurs est un bloc multi-lignes.
+	lines := strings.Split(strings.Join(parts, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, width, "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // coreGridCols renvoie le nombre de colonnes de la grille par cœur pour n

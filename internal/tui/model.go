@@ -921,12 +921,14 @@ func (m Model) renderFooter() string {
 				{"q", "quitter"},
 			}, m.width, right)
 		}
+		// Sur terminal étroit, les chips juste avant « ? aide » tombent en
+		// premier (R, o, v, /…) : les plus utiles sont donc placés en tête.
 		keys := []struct{ key, desc string }{
 			{"↩", "actions"},
 			{"␣", "sélect"},
+			{"b", "backup"},
 			{"/", "filtre"},
 			{"v", "aperçu"},
-			{"b", "backup"},
 			{"o", "dossier"},
 			{"R", "rafraîchir"},
 			{"?", "aide"},

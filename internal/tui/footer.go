@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -44,26 +45,39 @@ func renderFooterKeysRefresh(keys []struct{ key, desc string }, width int, refre
 	return renderFooterKeysRight(keys, width, right)
 }
 
+// footerPinned : les derniers chips (aide/quitter, retour…) restent toujours
+// affichés ; ce sont ceux du milieu qui cèdent la place sur un terminal étroit.
+const footerPinned = 2
+
 // renderFooterKeysRight affiche les chips de raccourcis et, aligné à droite,
-// un indicateur libre (position dans la liste, refresh en cours…).
+// un indicateur libre (position dans la liste, refresh en cours…). Le rendu
+// coupe ce qui dépasse la largeur : sans cet ajustement, les derniers chips
+// (? aide, q quitter) disparaissaient en silence sous ~140 colonnes.
 func renderFooterKeysRight(keys []struct{ key, desc string }, width int, right string) string {
-	var parts []string
-	for _, k := range keys {
-		part := styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
-		parts = append(parts, part)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
+	}
+	sep := styleFooterSep.String()
+	build := func(ps []string) string { return "  " + strings.Join(ps, sep) }
+
+	// Retire les chips non épinglés en partant de la fin, jusqu'à tenir.
+	line := build(parts)
+	for width > 0 && lipgloss.Width(line) > width && len(parts) > footerPinned {
+		drop := len(parts) - footerPinned - 1
+		parts = append(parts[:drop:drop], parts[drop+1:]...)
+		line = build(parts)
 	}
 
-	sep := styleFooterSep.String()
-	line := "  " + strings.Join(parts, sep)
-
+	// L'indicateur de droite n'est affiché que s'il tient à côté.
 	if right != "" {
 		indicator := styleDim.Render(right)
-		pad := width - lipgloss.Width(line) - lipgloss.Width(indicator) - 2
-		if pad > 0 {
-			line += strings.Repeat(" ", pad)
+		if pad := width - lipgloss.Width(line) - lipgloss.Width(indicator) - 2; pad > 0 {
+			line += strings.Repeat(" ", pad) + indicator
 		}
-		line += indicator
 	}
-
-	return lipgloss.NewStyle().PaddingBottom(0).Render(line)
+	if width > 0 {
+		line = ansi.Truncate(line, width, "")
+	}
+	return line
 }
