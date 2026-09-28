@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -20,9 +21,11 @@ type fakeClient struct {
 	logsCh  <-chan compose.LogEntry
 	// calls enregistre les stacks reçues par action (up/down/...), pour vérifier
 	// le ciblage par services (Stack.Only).
-	calls   map[string][]compose.Stack
-	plan    []compose.Recreation
-	planErr error
+	mu       sync.Mutex
+	autoDone bool // les actions renvoient un flux déjà terminé au lieu de nil
+	calls    map[string][]compose.Stack
+	plan     []compose.Recreation
+	planErr  error
 }
 
 func (f *fakeClient) PlanUp(context.Context, compose.Stack) ([]compose.Recreation, error) {
@@ -31,14 +34,34 @@ func (f *fakeClient) PlanUp(context.Context, compose.Stack) ([]compose.Recreatio
 
 func (f *fakeClient) StopManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("stop", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 
 func (f *fakeClient) rec(action string, stacks []compose.Stack) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.calls == nil {
 		f.calls = map[string][]compose.Stack{}
 	}
 	f.calls[action] = stacks
+}
+
+// called renvoie les stacks reçues par une action (sûr vis-à-vis des
+// goroutines de chainLive).
+func (f *fakeClient) called(action string) []compose.Stack {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[action]
+}
+
+// doneCh : flux déjà terminé, pour les tests qui enchaînent des étapes.
+func doneCh() <-chan compose.ProgressEvent {
+	ch := make(chan compose.ProgressEvent, 1)
+	ch <- compose.ProgressEvent{AllDone: true}
+	return ch
 }
 
 func (f *fakeClient) ListStacks(context.Context, string) ([]compose.Stack, error) {
@@ -53,26 +76,44 @@ func (f *fakeClient) Usage(context.Context, bool) (compose.DockerUsage, error) {
 }
 func (f *fakeClient) UpManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("up", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 func (f *fakeClient) DownManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("down", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 func (f *fakeClient) RestartManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("restart", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 func (f *fakeClient) RecreateManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("recreate", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 func (f *fakeClient) PullManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("pull", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 func (f *fakeClient) RemoveManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("remove", st)
+	if f.autoDone {
+		return doneCh()
+	}
 	return nil
 }
 

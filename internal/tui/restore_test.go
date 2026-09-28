@@ -3,7 +3,10 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Bloopps/dockstack/internal/backup"
 )
 
 // TestResolveRestoreStacks : les noms d'une capture sont résolus vers des stacks
@@ -20,11 +23,14 @@ func TestResolveRestoreStacks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	names := []string{"ok", "gone", "../escape"}
-	stacks, missing := resolveRestoreStacks(names, root)
+	items := []backup.Entry{{Name: "ok", Services: []string{"web"}}, {Name: "gone"}, {Name: "../escape"}}
+	stacks, missing := resolveRestoreStacks(items, root)
 
 	if len(stacks) != 1 || stacks[0].Name != "ok" {
 		t.Fatalf("stacks = %v, want [ok]", stacks)
+	}
+	if strings.Join(stacks[0].Only, ",") != "web" || !stacks[0].Lenient {
+		t.Errorf("services capturés attendus en mode Lenient : %+v", stacks[0])
 	}
 	if stacks[0].ComposeFile != filepath.Join(okDir, "compose.yaml") {
 		t.Errorf("ComposeFile = %q", stacks[0].ComposeFile)
@@ -32,5 +38,17 @@ func TestResolveRestoreStacks(t *testing.T) {
 	// "gone" (pas de compose) et "../escape" (traversée) sont introuvables.
 	if len(missing) != 2 {
 		t.Errorf("missing = %v, want [gone ../escape]", missing)
+	}
+}
+
+// writeTestCompose crée root/name/compose.yaml.
+func writeTestCompose(t *testing.T, root, name string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -227,20 +227,39 @@ func RenderResolvedConfig(stack Stack) (string, error) {
 // compose fait converger tout le projet chargé, donc réduire le modèle est la
 // seule façon de ne pas toucher aux autres services.
 func loadScopedProject(stack Stack) (*composetypes.Project, error) {
-	proj, err := loadProject(stack)
+	proj, _, err := loadScopedProjectReport(&stack)
+	return proj, err
+}
+
+// loadScopedProjectReport est loadScopedProject qui, en mode Lenient (capture
+// d'état), ignore les services qui n'existent plus dans le compose au lieu
+// d'échouer, et les renvoie (dropped) pour être signalés. stack.Only est alors
+// réduit aux services existants ; s'il n'en reste aucun, c'est une erreur.
+func loadScopedProjectReport(stack *Stack) (proj *composetypes.Project, dropped []string, err error) {
+	proj, err = loadProject(*stack)
 	if err != nil || len(stack.Only) == 0 {
-		return proj, err
+		return proj, nil, err
 	}
+	kept := make([]string, 0, len(stack.Only))
 	for _, n := range stack.Only {
-		if _, ok := proj.Services[n]; !ok {
-			return nil, fmt.Errorf("service %q absent du compose", n)
+		if _, ok := proj.Services[n]; ok {
+			kept = append(kept, n)
+		} else if stack.Lenient {
+			dropped = append(dropped, n)
+		} else {
+			return nil, nil, fmt.Errorf("service %q absent du compose", n)
 		}
 	}
+	if len(kept) == 0 {
+		return nil, dropped, fmt.Errorf("aucun des services capturés n'existe plus dans le compose (%s)", strings.Join(dropped, ", "))
+	}
+	stack.Only = kept
 	dep := composetypes.IgnoreDependencies
 	if stack.WithDeps {
 		dep = composetypes.IncludeDependencies
 	}
-	return proj.WithSelectedServices(stack.Only, dep)
+	proj, err = proj.WithSelectedServices(kept, dep)
+	return proj, dropped, err
 }
 
 func loadProject(stack Stack) (*composetypes.Project, error) {

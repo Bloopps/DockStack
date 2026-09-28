@@ -49,6 +49,9 @@ type Stack struct {
 	// WithDeps inclut aussi les dépendances (depends_on) des services de Only,
 	// comme « up » sans --no-deps. Ignoré si Only est vide.
 	WithDeps bool
+	// Lenient (restauration d'une capture) : les services de Only absents du
+	// compose sont ignorés et signalés, au lieu de faire échouer l'action.
+	Lenient  bool
 	Orphaned bool // au moins un conteneur rattaché par nom faute de label projet (recréé par watchtower)
 }
 
@@ -61,8 +64,8 @@ type ServiceStatus struct {
 	Unhealthy int
 	// Informations tirées du conteneur le plus parlant (unhealthy, puis à
 	// l'arrêt, puis en marche) : gratuites, déjà dans l'appel Docker de la liste.
-	Image  string // image du conteneur
-	Ports  string // ports publiés « 8080→80, 443→443 »
+	Image string // image du conteneur
+	Ports string // ports publiés « 8080→80, 443→443 »
 	// DependsOn : dépendances directes déclarées dans le compose (rempli par la
 	// TUI depuis DeclaredServices, pas par ListStacks).
 	DependsOn []string
@@ -510,7 +513,10 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 	if err != nil {
 		return err
 	}
-	proj, err := loadScopedProject(stack)
+	proj, dropped, err := loadScopedProjectReport(&stack)
+	for _, n := range dropped {
+		ch <- ProgressEvent{StackName: stack.Name, Container: "Service " + n, Status: "absent du compose, ignoré", State: "warning"}
+	}
 	if err != nil {
 		return err
 	}

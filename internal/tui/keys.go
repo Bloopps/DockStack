@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
@@ -250,6 +251,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.confirmExclude()
 	case "b":
 		m.view = viewBackup
+		m.captureSeen = true // le bandeau « stacks à relancer » a fait son office
 		m.actionCursor = 0
 		return m, loadBackups(m.cfg.ConfigDir())
 	case "o":
@@ -581,6 +583,16 @@ func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Dans la vue des captures, actionCursor indexe directement m.backups.
 func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.captureLabeling {
+		return m.handleCaptureLabelKey(msg)
+	}
+	var snap backup.Snapshot
+	hasSnap := m.actionCursor >= 0 && m.actionCursor < len(m.backups)
+	if hasSnap {
+		snap = m.backups[m.actionCursor]
+	}
+	dir := m.cfg.ConfigDir()
+
 	switch msg.String() {
 	case "up", "k":
 		if m.actionCursor > 0 {
@@ -596,18 +608,36 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// On reste sur la vue : la nouvelle capture doit y apparaître,
 		// sinon rien ne prouve à l'utilisateur qu'elle a été faite.
 		// startOp arme aussi spinner.Tick, sans quoi le spinner reste figé.
-		return m.startOp("Capture de l'état", saveBackup(m.cfg.ConfigDir(), m.cfg.StackDir, m.stacks))
+		return m.startOp("Capture de l'état", saveBackup(dir, m.cfg.StackDir, m.stacks))
+	case "n":
+		if hasSnap {
+			m.captureLabeling, m.captureLabel = true, snap.Label
+		}
+	case "p":
+		if hasSnap {
+			done := "Capture épinglée : elle ne sera jamais supprimée par la rotation"
+			if snap.Pinned {
+				done = "Capture désépinglée"
+			}
+			return m, setBackupMeta(dir, snap, snap.Label, !snap.Pinned, done)
+		}
+	case "a":
+		if hasSnap {
+			return m.confirmAlign(snap)
+		}
 	case "x", "delete":
-		if m.actionCursor >= len(m.backups) {
+		if !hasSnap {
 			return m, nil
 		}
-		snap := m.backups[m.actionCursor]
-		dir := m.cfg.ConfigDir()
+		warning := ""
+		if snap.Pinned {
+			warning = "Cette capture est épinglée."
+		}
 		return m.askConfirm("Supprimer la capture du "+snap.Date.Format("02/01/2006 15:04"),
-			"", snap.Stacks,
+			warning, snap.Stacks,
 			func(m Model) (tea.Model, tea.Cmd) {
 				m.view = viewBackup
-				return m, deleteBackup(dir, snap.Date)
+				return m, deleteBackup(dir, snap)
 			})
 	case "enter":
 		return m.openRestorePick()
@@ -615,19 +645,126 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleCaptureLabelKey : saisie du libellé d'une capture.
+func (m Model) handleCaptureLabelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key := msg.String(); key {
+	case "esc":
+		m.captureLabeling = false
+	case "enter":
+		m.captureLabeling = false
+		if m.actionCursor < 0 || m.actionCursor >= len(m.backups) {
+			return m, nil
+		}
+		snap := m.backups[m.actionCursor]
+		done := "Capture nommée"
+		if strings.TrimSpace(m.captureLabel) == "" {
+			done = "Nom de la capture retiré"
+		}
+		return m, setBackupMeta(m.cfg.ConfigDir(), snap, m.captureLabel, snap.Pinned, done)
+	case "backspace":
+		if r := []rune(m.captureLabel); len(r) > 0 {
+			m.captureLabel = string(r[:len(r)-1])
+		}
+	case "ctrl+c":
+		return m.armOrQuit()
+	default:
+		if t := msg.Key().Text; t != "" && len([]rune(m.captureLabel)) < 60 {
+			m.captureLabel += t
+		}
+	}
+	return m, nil
+}
+
+// confirmAlign prépare l'alignement de l'état actuel sur une capture : démarrer
+// ce qui manque et ARRÊTER (stop, conteneurs conservés) ce qui tourne sans
+// figurer dans la capture. Tout est listé dans la confirmation.
+func (m Model) confirmAlign(snap backup.Snapshot) (tea.Model, tea.Cmd) {
+	if m.opInProgress() {
+		return m.refuseOp()
+	}
+	if snap.StackDir != "" && snap.StackDir != m.cfg.StackDir {
+		m.setStatus("Capture prise depuis "+snap.StackDir+" : alignement impossible depuis ce répertoire", true)
+		return m, clearStatusIn(5 * time.Second)
+	}
+	plan := planAlign(snap.Items(), m.stacks)
+	if plan.empty() {
+		m.setStatus("Déjà aligné sur cette capture", false)
+		return m, clearStatusIn(3 * time.Second)
+	}
+
+	var lines []string
+	for _, e := range plan.relaunch {
+		line := "▶ démarrer " + e.name
+		if len(e.down) > 0 {
+			line += " (" + strings.Join(e.down, ", ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	for _, s := range plan.stopStacks {
+		lines = append(lines, "■ arrêter "+s.Name)
+	}
+	for _, s := range plan.stopServices {
+		lines = append(lines, "■ arrêter "+strings.Join(s.Only, ", ")+" de "+s.Name)
+	}
+	warning := ""
+	if nStop := len(plan.stopStacks) + len(plan.stopServices); nStop > 0 {
+		warning = fmt.Sprintf("%d arrêt(s) : ce qui tourne mais n'est pas dans la capture sera arrêté (conteneurs conservés).", nStop)
+	}
+
+	ups, _ := resolveRestoreStacks(entriesOf(plan.relaunch, snap), m.cfg.StackDir)
+	stopStacks, stopServices, parallel := plan.stopStacks, plan.stopServices, m.cfg.MaxParallel
+	title := fmt.Sprintf("Alignement — %d à démarrer, %d à arrêter", len(ups), len(stopStacks)+len(stopServices))
+	run := func(m Model) (tea.Model, tea.Cmd) {
+		ctx, cancel := context.WithCancel(context.Background())
+		client := m.client
+		var phases []livePhase
+		if len(stopStacks) > 0 {
+			phases = append(phases, livePhase{" — arrêt", func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopStacks, parallel) }})
+		}
+		if len(stopServices) > 0 {
+			phases = append(phases, livePhase{" — arrêt de services", func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopServices, parallel) }})
+		}
+		if len(ups) > 0 {
+			phases = append(phases, livePhase{"", func() <-chan compose.ProgressEvent { return client.UpManyLive(ctx, ups, parallel) }})
+		}
+		return m.startProgressOp(title, cancel, chainLive(ctx, phases))
+	}
+	return m.askConfirm("Aligner sur la capture du "+snap.Date.Format("02/01/2006 15:04"), warning, lines, run)
+}
+
+// entriesOf retrouve, dans la capture, les entrées (avec leurs services) des
+// stacks à relancer.
+func entriesOf(rel []captureEntry, snap backup.Snapshot) []backup.Entry {
+	byName := make(map[string]backup.Entry, len(snap.Stacks))
+	for _, it := range snap.Items() {
+		byName[it.Name] = it
+	}
+	out := make([]backup.Entry, 0, len(rel))
+	for _, e := range rel {
+		out = append(out, byName[e.name])
+	}
+	return out
+}
+
 func (m Model) openRestorePick() (tea.Model, tea.Cmd) {
 	if m.actionCursor >= len(m.backups) {
 		return m, nil
 	}
-	// Ouvre le sélecteur de restauration : tout est coché par défaut,
-	// l'utilisateur peut décocher avant de relancer (↩).
+	// Ouvre le sélecteur de restauration. Seules les stacks à relancer sont
+	// cochées : celles déjà en marche (un up peut les recréer) et les
+	// introuvables ne le sont pas.
 	snap := m.backups[m.actionCursor]
 	m.view = viewRestorePick
 	m.restoreLabel = fmt.Sprintf("Capture du %s", snap.Date.Format("02/01/2006 15:04"))
-	m.restoreNames = snap.Stacks
-	m.restoreSel = make(map[string]bool, len(snap.Stacks))
-	for _, n := range snap.Stacks {
-		m.restoreSel[n] = true
+	if snap.Label != "" {
+		m.restoreLabel += " · " + snap.Label
+	}
+	m.restoreEntries = diffCapture(snap.Items(), m.stacks)
+	m.restoreSel = make(map[string]bool, len(m.restoreEntries))
+	for _, e := range m.restoreEntries {
+		if e.kind == entryRelaunch {
+			m.restoreSel[e.name] = true
+		}
 	}
 	m.restoreCursor = 0
 	return m, nil
@@ -636,44 +773,51 @@ func (m Model) openRestorePick() (tea.Model, tea.Cmd) {
 // ---- restore picker ----
 
 func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	n := len(m.restoreEntries)
 	switch msg.String() {
 	case "up", "k":
 		if m.restoreCursor > 0 {
 			m.restoreCursor--
 		}
 	case "down", "j":
-		if m.restoreCursor < len(m.restoreNames)-1 {
+		if m.restoreCursor < n-1 {
 			m.restoreCursor++
 		}
 	case " ", "space":
-		if m.restoreCursor < len(m.restoreNames) {
-			name := m.restoreNames[m.restoreCursor]
-			m.restoreSel[name] = !m.restoreSel[name]
-			if m.restoreCursor < len(m.restoreNames)-1 {
+		if m.restoreCursor < n {
+			e := m.restoreEntries[m.restoreCursor]
+			if e.kind != entryMissing { // rien à relancer si la stack n'existe plus
+				m.restoreSel[e.name] = !m.restoreSel[e.name]
+			}
+			if m.restoreCursor < n-1 {
 				m.restoreCursor++
 			}
 		}
 	case "ctrl+a":
 		all := true
-		for _, n := range m.restoreNames {
-			if !m.restoreSel[n] {
+		for _, e := range m.restoreEntries {
+			if e.kind != entryMissing && !m.restoreSel[e.name] {
 				all = false
 				break
 			}
 		}
-		for _, n := range m.restoreNames {
-			m.restoreSel[n] = !all
+		for _, e := range m.restoreEntries {
+			if e.kind != entryMissing {
+				m.restoreSel[e.name] = !all
+			}
 		}
 	case "esc", "q":
 		m.view = viewBackup
 	case "enter":
-		var names []string
-		for _, n := range m.restoreNames {
-			if m.restoreSel[n] {
-				names = append(names, n)
+		var items []backup.Entry
+		anyRunning := false
+		for _, e := range m.restoreEntries {
+			if m.restoreSel[e.name] {
+				items = append(items, backup.Entry{Name: e.name, Services: e.services})
+				anyRunning = anyRunning || e.kind == entryRunning
 			}
 		}
-		if len(names) == 0 {
+		if len(items) == 0 {
 			m.setStatus("Aucune stack sélectionnée", true)
 			return m, clearStatusIn(3 * time.Second)
 		}
@@ -683,7 +827,7 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Comme les autres actions, la restauration passe par la vue de
 		// progression : flux live, annulable (esc), au lieu d'un Up bloquant
 		// sur ctx.Background().
-		stacks, missing := resolveRestoreStacks(names, m.cfg.StackDir)
+		stacks, missing := resolveRestoreStacks(items, m.cfg.StackDir)
 		if len(stacks) == 0 {
 			m.setStatus(fmt.Sprintf("Aucune stack restaurable (%d introuvable(s) sur le disque)", len(missing)), true)
 			return m, clearStatusIn(5 * time.Second)
@@ -693,8 +837,21 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Signaler les introuvables au lieu de les ignorer en silence.
 			title += fmt.Sprintf(" (%d introuvable(s) ignorée(s))", len(missing))
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp(title, cancel, m.client.UpManyLive(ctx, stacks, m.cfg.MaxParallel))
+		parallel := m.cfg.MaxParallel
+		run := func(m Model) (tea.Model, tea.Cmd) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return m.startProgressOp(title, cancel, m.client.UpManyLive(ctx, stacks, parallel))
+		}
+		if anyRunning {
+			// Une stack déjà en marche est cochée : on prévoit ce qu'un up
+			// recréerait avant de lancer.
+			names := make([]string, len(stacks))
+			for i, s := range stacks {
+				names[i] = s.Name
+			}
+			return m.confirmUpWithPlan(title, names, stacks, run)
+		}
+		return run(m)
 	}
 	return m, nil
 }
@@ -788,13 +945,16 @@ func listSubDirs(path string) ([]string, error) {
 	return dirs, nil
 }
 
-// resolveRestoreStacks transforme les noms d'une capture en stacks restaurables.
-// Chaque nom doit désigner un répertoire local (refus de toute traversée « ../ »
-// ou chemin absolu, le nom venant d'un fichier de capture) contenant encore un
-// fichier compose. Les noms non résolus sont renvoyés à part (missing) pour être
-// signalés à l'utilisateur, et non ignorés en silence.
-func resolveRestoreStacks(names []string, stackDir string) (stacks []compose.Stack, missing []string) {
-	for _, name := range names {
+// resolveRestoreStacks transforme les entrées d'une capture en stacks
+// restaurables. Chaque nom doit désigner un répertoire local (refus de toute
+// traversée « ../ » ou chemin absolu, le nom venant d'un fichier de capture)
+// contenant encore un fichier compose. Les noms non résolus sont renvoyés à
+// part (missing) pour être signalés, et non ignorés en silence. Une entrée avec
+// services ne relance QUE ceux-là (les services disparus du compose sont
+// ignorés et signalés dans la vue de progression).
+func resolveRestoreStacks(items []backup.Entry, stackDir string) (stacks []compose.Stack, missing []string) {
+	for _, it := range items {
+		name := it.Name
 		if !filepath.IsLocal(name) {
 			missing = append(missing, name)
 			continue
@@ -809,6 +969,8 @@ func resolveRestoreStacks(names []string, stackDir string) (stacks []compose.Sta
 			Name:        name,
 			Dir:         dir,
 			ComposeFile: composeFile,
+			Only:        it.Services,
+			Lenient:     len(it.Services) > 0,
 		})
 	}
 	return stacks, missing

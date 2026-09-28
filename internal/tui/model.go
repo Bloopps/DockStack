@@ -46,8 +46,9 @@ type clientReadyMsg struct{ client dockerService }
 type stacksLoadedMsg []compose.Stack
 type backupsLoadedMsg []backup.Snapshot
 type opDoneMsg struct {
-	err error
-	n   int // nombre de stacks capturées
+	err    error
+	n      int // nombre de stacks capturées
+	pruned int // anciennes captures supprimées par la rotation
 }
 
 type clearStatusMsg struct{}
@@ -166,12 +167,17 @@ type Model struct {
 
 	// Backup
 	backups []backup.Snapshot
+	// Saisie du libellé d'une capture (n) et bandeau « stacks à relancer » :
+	// captureSeen le masque une fois la vue des captures ouverte.
+	captureLabeling bool
+	captureLabel    string
+	captureSeen     bool
 
 	// Restauration : sélection des stacks de la capture à relancer
-	restoreLabel  string
-	restoreNames  []string
-	restoreSel    map[string]bool
-	restoreCursor int
+	restoreLabel   string
+	restoreEntries []captureEntry
+	restoreSel     map[string]bool
+	restoreCursor  int
 
 	// Filter
 	filter    textinput.Model
@@ -272,6 +278,7 @@ func (m Model) Init() tea.Cmd {
 		prewarmStacks(m.cfg.StackDir),
 		collectMetricsNow(),
 		tickStacks(),
+		loadBackups(m.cfg.ConfigDir()), // pour le bandeau « stacks à relancer »
 	)
 }
 
@@ -363,6 +370,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(clearStatusIn(4*time.Second), loadBackups(m.cfg.ConfigDir()))
 
+	case backupMetaMsg:
+		if msg.err != nil {
+			m.setStatus("Capture : "+msg.err.Error(), true)
+		} else {
+			m.setStatus(msg.done, false)
+		}
+		return m, tea.Batch(clearStatusIn(4*time.Second), loadBackups(m.cfg.ConfigDir()))
+
 	case opDoneMsg:
 		// Résultat d'une capture (les actions sur les stacks et la restauration
 		// passent par la vue de progression). La vue n'est pas forcée :
@@ -373,7 +388,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(clearStatusIn(6*time.Second), m.loadStacksCmd())
 		}
 		// Le footer préfixe déjà « ✓ ».
-		m.setStatus(fmt.Sprintf("Capture enregistrée — %d stack(s) en marche", msg.n), false)
+		status := fmt.Sprintf("Capture enregistrée — %d stack(s) en marche", msg.n)
+		if msg.pruned > 0 {
+			status += fmt.Sprintf(" · %d ancienne(s) supprimée(s) (rotation, épingler pour garder)", msg.pruned)
+		}
+		m.setStatus(status, false)
 		// Recharge la liste des captures : la nouvelle arrive en tête, le
 		// curseur s'y pose pour que l'utilisateur la voie.
 		if m.view == viewBackup {
@@ -762,23 +781,63 @@ func (m Model) viewContent() string {
 			body = styleDim.Render("\n  Chargement...")
 		} else if m.err != nil {
 			body = renderError(m.err)
-		} else if m.previewVisible() {
-			// Liste à gauche (largeur réduite), aperçu compose à droite. On
-			// force la largeur du bloc liste pour que le volet s'aligne quelle
-			// que soit la longueur des lignes affichées.
-			paneW := m.previewWidth()
-			listW := m.width - paneW
-			list := lipgloss.NewStyle().Width(listW).Height(bodyH).
-				Render(renderStackList(m, bodyH, listW))
-			pane := renderPreviewPane(m, bodyH, paneW)
-			body = lipgloss.JoinHorizontal(lipgloss.Top, list, pane)
 		} else {
-			body = renderStackList(m, bodyH, m.width)
+			// Bandeau éventuel : une ligne prise sur la hauteur de la liste.
+			banner := m.captureBanner()
+			listH := bodyH
+			if banner != "" {
+				listH--
+			}
+			body = m.listBody(listH)
+			if banner != "" {
+				body = banner + "\n" + body
+			}
 		}
 	}
 
 	footer := m.renderFooter()
 	return lipgloss.JoinVertical(lipgloss.Left, header, fitHeight(body, bodyH), footer)
+}
+
+// listBody rend la liste des stacks (avec le volet de détail si visible) sur
+// bodyH lignes.
+func (m Model) listBody(bodyH int) string {
+	if !m.previewVisible() {
+		return renderStackList(m, bodyH, m.width)
+	}
+	// Liste à gauche (largeur réduite), aperçu à droite. On force la largeur du
+	// bloc liste pour que le volet s'aligne quelle que soit la longueur des
+	// lignes affichées.
+	paneW := m.previewWidth()
+	listW := m.width - paneW
+	list := lipgloss.NewStyle().Width(listW).Height(bodyH).
+		Render(renderStackList(m, bodyH, listW))
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, renderPreviewPane(m, bodyH, paneW))
+}
+
+// captureBanner : rappel, au-dessus de la liste, des stacks de la dernière
+// capture qui ne tournent plus (typiquement après un redémarrage du serveur).
+// Masqué une fois la vue des captures ouverte, ou quand tout tourne.
+func (m Model) captureBanner() string {
+	if m.captureSeen || m.view != viewList || len(m.backups) == 0 || len(m.stacks) == 0 {
+		return ""
+	}
+	snap := m.backups[0]
+	if snap.StackDir != "" && snap.StackDir != m.cfg.StackDir {
+		return ""
+	}
+	n := 0
+	for _, e := range diffCapture(snap.Items(), m.stacks) {
+		if e.kind == entryRelaunch {
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	txt := fmt.Sprintf("↻ %d stack%s de la dernière capture (%s) ne tourne%s plus",
+		n, plural(n), snap.Date.Format("02/01 15:04"), map[bool]string{true: "nt", false: ""}[n > 1])
+	return "  " + styleYellow.Render(truncate(txt, max(m.width-24, 10))) + styleDim.Render("  ·  ") + styleCyan.Render("b") + styleDim.Render(" pour les relancer")
 }
 
 // fitHeight complète (ou coupe) s à exactement h lignes : sans ça, une vue
@@ -924,11 +983,17 @@ func (m Model) renderFooter() string {
 		}, m.width)
 	}
 	if m.view == viewBackup {
+		if m.captureLabeling {
+			return renderFooterKeys([]struct{ key, desc string }{{"↩", "valider"}, {"esc", "annuler"}}, m.width)
+		}
 		keys := []struct{ key, desc string }{{"c", "capturer"}}
 		if len(m.backups) > 0 {
 			keys = append(keys,
 				struct{ key, desc string }{"↑↓", "naviguer"},
 				struct{ key, desc string }{"↩", "restaurer"},
+				struct{ key, desc string }{"a", "aligner"},
+				struct{ key, desc string }{"n", "nommer"},
+				struct{ key, desc string }{"p", "épingler"},
 				struct{ key, desc string }{"x", "supprimer"})
 		}
 		keys = append(keys, struct{ key, desc string }{"esc", "retour"})

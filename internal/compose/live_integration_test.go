@@ -473,3 +473,50 @@ func TestLiveStopDepsPlan(t *testing.T) {
 		t.Errorf("après Stop : db=%q (attendu exited) app=%q", state("db"), state("app"))
 	}
 }
+
+// TestLiveLenientRestore : restaurer une capture dont un service a disparu du
+// compose relance les autres et signale le manquant ; si plus aucun service
+// capturé n'existe, l'action échoue clairement.
+func TestLiveLenientRestore(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	st := probeStack(t, root, "zzdsprobelen", `services:
+  a:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+  b:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+`, "")
+	restore := st
+	restore.Only, restore.Lenient = []string{"a", "gone"}, true
+	errs, evs := runOp(t, c.UpManyLive(ctx, []Stack{restore}, 1))
+	mustOK(t, "Up capture", errs)
+	warned := false
+	for _, ev := range evs {
+		if ev.Container == "Service gone" && ev.State == "warning" && strings.Contains(ev.Status, "absent du compose") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("le service disparu doit être signalé (warning)")
+	}
+	state := func(svc string) string {
+		out, err := dockerCLI("inspect", "-f", "{{.State.Status}}", "zzdsprobelen-"+svc+"-1")
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+	if state("a") != "running" || state("b") != "" {
+		t.Errorf("seul a doit tourner : a=%q b=%q", state("a"), state("b"))
+	}
+
+	none := st
+	none.Only, none.Lenient = []string{"gone"}, true
+	errs, _ = runOp(t, c.UpManyLive(ctx, []Stack{none}, 1))
+	if err := errs["zzdsprobelen"]; err == nil || !strings.Contains(err.Error(), "n'existe plus") {
+		t.Errorf("aucun service restaurable : erreur claire attendue, eu %v", err)
+	}
+}

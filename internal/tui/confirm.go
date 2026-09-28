@@ -34,8 +34,8 @@ func (m Model) askConfirm(label, warning string, names []string, exec func(Model
 	// Annuler ramène d'où l'on vient quand ça a du sens (vue backup),
 	// sinon à la liste.
 	m.confirmReturn = viewList
-	if m.view == viewBackup {
-		m.confirmReturn = viewBackup
+	if m.view == viewBackup || m.view == viewRestorePick {
+		m.confirmReturn = m.view
 	}
 	m.view = viewConfirm
 	return m, nil
@@ -115,6 +115,7 @@ type planUpMsg struct {
 	recs  []string // « service · raison », préfixé par la stack si plusieurs
 	err   error
 	run   func(Model) (tea.Model, tea.Cmd)
+	from  view // vue d'où la prévision a été demandée
 }
 
 // confirmUpWithPlan prévoit (hors boucle UI) quels services en marche un up
@@ -122,7 +123,7 @@ type planUpMsg struct {
 // confirmation ; sinon la confirmation liste précisément les services et la
 // raison. Si la prévision échoue, on retombe sur la confirmation générique.
 func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.Stack, run func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
-	client := m.client
+	client, from := m.client, m.view
 	m.setStatus("Analyse des changements…", false)
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -131,7 +132,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 		for _, s := range stacks {
 			plan, err := client.PlanUp(ctx, s)
 			if err != nil {
-				return planUpMsg{label: label, names: names, err: err, run: run}
+				return planUpMsg{label: label, names: names, err: err, run: run, from: from}
 			}
 			for _, r := range plan {
 				line := r.Service + " · " + r.Reason
@@ -141,7 +142,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 				recs = append(recs, line)
 			}
 		}
-		return planUpMsg{label: label, names: names, recs: recs, run: run}
+		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from}
 	}
 }
 
@@ -149,7 +150,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
 	m.status = ""
 	// Vue changée ou opération lancée entre-temps : la demande est périmée.
-	if m.view != viewList || m.opInProgress() {
+	if m.view != msg.from || m.opInProgress() {
 		return m, nil
 	}
 	switch {
@@ -191,11 +192,14 @@ func renderConfirmView(m Model, height int) string {
 	}
 	rows = append(rows, divider)
 
+	// Plafond adapté à la hauteur : un alignement ou une restauration liste
+	// facilement des dizaines de lignes qu'il faut pouvoir relire avant de valider.
+	maxNames := max(confirmMaxNames, height-9)
 	names := m.confirmNames
 	extra := 0
-	if len(names) > confirmMaxNames {
-		extra = len(names) - confirmMaxNames
-		names = names[:confirmMaxNames]
+	if len(names) > maxNames {
+		extra = len(names) - maxNames
+		names = names[:maxNames]
 	}
 	for _, n := range names {
 		rows = append(rows, "  "+styleDim.Render(n))

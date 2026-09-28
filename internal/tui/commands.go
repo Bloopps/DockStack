@@ -164,17 +164,79 @@ func loadBackups(configDir string) tea.Cmd {
 	}
 }
 
+// captureEntries : les stacks à mémoriser (en marche, partielles ou unhealthy),
+// chacune avec les services qui tournent — pour ne pas relancer plus tard des
+// services arrêtés volontairement.
+func captureEntries(stacks []compose.Stack) []backup.Entry {
+	out := make([]backup.Entry, 0, len(stacks))
+	for _, s := range stacks {
+		switch s.State() {
+		case compose.StateRunning, compose.StatePartial, compose.StateUnhealthy:
+			e := backup.Entry{Name: s.Name}
+			for _, sv := range s.Services {
+				if sv.Running > 0 {
+					e.Services = append(e.Services, sv.Name)
+				}
+			}
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func saveBackup(configDir, stackDir string, stacks []compose.Stack) tea.Cmd {
 	return func() tea.Msg {
-		running := make([]string, 0, len(stacks))
-		for _, s := range stacks {
-			switch s.State() {
-			case compose.StateRunning, compose.StatePartial, compose.StateUnhealthy:
-				running = append(running, s.Name)
+		entries := captureEntries(stacks)
+		pruned, err := backup.Save(configDir, stackDir, entries)
+		return opDoneMsg{err: err, n: len(entries), pruned: pruned}
+	}
+}
+
+// backupMetaMsg : résultat d'une modification de libellé / d'épinglage.
+type backupMetaMsg struct {
+	err  error
+	done string
+}
+
+func setBackupMeta(configDir string, snap backup.Snapshot, label string, pinned bool, done string) tea.Cmd {
+	return func() tea.Msg {
+		return backupMetaMsg{err: backup.SetMeta(configDir, snap, label, pinned), done: done}
+	}
+}
+
+// livePhase : une étape d'une opération composée (alignement). suffix est
+// ajouté au nom de stack dans la vue de progression pour que deux étapes sur la
+// même stack ne soient ni fusionnées ni comptées deux fois.
+type livePhase struct {
+	suffix string
+	start  func() <-chan compose.ProgressEvent
+}
+
+// chainLive exécute les étapes l'une après l'autre et relaie leurs événements
+// dans un seul flux terminé par la sentinelle AllDone. Une annulation du
+// contexte empêche de démarrer les étapes suivantes.
+func chainLive(ctx context.Context, phases []livePhase) <-chan compose.ProgressEvent {
+	out := make(chan compose.ProgressEvent, 200)
+	go func() {
+		for _, ph := range phases {
+			if ctx.Err() != nil {
+				break
+			}
+			ch := ph.start()
+			for {
+				ev := <-ch
+				if ev.AllDone {
+					break
+				}
+				if ph.suffix != "" && ev.StackName != "" {
+					ev.StackName += ph.suffix
+				}
+				out <- ev
 			}
 		}
-		return opDoneMsg{err: backup.Save(configDir, stackDir, running), n: len(running)}
-	}
+		out <- compose.ProgressEvent{AllDone: true}
+	}()
+	return out
 }
 
 // ---- occupation Docker (en-tête) ----
@@ -209,9 +271,9 @@ func tickUsage() tea.Cmd {
 
 type backupDeletedMsg struct{ err error }
 
-func deleteBackup(configDir string, date time.Time) tea.Cmd {
+func deleteBackup(configDir string, snap backup.Snapshot) tea.Cmd {
 	return func() tea.Msg {
-		return backupDeletedMsg{err: backup.Delete(configDir, date)}
+		return backupDeletedMsg{err: backup.Delete(configDir, snap)}
 	}
 }
 

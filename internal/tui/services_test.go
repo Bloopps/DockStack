@@ -51,6 +51,8 @@ func send(m Model, k string) Model {
 	var cmd tea.Cmd
 	if m.view == viewConfirm {
 		mm, cmd = m.handleConfirmKey(keyMsg(k))
+	} else if m.view == viewBackup || m.view == viewRestorePick {
+		mm, cmd = m.Update(keyMsg(k)) // vues des captures : routage complet
 	} else {
 		mm, cmd = m.handleListKey(keyMsg(k))
 	}

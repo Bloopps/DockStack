@@ -50,12 +50,12 @@ func renderHelpView(m Model, height int) string {
 	}
 	captures := []string{
 		title("Captures d'état", ""),
-		"  " + k("b") + "  ouvrir" + d("  (puis c capturer, ↩ restaurer, x supprimer)"),
+		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ restaurer, a aligner)"),
+		"  " + d("n nommer · p épingler (jamais supprimée) · x supprimer"),
 	}
 	general := []string{
 		title("Général", ""),
-		"  " + k("q") + " / " + k("Q") + " / " + k("ctrl+c") + "  quitter" + d("  (deux frappes)"),
-		"  " + k("?") + "  cette aide" + d("  (une touche pour fermer)"),
+		"  " + k("q") + " / " + k("ctrl+c") + "  quitter" + d("  (deux frappes)") + "   " + k("?") + "  cette aide",
 	}
 
 	join := func(blocks ...[]string) string {

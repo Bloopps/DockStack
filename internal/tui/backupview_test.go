@@ -21,7 +21,7 @@ func TestDiffCapture(t *testing.T) {
 		{Name: "down", Running: 0, Total: 2},
 		{Name: "partial", Running: 1, Total: 2},
 	}
-	got := diffCapture([]string{"up", "gone", "down", "partial"}, stacks)
+	got := diffCapture(backup.Snapshot{Stacks: []string{"up", "gone", "down", "partial"}}.Items(), stacks)
 
 	want := []struct {
 		name string
@@ -76,7 +76,7 @@ func TestRenderBackupViewFits(t *testing.T) {
 func TestBackupDeleteFlow(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{StackDir: "/srv"}
-	if err := backup.Save(cfg.ConfigDir(), "/srv", []string{"a", "b"}); err != nil {
+	if _, err := backup.Save(cfg.ConfigDir(), "/srv", []backup.Entry{{Name: "a"}, {Name: "b"}}); err != nil {
 		t.Fatal(err)
 	}
 	snaps, _ := backup.List(cfg.ConfigDir())
@@ -110,26 +110,37 @@ func TestBackupDeleteFlow(t *testing.T) {
 	}
 }
 
-// TestRestorePickFlow : ↩ sur une capture ouvre le sélecteur tout coché ; ␣
-// décoche ; ↩ avec des stacks introuvables le signale au lieu de lancer.
+// TestRestorePickFlow : seules les stacks à relancer sont cochées ; les déjà en
+// marche et les introuvables ne le sont pas ; ␣ ne coche jamais un introuvable ;
+// ↩ ne lance rien tant qu'aucune stack restaurable n'est sélectionnée.
 func TestRestorePickFlow(t *testing.T) {
 	m := New(&config.Config{StackDir: t.TempDir()})
 	m.view = viewBackup
-	m.backups = []backup.Snapshot{{Date: time.Now(), Stacks: []string{"a", "b"}}}
+	m.stacks = []compose.Stack{
+		{Name: "down", Running: 0, Total: 1},
+		{Name: "up", Running: 1, Total: 1},
+	}
+	m.backups = []backup.Snapshot{{Date: time.Now(), Stacks: []string{"down", "up", "gone"}}}
 
 	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := out.(Model)
-	if got.view != viewRestorePick || !got.restoreSel["a"] || !got.restoreSel["b"] {
-		t.Fatalf("↩ : view=%v sel=%v, want sélecteur tout coché", got.view, got.restoreSel)
+	if got.view != viewRestorePick || !got.restoreSel["down"] || got.restoreSel["up"] || got.restoreSel["gone"] {
+		t.Fatalf("↩ : view=%v sel=%v, want seul « down » coché", got.view, got.restoreSel)
 	}
+	// Ordre : à relancer, introuvable, en marche → le curseur est sur « down ».
 	out, _ = out.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	if got = out.(Model); got.restoreSel["a"] {
-		t.Error("␣ aurait dû décocher a")
+	if got = out.(Model); got.restoreSel["down"] {
+		t.Error("␣ aurait dû décocher down")
 	}
-	// b n'existe pas sur le disque : aucune stack restaurable, pas d'op lancée.
+	// Curseur sur « gone » (introuvable) : ␣ n'y change rien.
+	out, _ = out.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	if got = out.(Model); got.restoreSel["gone"] {
+		t.Error("␣ ne doit pas cocher une stack introuvable")
+	}
+	// Plus rien de coché : pas d'op lancée.
 	out, _ = out.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got = out.(Model)
-	if got.view != viewRestorePick || !got.statusErr || !strings.Contains(got.status, "introuvable") {
-		t.Errorf("↩ avec stack absente : view=%v status=%q, want erreur « introuvable »", got.view, got.status)
+	if got.view != viewRestorePick || !got.statusErr || !strings.Contains(got.status, "Aucune") {
+		t.Errorf("↩ sans sélection : view=%v status=%q", got.view, got.status)
 	}
 }

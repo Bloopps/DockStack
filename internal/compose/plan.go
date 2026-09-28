@@ -23,7 +23,7 @@ type Recreation struct {
 // conteneur (après un pull). C'est une prévision : elle sert à avertir avant
 // une confirmation, sans jamais bloquer l'action.
 func (c *Client) PlanUp(ctx context.Context, stack Stack) ([]Recreation, error) {
-	proj, err := loadScopedProject(stack)
+	proj, _, err := loadScopedProjectReport(&stack)
 	if err != nil {
 		return nil, err
 	}
