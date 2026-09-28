@@ -103,7 +103,17 @@ type Model struct {
 	// v). previewCache évite de relire le fichier à chaque frame. lastVAt date le
 	// dernier appui sur v : un second appui rapproché (volet déjà ouvert) escalade
 	// vers la vue compose plein écran.
-	previewOn    bool
+	previewOn bool
+	// previewCompose : le volet montre le fichier compose (tab) au lieu du
+	// détail de la stack (services, état, actions), vue par défaut.
+	previewCompose bool
+	// Mode services : le focus est dans le volet, on agit sur des services
+	// précis d'une stack (svcStack, par nom) sans toucher aux autres.
+	svcFocus     bool
+	svcStack     string
+	svcCursor    int
+	svcSel       map[string]bool
+	svcCache     *svcCacheBox
 	previewCache *previewCacheBox
 	lastVAt      time.Time
 
@@ -243,6 +253,8 @@ func New(cfg *config.Config) Model {
 		foldedGroups: make(map[string]bool),
 		rowsCache:    &rowsCacheBox{},
 		previewCache: &previewCacheBox{},
+		previewOn:    true,
+		svcCache:     &svcCacheBox{},
 		loading:      true,
 	}
 }

@@ -41,7 +41,11 @@ type Stack struct {
 	Total       int
 	Unhealthy   int
 	Services    []ServiceStatus // par service compose, trié par nom
-	Orphaned    bool            // au moins un conteneur rattaché par nom faute de label projet (recréé par watchtower)
+	// Only restreint toute action (up/down/restart/recreate/pull/logs) à ces
+	// services, sans dépendances ni effet sur les autres. Vide = toute la stack.
+	// Posé par l'appelant sur une copie de la Stack, jamais par ListStacks.
+	Only     []string
+	Orphaned bool // au moins un conteneur rattaché par nom faute de label projet (recréé par watchtower)
 }
 
 // ServiceStatus représente l'état agrégé d'un service compose au sein
@@ -446,13 +450,13 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 	if err != nil {
 		return err
 	}
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return err
 	}
 	opts := api.UpOptions{
-		Create: api.CreateOptions{Recreate: api.RecreateDiverged},
-		Start:  api.StartOptions{Project: proj},
+		Create: api.CreateOptions{Recreate: api.RecreateDiverged, Services: stack.Only},
+		Start:  api.StartOptions{Project: proj, Services: stack.Only},
 	}
 	err = c.upWithReadopt(ctx, stack, proj, svc, opts, ch)
 	// « already in use » restant après upWithReadopt = le nom est pris par le
@@ -616,17 +620,17 @@ func (c *Client) downLive(ctx context.Context, stack Stack, ch chan<- ProgressEv
 	if err != nil {
 		return err
 	}
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return err
 	}
-	if derr := svc.Down(ctx, proj.Name, api.DownOptions{}); derr != nil {
+	if derr := svc.Down(ctx, proj.Name, api.DownOptions{Project: proj, Services: stack.Only}); derr != nil {
 		return derr
 	}
 	// Orphelins watchtower : compose down ne les a pas vus (label projet
 	// absent) → on les arrête nous-mêmes, sinon « down » serait un no-op
 	// silencieux sur des conteneurs qui tournent toujours.
-	if stack.Orphaned {
+	if stack.Orphaned && len(stack.Only) == 0 {
 		c.removeProjectOrphans(ctx, stack.Name, proj, ch, "arrêté (orphelin)")
 	}
 	return nil
@@ -637,16 +641,16 @@ func (c *Client) restartLive(ctx context.Context, stack Stack, ch chan<- Progres
 	if err != nil {
 		return err
 	}
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return err
 	}
 	// Project fourni comme la CLI : sans lui, compose le reconstruit depuis les
 	// conteneurs labellisés et échoue si la stack n'a que des orphelins.
-	if err := svc.Restart(ctx, proj.Name, api.RestartOptions{Project: proj}); err != nil {
+	if err := svc.Restart(ctx, proj.Name, api.RestartOptions{Project: proj, Services: stack.Only}); err != nil {
 		return err
 	}
-	if stack.Orphaned {
+	if stack.Orphaned && len(stack.Only) == 0 {
 		c.restartProjectOrphans(ctx, stack.Name, proj, ch)
 	}
 	return nil
@@ -657,13 +661,13 @@ func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- Progre
 	if err != nil {
 		return err
 	}
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return err
 	}
 	return c.upWithReadopt(ctx, stack, proj, svc, api.UpOptions{
-		Create: api.CreateOptions{Recreate: api.RecreateForce},
-		Start:  api.StartOptions{Project: proj},
+		Create: api.CreateOptions{Recreate: api.RecreateForce, Services: stack.Only},
+		Start:  api.StartOptions{Project: proj, Services: stack.Only},
 	}, ch)
 }
 
@@ -672,7 +676,7 @@ func (c *Client) pullLive(ctx context.Context, stack Stack, ch chan<- ProgressEv
 	if err != nil {
 		return err
 	}
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return err
 	}
@@ -700,7 +704,7 @@ const logTail = "500"
 // LogsAsync starts streaming logs and returns a channel of log entries.
 // The channel is closed when streaming ends or ctx is cancelled.
 func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, error) {
-	proj, err := loadProject(stack)
+	proj, err := loadScopedProject(stack)
 	if err != nil {
 		return nil, err
 	}
@@ -714,7 +718,7 @@ func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, e
 		// l'utilisateur (ctx.Err() != nil) n'est pas une erreur.
 		// Tail borné : sans lui, tout l'historique est relu à l'ouverture alors
 		// que la vue n'en garde que maxLogLines.
-		if err := c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true, Tail: logTail}); err != nil && ctx.Err() == nil {
+		if err := c.svc.Logs(ctx, proj.Name, consumer, api.LogOptions{Follow: true, Tail: logTail, Services: stack.Only}); err != nil && ctx.Err() == nil {
 			consumer.send(LogEntry{Name: "⚠", Line: "flux de logs interrompu : " + err.Error(), IsErr: true})
 		}
 	}()

@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -221,6 +222,23 @@ func RenderResolvedConfig(stack Stack) (string, error) {
 	return string(data), nil
 }
 
+// loadScopedProject charge le projet et, si stack.Only est renseigné, le
+// restreint à ces services SANS leurs dépendances (comme « up --no-deps ») :
+// compose fait converger tout le projet chargé, donc réduire le modèle est la
+// seule façon de ne pas toucher aux autres services.
+func loadScopedProject(stack Stack) (*composetypes.Project, error) {
+	proj, err := loadProject(stack)
+	if err != nil || len(stack.Only) == 0 {
+		return proj, err
+	}
+	for _, n := range stack.Only {
+		if _, ok := proj.Services[n]; !ok {
+			return nil, fmt.Errorf("service %q absent du compose", n)
+		}
+	}
+	return proj.WithSelectedServices(stack.Only, composetypes.IgnoreDependencies)
+}
+
 func loadProject(stack Stack) (*composetypes.Project, error) {
 	// Fallback project name: directory basename, normalized to what Docker accepts.
 	// SetProjectName with imperativelySet=false lets a name: field in the compose
@@ -308,4 +326,21 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		proj.Services[name] = svc
 	}
 	return proj, nil
+}
+
+// DeclaredServices renvoie, triés, les services déclarés par le compose de la
+// stack (profils inactifs exclus, comme la CLI). Sert à proposer aussi les
+// services sans conteneur (arrêtés puis retirés, jamais déployés). Lecture
+// complète du projet : à appeler paresseusement et à mettre en cache.
+func DeclaredServices(stack Stack) ([]string, error) {
+	proj, err := loadProject(stack)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(proj.Services))
+	for n := range proj.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, nil
 }

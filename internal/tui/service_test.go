@@ -18,6 +18,16 @@ type fakeClient struct {
 	listErr error
 	logsErr error
 	logsCh  <-chan compose.LogEntry
+	// calls enregistre les stacks reçues par action (up/down/...), pour vérifier
+	// le ciblage par services (Stack.Only).
+	calls map[string][]compose.Stack
+}
+
+func (f *fakeClient) rec(action string, stacks []compose.Stack) {
+	if f.calls == nil {
+		f.calls = map[string][]compose.Stack{}
+	}
+	f.calls[action] = stacks
 }
 
 func (f *fakeClient) ListStacks(context.Context, string) ([]compose.Stack, error) {
@@ -30,22 +40,28 @@ func (f *fakeClient) LogsAsync(context.Context, compose.Stack) (<-chan compose.L
 func (f *fakeClient) Usage(context.Context, bool) (compose.DockerUsage, error) {
 	return compose.DockerUsage{}, nil
 }
-func (f *fakeClient) UpManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) UpManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("up", st)
 	return nil
 }
-func (f *fakeClient) DownManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) DownManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("down", st)
 	return nil
 }
-func (f *fakeClient) RestartManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) RestartManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("restart", st)
 	return nil
 }
-func (f *fakeClient) RecreateManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) RecreateManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("recreate", st)
 	return nil
 }
-func (f *fakeClient) PullManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) PullManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("pull", st)
 	return nil
 }
-func (f *fakeClient) RemoveManyLive(context.Context, []compose.Stack, int) <-chan compose.ProgressEvent {
+func (f *fakeClient) RemoveManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("remove", st)
 	return nil
 }
 

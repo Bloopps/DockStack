@@ -78,6 +78,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.svcFocus {
+		return m.handleServiceKey(msg)
+	}
+
 	// Le désarmement de la confirmation de sortie par les autres touches est
 	// global (handleKey), comme l'intercept ctrl+c.
 	switch msg.String() {
@@ -112,6 +116,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = m.headerRowIndex(g)
 		}
 	case "right":
+		// Sur une stack : entre dans ses services (le volet est à droite).
+		if _, ok := m.cursorStack(); ok {
+			return m.enterServices()
+		}
 		if g, ok := m.cursorGroup(); ok {
 			delete(m.foldedGroups, g)
 			m.invalidateRows()
@@ -229,6 +237,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, clearStatusIn(4 * time.Second)
 		}
 		m.previewOn = !m.previewOn
+	case "s":
+		return m.enterServices()
+	case "tab":
+		// Volet ouvert : bascule détail de la stack ↔ fichier compose.
+		if m.previewVisible() {
+			m.previewCompose = !m.previewCompose
+		}
 	case "a":
 		return m.toggleInactive()
 	case "x":
@@ -415,22 +430,22 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 	switch action {
 	case "up":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Up: "+stack.Name, cancel, client.UpManyLive(ctx, one, 1))
+		return m.startProgressOp("Up: "+stackLabel(stack), cancel, client.UpManyLive(ctx, one, 1))
 	case "down":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Down: "+stack.Name, cancel, client.DownManyLive(ctx, one, 1))
+		return m.startProgressOp("Down: "+stackLabel(stack), cancel, client.DownManyLive(ctx, one, 1))
 	case "restart":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Restart: "+stack.Name, cancel, client.RestartManyLive(ctx, one, 1))
+		return m.startProgressOp("Restart: "+stackLabel(stack), cancel, client.RestartManyLive(ctx, one, 1))
 	case "recreate":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Recreate: "+stack.Name, cancel, client.RecreateManyLive(ctx, one, 1))
+		return m.startProgressOp("Recreate: "+stackLabel(stack), cancel, client.RecreateManyLive(ctx, one, 1))
 	case "pull":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Pull: "+stack.Name, cancel, client.PullManyLive(ctx, one, 1))
+		return m.startProgressOp("Pull: "+stackLabel(stack), cancel, client.PullManyLive(ctx, one, 1))
 	case "logs":
 		m.view = viewLogs
-		m.logStack = stack.Name
+		m.logStack = stackLabel(stack)
 		m.logLines = nil
 		m.logScroll = 0
 		m.logSeq++ // nouvelle session : invalide les messages en vol de la précédente
@@ -441,7 +456,7 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 		return m, startLogs(ctx, client, stack, m.logSeq)
 	case "remove":
 		ctx, cancel := context.WithCancel(context.Background())
-		return m.startProgressOp("Remove: "+stack.Name, cancel, client.RemoveManyLive(ctx, one, 1))
+		return m.startProgressOp("Remove: "+stackLabel(stack), cancel, client.RemoveManyLive(ctx, one, 1))
 	}
 	m.view = viewList
 	return m, nil

@@ -92,6 +92,16 @@ type footerKey = struct{ key, desc string }
 // va donc du plus utile au moins utile.
 func (m Model) listFooterKeys() []footerKey {
 	tail := []footerKey{{"?", "aide"}, {"q", "quitter"}}
+	if m.svcFocus {
+		return []footerKey{
+			{"␣", "cocher"}, {"u", "up"}, {"d", "down"}, {"r", "restart"},
+			{"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
+			{"ctrl+a", "tout"},
+			// Épinglés en fin de barre : la sortie du mode ne doit jamais
+			// céder la place sur un terminal étroit (q quitte toujours).
+			{"←", "retour"}, {"?", "aide"},
+		}
+	}
 	if n := len(m.selectedStacks()); n > 0 {
 		return append([]footerKey{
 			{fmt.Sprintf("%d", n), "sélectionnées"},
@@ -113,7 +123,7 @@ func (m Model) listFooterKeys() []footerKey {
 		keys = []footerKey{{"↩", "afficher les non déployées"}}
 	case ok && row.isStack():
 		keys = []footerKey{
-			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"},
+			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}, {"s", "services"},
 			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"},
 		}
 	}

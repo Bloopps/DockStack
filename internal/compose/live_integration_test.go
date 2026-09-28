@@ -304,3 +304,93 @@ func TestLiveUsage(t *testing.T) {
 	}
 	t.Logf("%+v", u)
 }
+
+// TestLiveScopedServices : avec Stack.Only, chaque action ne touche QUE les
+// services ciblés — les autres gardent le même conteneur (même id) et ne sont
+// ni redémarrés ni recréés, même si le service ciblé est leur dépendance.
+func TestLiveScopedServices(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	st := probeStack(t, root, "zzdsprobeonly", `services:
+  a:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+  b:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+  c:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+    depends_on: [a]
+`, "")
+	only := func(names ...string) []Stack { s := st; s.Only = names; return []Stack{s} }
+	// id et instant de démarrage d'un conteneur (vide s'il n'existe pas).
+	inspect := func(svc string) string {
+		out, err := dockerCLI("inspect", "-f", "{{.Id}} {{.State.Running}} {{.State.StartedAt}}", "zzdsprobeonly-"+svc+"-1")
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+	id := func(svc string) string { return strings.Fields(inspect(svc) + " ")[0] }
+
+	errs, _ := runOp(t, c.UpManyLive(ctx, []Stack{st}, 1))
+	mustOK(t, "Up complet", errs)
+	idA, idB, idC := id("a"), id("b"), id("c")
+	if idA == "" || idB == "" || idC == "" {
+		t.Fatalf("les 3 services doivent tourner : a=%q b=%q c=%q", idA, idB, idC)
+	}
+	startedC := inspect("c")
+
+	// Down ciblé sur b : b disparaît, a et c intacts.
+	errs, _ = runOp(t, c.DownManyLive(ctx, only("b"), 1))
+	mustOK(t, "Down b", errs)
+	if inspect("b") != "" {
+		t.Error("Down ciblé : b devrait être retiré")
+	}
+	if id("a") != idA || id("c") != idC || !strings.Contains(inspect("a"), " true ") || !strings.Contains(inspect("c"), " true ") {
+		t.Errorf("Down ciblé : a/c ont été touchés (a=%q c=%q)", inspect("a"), inspect("c"))
+	}
+
+	// Les services déclarés incluent b malgré l'absence de conteneur.
+	names, err := DeclaredServices(st)
+	if err != nil || strings.Join(names, ",") != "a,b,c" {
+		t.Errorf("DeclaredServices = %v, %v", names, err)
+	}
+
+	// Up ciblé sur b : b revient, a et c gardent leur conteneur.
+	errs, _ = runOp(t, c.UpManyLive(ctx, only("b"), 1))
+	mustOK(t, "Up b", errs)
+	if !strings.Contains(inspect("b"), " true ") || id("a") != idA || id("c") != idC {
+		t.Errorf("Up ciblé : état inattendu a=%q b=%q c=%q", inspect("a"), inspect("b"), inspect("c"))
+	}
+	idB = id("b")
+
+	// Restart ciblé sur c : seul c change d'heure de démarrage.
+	time.Sleep(1100 * time.Millisecond) // StartedAt a une précision de l'ordre de la seconde
+	errs, _ = runOp(t, c.RestartManyLive(ctx, only("c"), 1))
+	mustOK(t, "Restart c", errs)
+	if inspect("c") == startedC {
+		t.Error("Restart ciblé : c n'a pas redémarré")
+	}
+	if id("c") != idC || id("a") != idA || id("b") != idB {
+		t.Error("Restart ciblé : un conteneur a changé d'id")
+	}
+
+	// Recreate ciblé sur c (dépend de a) : c est recréé, PAS a ni b.
+	errs, _ = runOp(t, c.RecreateManyLive(ctx, only("c"), 1))
+	mustOK(t, "Recreate c", errs)
+	if id("c") == idC || id("c") == "" {
+		t.Error("Recreate ciblé : c aurait dû être recréé (nouvel id)")
+	}
+	if id("a") != idA || id("b") != idB {
+		t.Errorf("Recreate ciblé sur c : a ou b ont été recréés (a=%q b=%q)", id("a"), id("b"))
+	}
+
+	// Service inconnu : erreur claire, rien de touché.
+	errs, _ = runOp(t, c.UpManyLive(ctx, only("nope"), 1))
+	if errs["zzdsprobeonly"] == nil {
+		t.Error("service inconnu : une erreur est attendue")
+	}
+}

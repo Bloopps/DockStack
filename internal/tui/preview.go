@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -98,26 +99,38 @@ func renderPreviewPane(m Model, height, paneW int) string {
 	}
 
 	var content []string
+	focusedStack, focused := compose.Stack{}, false
+	if m.svcFocus {
+		focusedStack, focused = m.focusedStack()
+	}
 	switch row, ok := m.cursorRow(); {
+	case focused:
+		content = previewServices(m, focusedStack, inner, height)
 	case !ok || row.sep || row.more:
 		content = []string{styleDim.Render("(rien à afficher)")}
 	case row.header:
 		content = previewGroup(m, row.group, inner, height)
-	default:
+	case m.previewCompose:
 		content = previewStack(m, row.stack, inner, height)
+	default:
+		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height)
 	}
 
 	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste.
 	if len(content) > height {
 		content = content[:height]
 	}
-	rule := styleDim.Render("│") + " "
+	ruleStyle := styleDim
+	if focused {
+		ruleStyle = styleCyan // le focus est dans le volet
+	}
+	rule := ruleStyle.Render("│") + " "
 	lines := make([]string, height)
 	for i := 0; i < height; i++ {
 		if i < len(content) {
 			lines[i] = rule + content[i]
 		} else {
-			lines[i] = styleDim.Render("│")
+			lines[i] = ruleStyle.Render("│")
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -347,4 +360,105 @@ func isYamlNumber(t string) bool {
 		return true
 	}
 	return false
+}
+
+// previewDetail rend le détail d'une stack : état global, services (les
+// problèmes d'abord), remarque éventuelle, puis les actions possibles adaptées
+// à l'état. C'est la vue par défaut du volet ; tab bascule vers le compose.
+func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height int) []string {
+	dot, dotStyle := stateStyle(s.State())
+	out := []string{dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2))}
+
+	state := dotStyle.Render(stateWord(s.State()))
+	if s.Total > 0 {
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", s.Running, s.Total))
+	}
+	out = append(out, state)
+
+	dir := s.Dir
+	if r, err := filepath.Rel(stackDir, s.Dir); err == nil && !strings.HasPrefix(r, "..") {
+		dir = r
+	}
+	out = append(out, styleDim.Render(truncate(dir, inner)), "")
+
+	if len(services) > 0 {
+		out = append(out, styleDim.Render("Services"))
+		svcs := append([]compose.ServiceStatus(nil), services...)
+		sort.SliceStable(svcs, func(i, j int) bool {
+			return serviceOrder(svcs[i].State()) < serviceOrder(svcs[j].State())
+		})
+		nameW := 0
+		for _, sv := range svcs {
+			if w := lipgloss.Width(sv.Name); w > nameW {
+				nameW = w
+			}
+		}
+		if nameW > inner-16 {
+			nameW = max(inner-16, 8)
+		}
+		// Place restante pour les services : on réserve l'en-tête déjà rendu,
+		// la note d'orphelins éventuelle et le bloc d'actions (4 lignes + pied).
+		reserved := len(out) + 1 + 6
+		if s.Orphaned {
+			reserved += 2
+		}
+		avail := max(height-reserved, 3)
+		hidden, hiddenWhat := 0, ""
+		if len(svcs) > avail {
+			rest := svcs[avail-1:]
+			hidden = len(rest)
+			svcs = svcs[:avail-1]
+			hiddenWhat = "services"
+			same := true
+			for _, r := range rest {
+				same = same && r.State() == rest[0].State()
+			}
+			if same {
+				hiddenWhat = "services " + stateWord(rest[0].State())
+			}
+		}
+		for _, sv := range svcs {
+			d, st := stateStyle(sv.State())
+			name := truncate(sv.Name, nameW)
+			pad := strings.Repeat(" ", max(nameW-lipgloss.Width(name), 0))
+			out = append(out, "  "+st.Render(d)+" "+name+pad+"  "+st.Render(stateWord(sv.State())))
+		}
+		if hidden > 0 {
+			out = append(out, styleDim.Render(fmt.Sprintf("  … +%d autres %s", hidden, hiddenWhat)))
+		}
+		out = append(out, "")
+	}
+	if s.Orphaned {
+		out = append(out, styleYellow.Render(truncate("⚠ conteneurs rattachés par nom (recréés hors compose ?)", inner)), "")
+	}
+
+	// Actions utiles selon l'état : on ne propose pas Down à une stack arrêtée.
+	k := func(key, desc string) string { return styleCyan.Render(key) + " " + desc }
+	out = append(out, styleDim.Render("Actions"))
+	switch s.State() {
+	case compose.StateStopped, compose.StateUnknown:
+		out = append(out, "  "+k("u", "démarrer")+"   "+k("p", "pull"))
+	case compose.StatePartial:
+		out = append(out, "  "+k("u", "relancer les manquants")+"   "+k("r", "restart"), "  "+k("d", "down")+"   "+k("l", "logs")+"   "+k("p", "pull"))
+	case compose.StateUnhealthy:
+		out = append(out, "  "+k("l", "voir les logs")+"   "+k("r", "restart"), "  "+k("c", "recreate")+"   "+k("d", "down"))
+	default:
+		out = append(out, "  "+k("r", "restart")+"   "+k("d", "down")+"   "+k("l", "logs"), "  "+k("c", "recreate")+"   "+k("p", "pull"))
+	}
+	out = append(out, "", styleDim.Render("→ gérer les services · tab compose"))
+	return out
+}
+
+// serviceOrder classe les services : ceux qui posent problème d'abord.
+func serviceOrder(s compose.State) int {
+	switch s {
+	case compose.StateUnhealthy:
+		return 0
+	case compose.StatePartial:
+		return 1
+	case compose.StateStopped:
+		return 2
+	default:
+		return 3
+	}
 }

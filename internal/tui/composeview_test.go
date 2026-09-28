@@ -16,6 +16,7 @@ var keyV = tea.KeyPressMsg{Code: 'v', Text: "v"}
 
 func TestDoubleVEscalatesToCompose(t *testing.T) {
 	m := newTestModel([]compose.Stack{stack("solo", "", 1, 1, 0)})
+	m.previewOn = false
 
 	// Premier v : ouvre le volet, reste dans la liste.
 	mm, _ := m.handleListKey(keyV)
@@ -33,6 +34,7 @@ func TestDoubleVEscalatesToCompose(t *testing.T) {
 
 	// Deux v espacés : pas d'escalade, simple bascule du volet.
 	m = newTestModel([]compose.Stack{stack("solo", "", 1, 1, 0)})
+	m.previewOn = false
 	mm, _ = m.handleListKey(keyV)
 	m = mm.(Model)
 	m.lastVAt = time.Now().Add(-time.Second) // appui « ancien »

@@ -22,6 +22,12 @@ func renderHelpView(m Model, height int) string {
 		"  " + k("p") + "  Pull         " + k("l") + "  Logs" + d("  (stack courante)"),
 		"  " + k("↩") + "  panneau d'actions" + d("  (dont Compose, Remove)"),
 	}
+	services := []string{
+		title("Services", "  (agir sur certains services, sans toucher aux autres)"),
+		"  " + k("→") + " / " + k("s") + "  entrer dans les services de la stack",
+		"  " + k("␣") + "  cocher   " + k("ctrl+a") + "  tout   " + k("u d r c p l") + "  agir",
+		"  " + k("←") + "  retour" + d("  (esc : décoche, puis sort · tab : compose)"),
+	}
 	selection := []string{
 		title("Sélection", ""),
 		"  " + k("␣") + "  sélectionner   " + k("ctrl+a") + "  tout (visible)",
@@ -29,8 +35,7 @@ func renderHelpView(m Model, height int) string {
 	}
 	groups := []string{
 		title("Dossiers", "  (sur l'en-tête : ␣ et u/d/r/c/p = tout le dossier)"),
-		"  " + k("←") + "  replier        " + k("→") + "  déplier",
-		"  " + k("↩") + "  sur l'en-tête : replier/déplier",
+		"  " + k("←") + "  replier   " + k("→") + "  déplier   " + k("↩") + "  replier/déplier",
 	}
 	list := []string{
 		title("Liste", ""),
@@ -62,14 +67,14 @@ func renderHelpView(m Model, height int) string {
 		}
 		return strings.Join(out, "\n")
 	}
-	left := join(actions, selection, groups)
-	right := join(list, captures, general)
+	left := join(actions, services, selection, captures)
+	right := join(groups, list, general)
 
 	var body string
 	if lipgloss.Width(left)+lipgloss.Width(right)+14 <= m.width {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "      ", right)
 	} else {
-		body = join(actions, selection, groups, list, captures, general)
+		body = join(actions, services, selection, groups, list, captures, general)
 	}
 
 	box := lipgloss.NewStyle().
