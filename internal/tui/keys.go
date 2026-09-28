@@ -434,6 +434,9 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 	case "down":
 		ctx, cancel := context.WithCancel(context.Background())
 		return m.startProgressOp("Down: "+stackLabel(stack), cancel, client.DownManyLive(ctx, one, 1))
+	case "stop":
+		ctx, cancel := context.WithCancel(context.Background())
+		return m.startProgressOp("Stop: "+stackLabel(stack), cancel, client.StopManyLive(ctx, one, 1))
 	case "restart":
 		ctx, cancel := context.WithCancel(context.Background())
 		return m.startProgressOp("Restart: "+stackLabel(stack), cancel, client.RestartManyLive(ctx, one, 1))

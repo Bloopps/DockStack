@@ -20,7 +20,18 @@ type fakeClient struct {
 	logsCh  <-chan compose.LogEntry
 	// calls enregistre les stacks reçues par action (up/down/...), pour vérifier
 	// le ciblage par services (Stack.Only).
-	calls map[string][]compose.Stack
+	calls   map[string][]compose.Stack
+	plan    []compose.Recreation
+	planErr error
+}
+
+func (f *fakeClient) PlanUp(context.Context, compose.Stack) ([]compose.Recreation, error) {
+	return f.plan, f.planErr
+}
+
+func (f *fakeClient) StopManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
+	f.rec("stop", st)
+	return nil
 }
 
 func (f *fakeClient) rec(action string, stacks []compose.Stack) {

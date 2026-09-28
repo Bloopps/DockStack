@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -15,6 +17,7 @@ import (
 var actionTitle = map[string]string{
 	"up":       "Up",
 	"down":     "Down",
+	"stop":     "Stop",
 	"restart":  "Restart",
 	"recreate": "Recreate",
 	"pull":     "Pull",
@@ -82,10 +85,12 @@ func (m Model) confirmStackAction(action string, stack compose.Stack) (tea.Model
 }
 
 // startOrConfirmUp lance un Up unitaire directement si la stack est arrêtée
-// (cas nominal, sans risque) et le confirme si elle tourne déjà.
+// (cas nominal, sans risque). Si elle tourne déjà, on prévoit d'abord ce que
+// up recréerait : rien de perturbé → direct, sinon confirmation détaillée.
 func (m Model) startOrConfirmUp(stack compose.Stack) (tea.Model, tea.Cmd) {
 	if anyActive([]compose.Stack{stack}) {
-		return m.confirmStackAction("up", stack)
+		return m.confirmUpWithPlan("Up — "+stack.Name, []string{stack.Name}, []compose.Stack{stack},
+			func(m Model) (tea.Model, tea.Cmd) { return m.startStackAction("up", stack) })
 	}
 	return m.startStackAction("up", stack)
 }
@@ -93,9 +98,67 @@ func (m Model) startOrConfirmUp(stack compose.Stack) (tea.Model, tea.Cmd) {
 // startOrConfirmGroupUp : même règle pour un Up groupé.
 func (m Model) startOrConfirmGroupUp(stacks []compose.Stack) (tea.Model, tea.Cmd) {
 	if anyActive(stacks) {
-		return m.confirmGroupActionWarn("up", upWarning, stacks)
+		names := make([]string, len(stacks))
+		for i, s := range stacks {
+			names[i] = s.Name
+		}
+		return m.confirmUpWithPlan(fmt.Sprintf("Up — %d stacks", len(stacks)), names, stacks,
+			func(m Model) (tea.Model, tea.Cmd) { return m.startGroupAction("up", stacks) })
 	}
 	return m.startGroupAction("up", stacks)
+}
+
+// planUpMsg : résultat de la prévision des recréations d'un up.
+type planUpMsg struct {
+	label string
+	names []string
+	recs  []string // « service · raison », préfixé par la stack si plusieurs
+	err   error
+	run   func(Model) (tea.Model, tea.Cmd)
+}
+
+// confirmUpWithPlan prévoit (hors boucle UI) quels services en marche un up
+// recréerait, puis décide dans Update : rien à recréer → l'action part sans
+// confirmation ; sinon la confirmation liste précisément les services et la
+// raison. Si la prévision échoue, on retombe sur la confirmation générique.
+func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.Stack, run func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
+	client := m.client
+	m.setStatus("Analyse des changements…", false)
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		var recs []string
+		for _, s := range stacks {
+			plan, err := client.PlanUp(ctx, s)
+			if err != nil {
+				return planUpMsg{label: label, names: names, err: err, run: run}
+			}
+			for _, r := range plan {
+				line := r.Service + " · " + r.Reason
+				if len(stacks) > 1 {
+					line = s.Name + " / " + line
+				}
+				recs = append(recs, line)
+			}
+		}
+		return planUpMsg{label: label, names: names, recs: recs, run: run}
+	}
+}
+
+// handlePlanUp applique la décision après la prévision (voir confirmUpWithPlan).
+func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
+	m.status = ""
+	// Vue changée ou opération lancée entre-temps : la demande est périmée.
+	if m.view != viewList || m.opInProgress() {
+		return m, nil
+	}
+	switch {
+	case msg.err != nil:
+		return m.askConfirm(msg.label, upWarning, msg.names, msg.run)
+	case len(msg.recs) == 0:
+		return msg.run(m) // aucun service en marche n'est perturbé
+	}
+	return m.askConfirm(msg.label, "Ces services en marche seront recréés (brève coupure) :", msg.recs, msg.run)
 }
 
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

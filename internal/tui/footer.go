@@ -93,12 +93,14 @@ type footerKey = struct{ key, desc string }
 func (m Model) listFooterKeys() []footerKey {
 	tail := []footerKey{{"?", "aide"}, {"q", "quitter"}}
 	if m.svcFocus {
+		// Par ordre d'importance : sur terminal étroit, les derniers chips
+		// non épinglés cèdent la place en premier.
 		return []footerKey{
-			{"␣", "cocher"}, {"u", "up"}, {"d", "down"}, {"r", "restart"},
-			{"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
-			{"ctrl+a", "tout"},
+			{"␣", "cocher"}, {"u", "up"}, {"d", "stop"}, {"r", "restart"}, {"l", "logs"},
+			{"e", "en défaut"}, {"/", "filtre"}, {"c", "recreate"}, {"p", "pull"},
+			{"D", "down"}, {"+", "dépendances"}, {"ctrl+a", "tout"},
 			// Épinglés en fin de barre : la sortie du mode ne doit jamais
-			// céder la place sur un terminal étroit (q quitte toujours).
+			// céder la place (q quitte toujours).
 			{"←", "retour"}, {"?", "aide"},
 		}
 	}

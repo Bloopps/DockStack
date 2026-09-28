@@ -2,7 +2,10 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 )
@@ -55,5 +58,28 @@ func TestProgressStackDone(t *testing.T) {
 	}
 	if st.err != first {
 		t.Errorf("err = %v, want la première (%v)", st.err, first)
+	}
+}
+
+// Fin d'opération groupée : les échecs sont récapitulés avec leur cause, sans
+// récapitulatif quand tout réussit ou qu'il n'y a qu'une stack.
+func TestProgressFailureRecap(t *testing.T) {
+	m := newTestModel(nil)
+	m.width, m.height, m.loading = 120, 40, false
+	m.progress = newProgressState()
+	m.progress.apply(compose.ProgressEvent{StackName: "ok", StackDone: true})
+	m.progress.apply(compose.ProgressEvent{StackName: "ko", StackDone: true, Err: errors.New("pull access denied\nfor image x")})
+	m.progressDone, m.progressTotal, m.progressOk = true, 2, 1
+	lines, _ := m.progressLines(0, 100)
+	out := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(out, "1 échec") || !strings.Contains(out, "ko  pull access denied for image x") {
+		t.Fatalf("récapitulatif attendu :\n%s", out)
+	}
+
+	m.progress = newProgressState()
+	m.progress.apply(compose.ProgressEvent{StackName: "seule", StackDone: true, Err: errors.New("boom")})
+	lines, _ = m.progressLines(0, 100)
+	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "échec") {
+		t.Error("une seule stack : pas de récapitulatif redondant")
 	}
 }

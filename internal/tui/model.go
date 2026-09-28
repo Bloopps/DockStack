@@ -109,11 +109,15 @@ type Model struct {
 	previewCompose bool
 	// Mode services : le focus est dans le volet, on agit sur des services
 	// précis d'une stack (svcStack, par nom) sans toucher aux autres.
-	svcFocus     bool
-	svcStack     string
-	svcCursor    int
-	svcSel       map[string]bool
-	svcCache     *svcCacheBox
+	svcFocus  bool
+	svcStack  string
+	svcCursor int
+	svcSel    map[string]bool
+	svcCache  *svcCacheBox
+	// Filtre par nom (/) et inclusion des dépendances (+) du mode services.
+	svcFilter    string
+	svcFiltering bool
+	svcDeps      bool
 	previewCache *previewCacheBox
 	lastVAt      time.Time
 
@@ -393,6 +397,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, readProgressCmd(m.progressCh, msg.seq)
+
+	case planUpMsg:
+		return m.handlePlanUp(msg)
 
 	case progressAllDoneMsg:
 		if msg.seq != m.progressSeq {

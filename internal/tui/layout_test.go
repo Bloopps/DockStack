@@ -233,3 +233,18 @@ func TestHelpFits(t *testing.T) {
 		}
 	}
 }
+
+// Le footer du mode services garde toujours « retour » et « aide », même étroit.
+func TestServiceFooterPinsExit(t *testing.T) {
+	for _, w := range []int{100, 120, 160} {
+		m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
+		m.width, m.svcFocus = w, true
+		f := ansi.Strip(m.renderFooter())
+		if !strings.Contains(f, "retour") || !strings.Contains(f, "aide") {
+			t.Errorf("w=%d : retour/aide absents du footer %q", w, f)
+		}
+		if lipgloss.Width(f) > w {
+			t.Errorf("w=%d : footer de %d colonnes", w, lipgloss.Width(f))
+		}
+	}
+}

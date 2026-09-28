@@ -214,6 +214,31 @@ func (m Model) progressLines(start, end int) (visible []string, total int) {
 		}
 	}
 
+	// Récapitulatif des échecs en fin d'opération groupée : la cause de chaque
+	// stack en échec, sans avoir à remonter tout le défilement.
+	if m.progressDone && len(ps.order) > 1 {
+		var failed []*stackProgress
+		for _, st := range ps.order {
+			if failureReason(st) != "" {
+				failed = append(failed, st)
+			}
+		}
+		if len(failed) > 0 {
+			add(func() string { return "" })
+			add(func() string {
+				return "  " + styleRed.Bold(true).Render(fmt.Sprintf("✕ %d échec%s", len(failed), plural(len(failed))))
+			})
+			for _, st := range failed {
+				st := st
+				add(func() string {
+					line := "      " + styleRed.Render(st.name) + styleDim.Render("  ")
+					room := max(m.width-lipgloss.Width(line)-1, 10)
+					return line + styleDim.Render(truncate(failureReason(st), room))
+				})
+			}
+		}
+	}
+
 	if m.progressDone {
 		add(func() string { return "" })
 		add(func() string {
@@ -352,4 +377,19 @@ func wordWrap(text string, width int) []string {
 		return []string{text}
 	}
 	return lines
+}
+
+// failureReason renvoie la cause d'échec d'une stack en une ligne : erreur de
+// la stack, sinon message de la première ressource en erreur. Vide si tout va bien.
+func failureReason(st *stackProgress) string {
+	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	if st.err != nil {
+		return oneLine(st.err.Error())
+	}
+	for _, r := range st.roots {
+		if r.state == "error" {
+			return oneLine(r.id + " : " + r.status)
+		}
+	}
+	return ""
 }

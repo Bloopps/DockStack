@@ -17,11 +17,15 @@ type dockerService interface {
 	LogsAsync(ctx context.Context, stack compose.Stack) (<-chan compose.LogEntry, error)
 	Usage(ctx context.Context, withVolumes bool) (compose.DockerUsage, error)
 
+	// Prévision des services en marche qu'un up recréerait (avant confirmation).
+	PlanUp(ctx context.Context, stack compose.Stack) ([]compose.Recreation, error)
+
 	// Actions groupées streamées vers la vue de progression : un canal
 	// d'événements par opération, fermé par la sentinelle AllDone.
 	// (La restauration de capture passe aussi par UpManyLive.)
 	UpManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent
 	DownManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent
+	StopManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent
 	RestartManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent
 	RecreateManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent
 	PullManyLive(ctx context.Context, stacks []compose.Stack, parallel int) <-chan compose.ProgressEvent

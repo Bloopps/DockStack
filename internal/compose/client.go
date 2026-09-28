@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -44,7 +45,10 @@ type Stack struct {
 	// Only restreint toute action (up/down/restart/recreate/pull/logs) à ces
 	// services, sans dépendances ni effet sur les autres. Vide = toute la stack.
 	// Posé par l'appelant sur une copie de la Stack, jamais par ListStacks.
-	Only     []string
+	Only []string
+	// WithDeps inclut aussi les dépendances (depends_on) des services de Only,
+	// comme « up » sans --no-deps. Ignoré si Only est vide.
+	WithDeps bool
 	Orphaned bool // au moins un conteneur rattaché par nom faute de label projet (recréé par watchtower)
 }
 
@@ -55,6 +59,45 @@ type ServiceStatus struct {
 	Running   int
 	Total     int
 	Unhealthy int
+	// Informations tirées du conteneur le plus parlant (unhealthy, puis à
+	// l'arrêt, puis en marche) : gratuites, déjà dans l'appel Docker de la liste.
+	Image  string // image du conteneur
+	Ports  string // ports publiés « 8080→80, 443→443 »
+	// DependsOn : dépendances directes déclarées dans le compose (rempli par la
+	// TUI depuis DeclaredServices, pas par ListStacks).
+	DependsOn []string
+	Status    string // statut Docker brut : « Exited (137) 3 hours ago », « Up 2 days (unhealthy) »…
+}
+
+// statusRank classe les conteneurs d'un service pour choisir celui dont on
+// affiche le statut : le plus problématique gagne.
+func statusRank(running, unhealthy bool) int {
+	switch {
+	case unhealthy:
+		return 2
+	case !running:
+		return 1
+	}
+	return 0
+}
+
+// publishedPorts formate les ports publiés d'un conteneur (dédoublonnés :
+// Docker liste séparément IPv4 et IPv6).
+func publishedPorts(ports []container.PortSummary) string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range ports {
+		if p.PublicPort == 0 {
+			continue
+		}
+		s := fmt.Sprintf("%d→%d", p.PublicPort, p.PrivatePort)
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }
 
 func (s ServiceStatus) State() State {
@@ -131,8 +174,12 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		return nil, err
 	}
 
-	type counts struct{ running, total, unhealthy int }
-	addServiceCount := func(m map[string]map[string]counts, key, svc string, running, unhealthy bool) {
+	type counts struct {
+		running, total, unhealthy int
+		image, ports, status      string
+		rank                      int
+	}
+	addServiceCount := func(m map[string]map[string]counts, key, svc string, ctr *container.Summary, running, unhealthy bool) {
 		sc, ok := m[key]
 		if !ok {
 			sc = make(map[string]counts)
@@ -146,6 +193,12 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		if unhealthy {
 			c.unhealthy++
 		}
+		if r := statusRank(running, unhealthy); c.total == 1 || r > c.rank {
+			c.rank, c.status, c.image = r, ctr.Status, ctr.Image
+		}
+		if c.ports == "" {
+			c.ports = publishedPorts(ctr.Ports)
+		}
 		sc[svc] = c
 	}
 	dirCounts := make(map[string]counts, len(result.Items))
@@ -154,7 +207,8 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 	dirServices := make(map[string]map[string]counts)        // working_dir -> service -> counts
 	projServices := make(map[string]map[string]counts)       // projet -> service -> counts (fallback)
 
-	for _, ctr := range result.Items {
+	for idx := range result.Items {
+		ctr := &result.Items[idx]
 		unhealthy := ctr.Health != nil && ctr.Health.Status == container.Unhealthy
 		running := ctr.State == "running"
 		svc := ctr.Labels["com.docker.compose.service"]
@@ -172,7 +226,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 			}
 			dirCounts[wd] = cnt
 			if svc != "" {
-				addServiceCount(dirServices, wd, svc, running, unhealthy)
+				addServiceCount(dirServices, wd, svc, &result.Items[idx], running, unhealthy)
 			}
 		}
 		proj := strings.ToLower(ctr.Labels["com.docker.compose.project"])
@@ -187,7 +241,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 			}
 			projCounts[proj] = cnt
 			if svc != "" {
-				addServiceCount(projServices, proj, svc, running, unhealthy)
+				addServiceCount(projServices, proj, svc, &result.Items[idx], running, unhealthy)
 			}
 			if wd != "." {
 				if _, ok := projDir[proj]; !ok {
@@ -227,7 +281,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		}
 		services := make([]ServiceStatus, 0, len(svcCounts))
 		for name, c := range svcCounts {
-			services = append(services, ServiceStatus{Name: name, Running: c.running, Total: c.total, Unhealthy: c.unhealthy})
+			services = append(services, ServiceStatus{Name: name, Running: c.running, Total: c.total, Unhealthy: c.unhealthy, Image: c.image, Ports: c.ports, Status: c.status})
 		}
 		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 		stacks = append(stacks, Stack{
@@ -300,6 +354,12 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 			if ss == nil {
 				ss = &ServiceStatus{Name: svcName}
 				svcAgg[svcName] = ss
+			}
+			if r := statusRank(running, unhealthy); ss.Total == 0 || r > statusRank(ss.Running == ss.Total, ss.Unhealthy > 0) {
+				ss.Image, ss.Status = ctr.Image, ctr.Status
+			}
+			if ss.Ports == "" {
+				ss.Ports = publishedPorts(ctr.Ports)
 			}
 			ss.Total++
 			stacks[i].Total++
@@ -656,6 +716,20 @@ func (c *Client) restartLive(ctx context.Context, stack Stack, ch chan<- Progres
 	return nil
 }
 
+func (c *Client) stopLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
+	svc, err := newSvcWithProcessor(c.cli, &streamingCollector{stackName: stack.Name, out: ch})
+	if err != nil {
+		return err
+	}
+	proj, err := loadScopedProject(stack)
+	if err != nil {
+		return err
+	}
+	// Stop garde les conteneurs (contrairement à Down) : le redémarrage est
+	// immédiat et rien n'est perdu.
+	return svc.Stop(ctx, proj.Name, api.StopOptions{Project: proj, Services: stack.Only})
+}
+
 func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
 	svc, err := newSvcWithProcessor(c.cli, &streamingCollector{stackName: stack.Name, out: ch})
 	if err != nil {
@@ -841,6 +915,10 @@ func (c *Client) UpManyLive(ctx context.Context, stacks []Stack, parallel int) <
 
 func (c *Client) DownManyLive(ctx context.Context, stacks []Stack, parallel int) <-chan ProgressEvent {
 	return c.manyLive(ctx, stacks, parallel, c.downLive)
+}
+
+func (c *Client) StopManyLive(ctx context.Context, stacks []Stack, parallel int) <-chan ProgressEvent {
+	return c.manyLive(ctx, stacks, parallel, c.stopLive)
 }
 
 func (c *Client) RestartManyLive(ctx context.Context, stacks []Stack, parallel int) <-chan ProgressEvent {

@@ -236,7 +236,11 @@ func loadScopedProject(stack Stack) (*composetypes.Project, error) {
 			return nil, fmt.Errorf("service %q absent du compose", n)
 		}
 	}
-	return proj.WithSelectedServices(stack.Only, composetypes.IgnoreDependencies)
+	dep := composetypes.IgnoreDependencies
+	if stack.WithDeps {
+		dep = composetypes.IncludeDependencies
+	}
+	return proj.WithSelectedServices(stack.Only, dep)
 }
 
 func loadProject(stack Stack) (*composetypes.Project, error) {
@@ -328,19 +332,32 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 	return proj, nil
 }
 
+// DeclaredService : un service déclaré dans le compose et ses dépendances
+// directes (depends_on).
+type DeclaredService struct {
+	Name      string
+	DependsOn []string
+}
+
 // DeclaredServices renvoie, triés, les services déclarés par le compose de la
 // stack (profils inactifs exclus, comme la CLI). Sert à proposer aussi les
-// services sans conteneur (arrêtés puis retirés, jamais déployés). Lecture
-// complète du projet : à appeler paresseusement et à mettre en cache.
-func DeclaredServices(stack Stack) ([]string, error) {
+// services sans conteneur (arrêtés puis retirés, jamais déployés) et à prévenir
+// des dépendances. Lecture complète du projet : à appeler paresseusement et à
+// mettre en cache.
+func DeclaredServices(stack Stack) ([]DeclaredService, error) {
 	proj, err := loadProject(stack)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(proj.Services))
-	for n := range proj.Services {
-		names = append(names, n)
+	out := make([]DeclaredService, 0, len(proj.Services))
+	for n, sv := range proj.Services {
+		d := DeclaredService{Name: n}
+		for dep := range sv.DependsOn {
+			d.DependsOn = append(d.DependsOn, dep)
+		}
+		sort.Strings(d.DependsOn)
+		out = append(out, d)
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }

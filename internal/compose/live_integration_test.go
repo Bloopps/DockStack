@@ -354,9 +354,13 @@ func TestLiveScopedServices(t *testing.T) {
 	}
 
 	// Les services déclarés incluent b malgré l'absence de conteneur.
-	names, err := DeclaredServices(st)
-	if err != nil || strings.Join(names, ",") != "a,b,c" {
-		t.Errorf("DeclaredServices = %v, %v", names, err)
+	decl, err := DeclaredServices(st)
+	var names []string
+	for _, d := range decl {
+		names = append(names, d.Name)
+	}
+	if err != nil || strings.Join(names, ",") != "a,b,c" || strings.Join(decl[2].DependsOn, ",") != "a" {
+		t.Errorf("DeclaredServices = %+v, %v", decl, err)
 	}
 
 	// Up ciblé sur b : b revient, a et c gardent leur conteneur.
@@ -392,5 +396,80 @@ func TestLiveScopedServices(t *testing.T) {
 	errs, _ = runOp(t, c.UpManyLive(ctx, only("nope"), 1))
 	if errs["zzdsprobeonly"] == nil {
 		t.Error("service inconnu : une erreur est attendue")
+	}
+}
+
+// TestLiveStopDepsPlan : Stop garde le conteneur, WithDeps démarre aussi les
+// dépendances, PlanUp ne fait pas de faux positif sur une stack inchangée et
+// annonce la recréation après modification, et ServiceStatus porte les infos.
+func TestLiveStopDepsPlan(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	yaml := func(env string) string {
+		return `services:
+  db:
+    image: ` + probeImage + `
+    command: ["sleep", "3600"]
+  app:
+    image: ` + probeImage + `
+    command: ["sleep", "3600"]
+    depends_on: [db]
+    environment: {X: "` + env + `"}
+    ports: ["18099:80"]
+`
+	}
+	st := probeStack(t, root, "zzdsprobedeps", yaml("1"), "")
+	scoped := func(deps bool, names ...string) []Stack { s := st; s.Only, s.WithDeps = names, deps; return []Stack{s} }
+	state := func(svc string) string {
+		out, err := dockerCLI("inspect", "-f", "{{.State.Status}}", "zzdsprobedeps-"+svc+"-1")
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+
+	// Up de app SANS dépendances : db n'est pas créé.
+	errs, _ := runOp(t, c.UpManyLive(ctx, scoped(false, "app"), 1))
+	if errs["zzdsprobedeps"] == nil && state("db") != "" {
+		t.Errorf("sans dépendances : db ne devrait pas exister (état %q)", state("db"))
+	}
+	runOp(t, c.DownManyLive(ctx, []Stack{st}, 1))
+
+	// Up de app AVEC dépendances : db démarre aussi.
+	errs, _ = runOp(t, c.UpManyLive(ctx, scoped(true, "app"), 1))
+	mustOK(t, "Up app+deps", errs)
+	if state("db") != "running" || state("app") != "running" {
+		t.Fatalf("avec dépendances : db=%q app=%q", state("db"), state("app"))
+	}
+
+	// Infos de service : image, ports publiés, statut Docker.
+	s := stackState(t, c, root, "zzdsprobedeps")
+	var app ServiceStatus
+	for _, sv := range s.Services {
+		if sv.Name == "app" {
+			app = sv
+		}
+	}
+	if app.Image != probeImage || app.Ports != "18099→80" || !strings.HasPrefix(app.Status, "Up") {
+		t.Errorf("infos service app = %+v", app)
+	}
+
+	// PlanUp : rien à recréer sur une stack inchangée (pas de faux positif).
+	if plan, err := c.PlanUp(ctx, st); err != nil || len(plan) != 0 {
+		t.Errorf("stack inchangée : PlanUp = %+v, %v", plan, err)
+	}
+	// Après modification de la config d'app : seul app est annoncé.
+	writeFile(t, st.ComposeFile, yaml("2"))
+	plan, err := c.PlanUp(ctx, st)
+	if err != nil || len(plan) != 1 || plan[0].Service != "app" || plan[0].Reason != "config modifiée" {
+		t.Errorf("config modifiée : PlanUp = %+v, %v", plan, err)
+	}
+
+	// Stop ciblé : db reste présent (arrêté, pas supprimé), app intact.
+	errs, _ = runOp(t, c.StopManyLive(ctx, scoped(false, "db"), 1))
+	mustOK(t, "Stop db", errs)
+	if state("db") != "exited" || state("app") != "running" {
+		t.Errorf("après Stop : db=%q (attendu exited) app=%q", state("db"), state("app"))
 	}
 }

@@ -25,8 +25,10 @@ func renderHelpView(m Model, height int) string {
 	services := []string{
 		title("Services", "  (agir sur certains services, sans toucher aux autres)"),
 		"  " + k("→") + " / " + k("s") + "  entrer dans les services de la stack",
-		"  " + k("␣") + "  cocher   " + k("ctrl+a") + "  tout   " + k("u d r c p l") + "  agir",
-		"  " + k("←") + "  retour" + d("  (esc : décoche, puis sort · tab : compose)"),
+		"  " + k("␣") + "  cocher   " + k("ctrl+a") + "  tout   " + k("e") + "  en défaut   " + k("/") + "  filtrer",
+		"  " + k("u") + " up  " + k("d") + " stop  " + k("D") + " down  " + k("r") + " restart  " + k("c") + " recreate  " + k("p") + " pull  " + k("l") + " logs",
+		"  " + k("+") + "  inclure les dépendances" + d("  (up, recreate, pull)"),
+		"  " + k("←") + "  retour" + d("  (esc : efface le filtre, décoche, puis sort)"),
 	}
 	selection := []string{
 		title("Sélection", ""),
@@ -44,8 +46,7 @@ func renderHelpView(m Model, height int) string {
 		"  " + k("v") + "  aperçu compose" + d("  (") + k("vv") + d(" = plein écran)"),
 		"  " + k("a") + "  afficher/masquer les non déployées" + d("  (ou ↩ sur leur ligne)"),
 		"  " + k("x") + "  exclure du scan" + d("  (réversible dans ~/.dockstack/config.json)"),
-		"  " + k("R") + "  rafraîchir" + d("  (auto : événements Docker + 60 s)"),
-		"  " + k("o") + "  changer de répertoire",
+		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  changer de répertoire",
 	}
 	captures := []string{
 		title("Captures d'état", ""),
@@ -67,8 +68,8 @@ func renderHelpView(m Model, height int) string {
 		}
 		return strings.Join(out, "\n")
 	}
-	left := join(actions, services, selection, captures)
-	right := join(groups, list, general)
+	left := join(actions, services, selection)
+	right := join(groups, list, captures, general)
 
 	var body string
 	if lipgloss.Width(left)+lipgloss.Width(right)+14 <= m.width {

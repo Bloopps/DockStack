@@ -23,7 +23,7 @@ import (
 type svcCacheEntry struct {
 	mtime time.Time
 	size  int64
-	names []string
+	svcs  []compose.DeclaredService
 }
 
 // svcCacheBox : cache par chemin de compose, pointeur partagé entre les copies
@@ -31,7 +31,7 @@ type svcCacheEntry struct {
 // la stack sous le curseur, une fois par version du fichier.
 type svcCacheBox struct{ m map[string]svcCacheEntry }
 
-func (c *svcCacheBox) declared(s compose.Stack) []string {
+func (c *svcCacheBox) declared(s compose.Stack) []compose.DeclaredService {
 	if s.ComposeFile == "" {
 		return nil
 	}
@@ -40,17 +40,17 @@ func (c *svcCacheBox) declared(s compose.Stack) []string {
 		return nil
 	}
 	if e, ok := c.m[s.ComposeFile]; ok && e.mtime.Equal(fi.ModTime()) && e.size == fi.Size() {
-		return e.names
+		return e.svcs
 	}
-	names, err := compose.DeclaredServices(s)
+	svcs, err := compose.DeclaredServices(s)
 	if err != nil {
-		names = nil // .env manquant, etc. : on retombe sur les services vus par Docker
+		svcs = nil // .env manquant, etc. : on retombe sur les services vus par Docker
 	}
 	if c.m == nil {
 		c.m = make(map[string]svcCacheEntry)
 	}
-	c.m[s.ComposeFile] = svcCacheEntry{mtime: fi.ModTime(), size: fi.Size(), names: names}
-	return names
+	c.m[s.ComposeFile] = svcCacheEntry{mtime: fi.ModTime(), size: fi.Size(), svcs: svcs}
+	return svcs
 }
 
 // stackServices fusionne les services déclarés dans le compose et ceux vus par
@@ -62,10 +62,10 @@ func (m Model) stackServices(s compose.Stack) []compose.ServiceStatus {
 		by[sv.Name] = sv
 	}
 	if m.svcCache != nil {
-		for _, n := range m.svcCache.declared(s) {
-			if _, ok := by[n]; !ok {
-				by[n] = compose.ServiceStatus{Name: n}
-			}
+		for _, d := range m.svcCache.declared(s) {
+			sv := by[d.Name] // zéro si le service n'a aucun conteneur
+			sv.Name, sv.DependsOn = d.Name, d.DependsOn
+			by[d.Name] = sv
 		}
 	}
 	out := make([]compose.ServiceStatus, 0, len(by))
@@ -100,27 +100,44 @@ func (m Model) enterServices() (tea.Model, tea.Cmd) {
 	}
 	m.previewOn, m.previewCompose = true, false
 	m.svcFocus, m.svcStack, m.svcCursor = true, s.Name, 0
-	m.svcSel = make(map[string]bool)
+	m.svcSel, m.svcFilter, m.svcFiltering, m.svcDeps = make(map[string]bool), "", false, false
 	return m, nil
 }
 
 func (m Model) leaveServices() Model {
 	m.svcFocus, m.svcStack, m.svcCursor = false, "", 0
-	m.svcSel = nil
+	m.svcSel, m.svcFilter, m.svcFiltering, m.svcDeps = nil, "", false, false
 	return m
 }
 
-// targetServices : services cochés (ordre d'affichage), sinon celui sous le
-// curseur.
-func (m Model) targetServices(svcs []compose.ServiceStatus) []compose.ServiceStatus {
+// visibleServices applique le filtre du mode services (sous-chaîne, sans
+// casse). Le curseur et les cibles d'action ne portent que sur ces lignes.
+func (m Model) visibleServices(all []compose.ServiceStatus) []compose.ServiceStatus {
+	if m.svcFilter == "" {
+		return all
+	}
+	q := strings.ToLower(m.svcFilter)
+	out := make([]compose.ServiceStatus, 0, len(all))
+	for _, sv := range all {
+		if strings.Contains(strings.ToLower(sv.Name), q) {
+			out = append(out, sv)
+		}
+	}
+	return out
+}
+
+// targetServices : services cochés ET visibles (ordre d'affichage), sinon
+// celui sous le curseur. Un service masqué par le filtre n'est jamais ciblé :
+// une action sans confirmation ne doit pas toucher ce qu'on ne voit pas.
+func (m Model) targetServices(vis []compose.ServiceStatus) []compose.ServiceStatus {
 	var out []compose.ServiceStatus
-	for _, sv := range svcs {
+	for _, sv := range vis {
 		if m.svcSel[sv.Name] {
 			out = append(out, sv)
 		}
 	}
-	if len(out) == 0 && m.svcCursor >= 0 && m.svcCursor < len(svcs) {
-		out = []compose.ServiceStatus{svcs[m.svcCursor]}
+	if len(out) == 0 && m.svcCursor >= 0 && m.svcCursor < len(vis) {
+		out = []compose.ServiceStatus{vis[m.svcCursor]}
 	}
 	return out
 }
@@ -148,124 +165,243 @@ func stackLabel(s compose.Stack) string {
 	return s.Name + " · " + strings.Join(shown, ", ") + extra
 }
 
+// serviceKeys : actions du mode services. d ARRÊTE (compose stop : le
+// conteneur est conservé, le redémarrage est immédiat) ; D le retire (down).
+var serviceKeys = map[string]string{"u": "up", "d": "stop", "D": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}
+
 func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	stack, ok := m.focusedStack()
 	if !ok {
 		return m.leaveServices(), nil // la stack a disparu (rescan)
 	}
-	svcs := m.stackServices(stack)
-	if m.svcCursor >= len(svcs) {
-		m.svcCursor = max(len(svcs)-1, 0)
+	all := m.stackServices(stack)
+	vis := m.visibleServices(all)
+	if m.svcCursor >= len(vis) {
+		m.svcCursor = max(len(vis)-1, 0)
+	}
+	key := msg.String()
+
+	if m.svcFiltering {
+		switch key {
+		case "esc":
+			m.svcFilter, m.svcFiltering, m.svcCursor = "", false, 0
+		case "enter":
+			m.svcFiltering = false
+		case "backspace":
+			if r := []rune(m.svcFilter); len(r) > 0 {
+				m.svcFilter = string(r[:len(r)-1])
+				m.svcCursor = 0
+			}
+		case "up":
+			m.svcCursor = max(m.svcCursor-1, 0)
+		case "down":
+			m.svcCursor = min(m.svcCursor+1, max(len(vis)-1, 0))
+		case "ctrl+c":
+			return m.armOrQuit()
+		default:
+			if t := msg.Key().Text; t != "" {
+				m.svcFilter += t
+				m.svcCursor = 0
+			}
+		}
+		return m, nil
 	}
 
-	switch key := msg.String(); key {
+	switch key {
 	case "ctrl+c", "q":
 		return m.armOrQuit()
 	case "?":
 		m.view = viewHelp
+	case "/":
+		m.svcFiltering = true
 	case "esc":
-		if len(m.svcSel) > 0 {
+		switch {
+		case m.svcFilter != "":
+			m.svcFilter, m.svcCursor = "", 0
+		case len(m.svcSel) > 0:
 			m.svcSel = make(map[string]bool)
-		} else {
+		default:
 			return m.leaveServices(), nil
 		}
 	case "left", "h", "tab":
 		return m.leaveServices(), nil
 	case "up", "k":
-		if m.svcCursor > 0 {
-			m.svcCursor--
-		}
+		m.svcCursor = max(m.svcCursor-1, 0)
 	case "down", "j":
-		if m.svcCursor < len(svcs)-1 {
-			m.svcCursor++
-		}
+		m.svcCursor = min(m.svcCursor+1, max(len(vis)-1, 0))
 	case "pgup":
 		m.svcCursor = max(m.svcCursor-10, 0)
 	case "pgdown":
-		m.svcCursor = min(m.svcCursor+10, max(len(svcs)-1, 0))
+		m.svcCursor = min(m.svcCursor+10, max(len(vis)-1, 0))
 	case "home", "g":
 		m.svcCursor = 0
 	case "end", "G":
-		m.svcCursor = max(len(svcs)-1, 0)
+		m.svcCursor = max(len(vis)-1, 0)
 	case " ", "space":
-		if len(svcs) > 0 {
-			n := svcs[m.svcCursor].Name
+		if len(vis) > 0 {
+			n := vis[m.svcCursor].Name
 			if m.svcSel[n] {
 				delete(m.svcSel, n)
 			} else {
 				m.svcSel[n] = true
 			}
-			if m.svcCursor < len(svcs)-1 {
-				m.svcCursor++
-			}
+			m.svcCursor = min(m.svcCursor+1, len(vis)-1)
 		}
 	case "ctrl+a":
-		// Tout cocher, ou tout décocher si tout l'est déjà.
-		if len(m.svcSel) == len(svcs) {
-			m.svcSel = make(map[string]bool)
-		} else {
-			for _, sv := range svcs {
+		// Tout cocher (parmi les visibles), ou tout décocher si tout l'est déjà.
+		allChecked := len(vis) > 0
+		for _, sv := range vis {
+			allChecked = allChecked && m.svcSel[sv.Name]
+		}
+		for _, sv := range vis {
+			if allChecked {
+				delete(m.svcSel, sv.Name)
+			} else {
 				m.svcSel[sv.Name] = true
 			}
 		}
-	case "u", "d", "r", "c", "p", "l":
-		if len(svcs) == 0 {
+	case "e":
+		// Coche les services en défaut (pas « en marche » sain) : arrêtés,
+		// partiels, unhealthy, non créés. Remplace la sélection.
+		sel := make(map[string]bool)
+		for _, sv := range vis {
+			if sv.State() != compose.StateRunning {
+				sel[sv.Name] = true
+			}
+		}
+		if len(sel) == 0 {
+			m.setStatus("Aucun service en défaut", false)
+			return m, clearStatusIn(3 * time.Second)
+		}
+		m.svcSel = sel
+	case "+":
+		// Inclure les dépendances (depends_on) pour up/recreate/pull.
+		m.svcDeps = !m.svcDeps
+	case "u", "d", "D", "r", "c", "p", "l":
+		if len(vis) == 0 {
 			return m, nil
 		}
-		return m.serviceAction(map[string]string{"u": "up", "d": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}[key], stack, m.targetServices(svcs))
+		return m.serviceAction(serviceKeys[key], stack, m.targetServices(vis))
 	}
 	return m, nil
 }
 
 // serviceAction applique la règle du reste de l'app : ce qui perturbe un
-// service se confirme (down/restart/recreate, up si un service ciblé tourne
-// déjà) ; pull et logs sont directs.
+// service se confirme (stop/down/restart/recreate, up si un service ciblé
+// tourne déjà) ; pull et logs sont directs. Le focus et la sélection sont
+// conservés : on retrouve ses services cochés après la vue de progression.
 func (m Model) serviceAction(action string, stack compose.Stack, targets []compose.ServiceStatus) (tea.Model, tea.Cmd) {
 	scoped := scopedStack(stack, targets)
-	run := func(m Model) (tea.Model, tea.Cmd) {
-		m = m.leaveServices()
-		return m.startStackAction(action, scoped)
-	}
-	needConfirm := action == "down" || action == "restart" || action == "recreate"
-	warning := ""
-	if action == "up" {
-		for _, t := range targets {
-			if t.Running > 0 {
-				needConfirm, warning = true, upWarning
-				break
-			}
-		}
-	}
-	if !needConfirm {
-		return run(m)
-	}
+	scoped.WithDeps = m.svcDeps && (action == "up" || action == "recreate" || action == "pull")
+	run := func(m Model) (tea.Model, tea.Cmd) { return m.startStackAction(action, scoped) }
+
 	label := fmt.Sprintf("%s — %s (%d service%s)", actionTitle[action], stack.Name, len(targets), plural(len(targets)))
 	names := make([]string, len(targets))
 	for i, t := range targets {
 		names[i] = t.Name
 	}
-	return m.askConfirm(label, warning, names, run)
+	switch action {
+	case "stop", "down", "restart", "recreate":
+		return m.askConfirm(label, "", names, run)
+	case "up":
+		for _, t := range targets {
+			if t.Running > 0 {
+				// Un service ciblé tourne : on prévoit ce que up recréerait.
+				return m.confirmUpWithPlan(label, names, []compose.Stack{scoped}, run)
+			}
+		}
+	}
+	return run(m)
 }
 
-// previewServices rend le volet en mode services : en-tête, position, puis une
-// fenêtre défilante de services autour du curseur.
+// depWarning renvoie l'avertissement de dépendances d'un service : celles qui
+// ne tournent pas, hors sélection déjà prévue.
+func depWarning(sv compose.ServiceStatus, all []compose.ServiceStatus, withDeps bool) string {
+	if withDeps {
+		return ""
+	}
+	by := make(map[string]compose.ServiceStatus, len(all))
+	for _, a := range all {
+		by[a.Name] = a
+	}
+	var bad []string
+	for _, d := range sv.DependsOn {
+		if dep, ok := by[d]; ok && dep.Running == 0 {
+			state := "arrêté"
+			if dep.Total == 0 {
+				state = "non créé"
+			}
+			bad = append(bad, d+" ("+state+")")
+		}
+	}
+	if len(bad) == 0 {
+		return ""
+	}
+	return "⚠ dépend de " + strings.Join(bad, ", ")
+}
+
+// serviceDetail : lignes de détail du service sous le curseur, sous la liste.
+func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDeps bool, inner int) []string {
+	_, st := stateStyle(sv.State())
+	row := func(k, v string) string {
+		return styleDim.Render(fmt.Sprintf("%-6s", k)) + " " + truncate(v, max(inner-7, 1))
+	}
+	out := []string{styleDim.Render(strings.Repeat("─", max(inner, 1)))}
+	if sv.Image != "" {
+		out = append(out, row("image", sv.Image))
+	}
+	if sv.Ports != "" {
+		out = append(out, row("ports", sv.Ports))
+	}
+	status := sv.Status
+	if status == "" {
+		status = "aucun conteneur"
+	}
+	out = append(out, styleDim.Render(fmt.Sprintf("%-6s", "état"))+" "+st.Render(truncate(status, max(inner-7, 1))))
+	if w := depWarning(sv, all, withDeps); w != "" {
+		out = append(out, styleYellow.Render(truncate(w, inner)), styleDim.Render(truncate("+ pour inclure les dépendances", inner)))
+	}
+	return out
+}
+
+// previewServices rend le volet en mode services : en-tête, filtre, fenêtre
+// défilante de services autour du curseur, puis le détail du service courant.
 func previewServices(m Model, s compose.Stack, inner, height int) []string {
-	svcs := m.stackServices(s)
+	all := m.stackServices(s)
+	svcs := m.visibleServices(all)
 	dot, dotStyle := stateStyle(s.State())
 	out := []string{
 		dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2)),
 		dotStyle.Render(stateWord(s.State())),
 	}
 	pos := fmt.Sprintf("Services · %d/%d", min(m.svcCursor+1, len(svcs)), len(svcs))
+	if len(svcs) != len(all) {
+		pos += fmt.Sprintf(" sur %d", len(all))
+	}
 	if n := len(m.svcSel); n > 0 {
 		pos += fmt.Sprintf(" · %d coché%s", n, plural(n))
 	}
-	out = append(out, styleDim.Render(pos), "")
+	if m.svcDeps {
+		pos += " · +dépendances"
+	}
+	out = append(out, styleDim.Render(truncate(pos, inner)))
+	switch {
+	case m.svcFiltering:
+		out = append(out, styleCyan.Render("/ ")+m.svcFilter+styleCyan.Render("▏"))
+	case m.svcFilter != "":
+		out = append(out, styleDim.Render("/ "+m.svcFilter+"  (esc : effacer)"))
+	default:
+		out = append(out, "")
+	}
 	if len(svcs) == 0 {
-		return append(out, styleDim.Render("(aucun service trouvé)"))
+		return append(out, styleDim.Render("(aucun service ne correspond)"))
 	}
 
-	avail := max(height-len(out), 1)
+	var detail []string
+	if m.svcCursor < len(svcs) {
+		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner)
+	}
+	avail := max(height-len(out)-len(detail), 1)
 	start := 0
 	if len(svcs) > avail {
 		start = min(max(m.svcCursor-avail/2, 0), len(svcs)-avail)
@@ -300,5 +436,9 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 		}
 		out = append(out, " "+mark+st.Render(d)+" "+name+"  "+st.Render(word))
 	}
-	return out
+	// Le détail reste collé en bas du volet.
+	for len(out) < height-len(detail) {
+		out = append(out, "")
+	}
+	return append(out, detail...)
 }
