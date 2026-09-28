@@ -26,6 +26,16 @@ de l'utiliser sur des stacks importantes.
 - Actions : Up, Down, Restart, Recreate, Pull, Remove (avec confirmation),
   Logs
 - Actions groupées sur une sélection multiple ou un dossier entier
+- Volet de détail à droite de la liste : services (problèmes en premier),
+  état et actions adaptées ; `tab` bascule vers le fichier compose
+- Gestion **service par service** (`→` ou `s`) : cocher des services, les
+  filtrer (`/`), cocher ceux en défaut (`e`), puis stop / up / restart /
+  recreate / pull / logs sans toucher aux autres. Image, ports et statut
+  Docker du service sous le curseur ; avertissement si une dépendance est
+  arrêtée (`+` pour l'inclure)
+- Avant un `up` sur une stack en marche, prévision des services qui seront
+  recréés (config modifiée, image mise à jour) ; rien à recréer = pas de
+  confirmation
 - Vue de progression en temps réel pendant les opérations, façon
   `docker compose` en CLI
 - Captures d'état (« active stacks ») : mémorise quelles stacks tournent et
