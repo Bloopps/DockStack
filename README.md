@@ -38,8 +38,13 @@ de l'utiliser sur des stacks importantes.
   confirmation
 - Vue de progression en temps réel pendant les opérations, façon
   `docker compose` en CLI
-- Captures d'état (« active stacks ») : mémorise quelles stacks tournent et
-  permet de les relancer sélectivement (`b`)
+- Captures d'état (`b`) : mémorisent quelles stacks **et quels services** tournent
+  (jamais leurs données). Restauration sélective : seules les stacks à
+  relancer sont cochées, les services arrêtés volontairement ne sont pas
+  relancés. `a` aligne l'état actuel sur une capture (démarre ce qui manque,
+  arrête ce qui n'y figure pas, après confirmation). `n` nomme une capture,
+  `p` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
+  au lancement, les stacks de la dernière capture qui ne tournent plus
 - Filtrage / recherche dans la liste des stacks
 
 ## Prérequis
