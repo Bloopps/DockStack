@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +50,9 @@ func Load() (*Config, error) {
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return nil, err
+		// Le chemin dans l'erreur : sans lui, l'utilisateur ne sait pas quel
+		// fichier corriger ou supprimer pour pouvoir redémarrer.
+		return nil, fmt.Errorf("%s illisible (corriger ou supprimer le fichier) : %w", path(), err)
 	}
 	return cfg, nil
 }
@@ -62,7 +65,32 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path(), data, 0o644)
+	// Écriture atomique (fichier temporaire puis renommage) : un arrêt en
+	// pleine écriture laissait un JSON tronqué, et Load refuse alors de
+	// démarrer.
+	tmp, err := os.CreateTemp(dir(), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Chmod(name, 0o644); err != nil {
+		os.Remove(name)
+		return err
+	}
+	if err := os.Rename(name, path()); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 func (c *Config) ConfigDir() string {
