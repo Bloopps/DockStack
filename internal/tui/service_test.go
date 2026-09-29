@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -242,6 +243,7 @@ func TestCaptureStaysOnBackupView(t *testing.T) {
 	m := New(cfg)
 	m.view = viewBackup
 	m.actionCursor = 0
+	m.lastRefresh = time.Now() // liste chargée : la capture est autorisée
 
 	out, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
 	if got := out.(Model); got.view != viewBackup {

@@ -165,9 +165,10 @@ func stackLabel(s compose.Stack) string {
 	return s.Name + " · " + strings.Join(shown, ", ") + extra
 }
 
-// serviceKeys : actions du mode services. d ARRÊTE (compose stop : le
-// conteneur est conservé, le redémarrage est immédiat) ; D le retire (down).
-var serviceKeys = map[string]string{"u": "up", "d": "stop", "D": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}
+// serviceKeys : actions du mode services. t ARRÊTE (compose stop : le
+// conteneur est conservé, le redémarrage est immédiat) ; d le retire (down),
+// comme dans la liste.
+var serviceKeys = map[string]string{"u": "up", "t": "stop", "d": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}
 
 func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	stack, ok := m.focusedStack()
@@ -211,7 +212,7 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m.armOrQuit()
 	case "?":
-		m.view = viewHelp
+		m.view, m.helpScroll = viewHelp, 0
 	case "/":
 		m.svcFiltering = true
 	case "esc":
@@ -277,7 +278,7 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "+":
 		// Inclure les dépendances (depends_on) pour up/recreate/pull.
 		m.svcDeps = !m.svcDeps
-	case "u", "d", "D", "r", "c", "p", "l":
+	case "u", "t", "d", "r", "c", "p", "l":
 		if len(vis) == 0 {
 			return m, nil
 		}

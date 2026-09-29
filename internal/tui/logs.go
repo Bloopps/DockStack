@@ -8,7 +8,10 @@ import (
 
 func renderLogsView(m Model) string {
 	title := styleBold.Foreground(lipgloss.Color("6")).Render(truncate("📋 Logs — "+m.logStack, max(m.width, 1)))
-	hint := styleDim.Render("  ↑↓ défiler  G fin  q quitter")
+	hint := styleDim.Render("  ↑↓ défiler  G fin  esc retour")
+	if m.quitArmed {
+		hint = quitWarning()
+	}
 	sep := styleDim.Render(strings.Repeat("─", m.width))
 
 	bodyH := m.height - 3

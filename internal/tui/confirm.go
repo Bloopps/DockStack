@@ -171,7 +171,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if exec != nil {
 			return exec(m)
 		}
-	case "n", "esc", "q":
+	case "n", "esc":
 		m.confirmExec = nil
 		m.view = m.confirmReturn
 	}

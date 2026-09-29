@@ -170,7 +170,7 @@ func renderBackupView(m Model, height int) string {
 			"",
 			"  " + k("c") + "  capturer l'état actuel" + styleDim.Render(fmt.Sprintf("  (%d stacks en marche)", running)),
 			"",
-			styleDim.Render("  Restaurer une capture relance (Up) les stacks qu'elle contient."),
+			styleDim.Render("  Relancer une capture lance (Up) les stacks qu'elle contient."),
 		}, "\n")
 	}
 

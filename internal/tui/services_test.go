@@ -118,26 +118,26 @@ type context_deadline struct{}
 
 func (context_deadline) Error() string { return "boom" }
 
-// d arrête (stop, confirmé) ; D retire (down, confirmé) ; up sur un service
+// t arrête (stop, confirmé) ; d retire (down, confirmé) ; up sur un service
 // arrêté et pull sont directs ; annuler garde le mode.
 func TestServiceStopDownRules(t *testing.T) {
 	fake := &fakeClient{}
 	m := press(svcTestModel(fake), "right", "down", "down") // curseur sur db (arrêté)
-	m = press(m, "d")
+	m = press(m, "t")
 	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Stop") || len(fake.calls["stop"]) != 0 {
-		t.Fatalf("d doit demander confirmation de Stop (vue %v, %q)", m.view, m.confirmLabel)
+		t.Fatalf("t doit demander confirmation de Stop (vue %v, %q)", m.view, m.confirmLabel)
 	}
 	m = press(m, "esc")
 	if !m.svcFocus {
 		t.Error("annuler la confirmation doit conserver le mode services")
 	}
-	m = press(m, "d", "y")
+	m = press(m, "t", "y")
 	if got := onlyOf(fake, "stop"); got != "db" {
 		t.Fatalf("stop ciblé : %s", got)
 	}
-	m = press(m, "D")
+	m = press(m, "d")
 	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Down") {
-		t.Fatalf("D doit demander confirmation de Down (%q)", m.confirmLabel)
+		t.Fatalf("d doit demander confirmation de Down (%q)", m.confirmLabel)
 	}
 	m = press(m, "y")
 	if got := onlyOf(fake, "down"); got != "db" {
@@ -213,7 +213,7 @@ func TestServiceDependencies(t *testing.T) {
 	}
 	// Stop/Down ne suivent jamais les dépendances (elles ne sont pas les dépendantes).
 	if m.svcDeps {
-		m2 := press(m, "d", "y")
+		m2 := press(m, "t", "y")
 		if got := fake.calls["stop"]; len(got) != 1 || got[0].WithDeps {
 			t.Errorf("stop ne doit pas inclure les dépendances : %+v (%v)", got, m2.view)
 		}

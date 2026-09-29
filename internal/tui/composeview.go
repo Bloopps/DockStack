@@ -70,11 +70,14 @@ func renderComposeView(m Model) string {
 		styleDim.Render("  ("+mode+")")
 	// Hint dépendant du mode souris, tronqué à la largeur : un hint qui wrappe
 	// ajouterait une ligne et décalerait le calcul de hauteur du corps.
-	rawHint := "  ↑↓/molette défiler · g/G haut/bas · tab brut/résolu · m: libérer la souris (copier) · q quitter"
+	rawHint := "  ↑↓/molette défiler · g/G haut/bas · tab brut/résolu · m: libérer la souris (copier) · esc retour"
 	if m.composeMouseOff {
-		rawHint = "  ↑↓ défiler · g/G haut/bas · tab brut/résolu · sélection souris OK · m: molette · q quitter"
+		rawHint = "  ↑↓ défiler · g/G haut/bas · tab brut/résolu · sélection souris OK · m: molette · esc retour"
 	}
 	hint := styleDim.Render(truncate(rawHint, max(m.width, 1)))
+	if m.quitArmed {
+		hint = quitWarning()
+	}
 	sep := styleDim.Render(strings.Repeat("─", max(m.width, 1)))
 
 	bodyH := m.composeHeight()

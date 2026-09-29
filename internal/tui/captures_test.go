@@ -208,9 +208,9 @@ func TestAlignFlow(t *testing.T) {
 	m := backupModel(fake, stacks, snap)
 	m.view = viewBackup
 
-	m = press(m, "a")
-	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Aligner") {
-		t.Fatalf("a doit ouvrir la confirmation d'alignement (vue %v)", m.view)
+	m = press(m, "A")
+	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Mettre à l'identique") {
+		t.Fatalf("A doit ouvrir la confirmation d'alignement (vue %v)", m.view)
 	}
 	txt := strings.Join(m.confirmNames, "|")
 	if !strings.Contains(txt, "▶ démarrer down") || !strings.Contains(txt, "■ arrêter stranger") || m.confirmWarning == "" {
@@ -223,7 +223,7 @@ func TestAlignFlow(t *testing.T) {
 	if m.view != viewBackup {
 		t.Errorf("annuler ramène aux captures, vue %v", m.view)
 	}
-	press(m, "a", "y")
+	press(m, "A", "y")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && len(fake.called("stop")) == 0 {
 		time.Sleep(10 * time.Millisecond)

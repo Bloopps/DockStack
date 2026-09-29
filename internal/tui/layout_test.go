@@ -132,7 +132,7 @@ func TestActionPanelMatchesExec(t *testing.T) {
 	s.ComposeFile = ""
 	m := newTestModel([]compose.Stack{s})
 	m.client = &fakeClient{}
-	panel := ansi.Strip(buildActionPanel(s, -1))
+	panel := ansi.Strip(buildActionPanel(s, -1, 100))
 	for _, a := range stackActions {
 		if !strings.Contains(panel, a.label) {
 			t.Errorf("entrée %q absente du panneau", a.label)

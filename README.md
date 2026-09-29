@@ -41,7 +41,7 @@ de l'utiliser sur des stacks importantes.
 - Captures d'état (`b`) : mémorisent quelles stacks **et quels services** tournent
   (jamais leurs données). Restauration sélective : seules les stacks à
   relancer sont cochées, les services arrêtés volontairement ne sont pas
-  relancés. `a` aligne l'état actuel sur une capture (démarre ce qui manque,
+  relancés. `A` met l'état actuel à l'identique d'une capture (démarre ce qui manque,
   arrête ce qui n'y figure pas, après confirmation). `n` nomme une capture,
   `p` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
   au lancement, les stacks de la dernière capture qui ne tournent plus
@@ -100,7 +100,7 @@ lancement) :
 
 | Touche                | Action                                              |
 |-----------------------|-----------------------------------------------------|
-| `u` / `d` / `r` / `c` / `p` | Up / Down / Restart / Recreate / Pull          |
+| `u` / `t` / `d` / `r` / `c` / `p` | Up / Stop / Down / Restart / Recreate / Pull |
 | `l`                   | Logs de la stack courante                            |
 | `↩`                   | Panneau d'actions (dont Remove)                      |
 | `␣`                   | Sélectionner                                         |
@@ -110,12 +110,12 @@ lancement) :
 | `/`                   | Filtrer                                              |
 | `v` / `vv`            | Aperçu compose (volet) / plein écran                 |
 | `R`                   | Rafraîchir (auto sur événement Docker + toutes les 60 s) |
-| `b`                   | Captures d'état (`c` capturer, `↩` restaurer, `x` supprimer) |
+| `b`                   | Captures d'état (`c` capturer, `↩` relancer, `A` à l'identique, `del` ou `⌫` supprimer) |
 | `a`                   | Afficher / masquer les stacks non déployées (masquées par défaut) |
 | `x`                   | Exclure du scan la stack ou le dossier sous le curseur |
 | `o`                   | Changer de répertoire                                |
-| `?`                   | Aide                                                 |
-| `q`                   | Quitter                                              |
+| `?`                   | Aide (`↑↓` pour défiler si elle dépasse l'écran)     |
+| `q`                   | Quitter (deux frappes, depuis toutes les vues ; `esc` = retour) |
 
 ## Régénérer la démo
 

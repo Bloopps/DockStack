@@ -83,10 +83,10 @@ func TestBackupDeleteFlow(t *testing.T) {
 	m := New(cfg)
 	m.view, m.backups = viewBackup, snaps
 
-	keyX := tea.KeyPressMsg{Code: 'x', Text: "x"}
+	keyX := tea.KeyPressMsg{Code: tea.KeyDelete}
 	out, _ := m.Update(keyX)
 	if got := out.(Model); got.view != viewConfirm {
-		t.Fatalf("x : view = %v, want viewConfirm", got.view)
+		t.Fatalf("delete : view = %v, want viewConfirm", got.view)
 	}
 	// Annulation : retour aux captures, fichier intact.
 	back, _ := out.Update(tea.KeyPressMsg{Code: tea.KeyEscape})

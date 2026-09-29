@@ -14,6 +14,7 @@ import (
 
 	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/config"
 )
 
 // doubleVDelay est la fenêtre pendant laquelle un second appui sur v escalade
@@ -32,6 +33,7 @@ type menuAction struct {
 
 var stackActions = []menuAction{
 	{"up", "▶", "Up", "2"},
+	{"stop", "■", "Stop", "1"},
 	{"down", "▪", "Down", "1"},
 	{"restart", "↺", "Restart", "3"},
 	{"recreate", "↻", "Recreate", "3"},
@@ -44,6 +46,7 @@ var stackActions = []menuAction{
 
 var groupActions = []menuAction{
 	{"up", "▶", "Up", "2"},
+	{"stop", "■", "Stop", "1"},
 	{"down", "▪", "Down", "1"},
 	{"restart", "↺", "Restart", "3"},
 	{"recreate", "↻", "Recreate", "3"},
@@ -100,7 +103,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected = make(map[string]bool)
 		}
 	case "?":
-		m.view = viewHelp
+		m.view, m.helpScroll = viewHelp, 0
 	case "/":
 		m.filtering = true
 		m.filter.Focus()
@@ -179,13 +182,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewAction
 		m.actionCursor = 0
-	case "u", "d", "r", "c":
+	case "u", "t", "d", "r", "c":
 		// Raccourcis directs calqués sur les noms compose (up/down/restart/
 		// recreate) : agissent sur la sélection si elle existe, sinon sur le
 		// groupe (si le curseur est sur un en-tête), sinon sur la stack sous
 		// le curseur. Les actions groupées destructives (Down/Restart/
 		// Recreate) passent par la confirmation.
-		action := map[string]string{"u": "up", "d": "down", "r": "restart", "c": "recreate"}[msg.String()]
+		action := map[string]string{"u": "up", "t": "stop", "d": "down", "r": "restart", "c": "recreate"}[msg.String()]
 		if sel := m.selectedStacks(); len(sel) > 0 {
 			if action == "up" {
 				return m.startOrConfirmGroupUp(sel)
@@ -300,14 +303,18 @@ func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	target := row.stack.Name
-	var names []string
 	if row.header {
 		target = row.group
-		for _, s := range m.groupStacks(row.group) {
+	}
+	// Lister TOUT ce que l'exclusion retire : elle vaut pour le chemin et tout
+	// ce qui est en dessous (sous-stacks, stacks non déployées masquées), pas
+	// seulement la ligne visée.
+	probe := config.Config{Exclude: []string{target}}
+	var names []string
+	for _, s := range m.stacks {
+		if probe.IsExcluded(s.Name) {
 			names = append(names, s.Name)
 		}
-	} else {
-		names = []string{target}
 	}
 	return m.askConfirm("Exclure du scan — "+target,
 		"Réversible : retirer « "+target+" » de exclude dans ~/.dockstack/config.json",
@@ -355,7 +362,7 @@ func (m Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.actionCursor < len(m.actionLabels())-1 {
 			m.actionCursor++
 		}
-	case "esc", "q":
+	case "esc":
 		m.view = viewList
 	case "enter":
 		if len(m.selectedStacks()) > 0 {
@@ -376,7 +383,7 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 	switch stackActions[m.actionCursor].id {
 	case "up":
 		return m.startOrConfirmUp(stack)
-	case "down", "restart", "recreate":
+	case "stop", "down", "restart", "recreate":
 		return m.confirmStackAction(stackActions[m.actionCursor].id, stack)
 	case "pull", "logs":
 		return m.startStackAction(stackActions[m.actionCursor].id, stack)
@@ -479,7 +486,7 @@ func (m Model) execGroupAction() (tea.Model, tea.Cmd) {
 	switch id := groupActions[m.actionCursor].id; id {
 	case "up":
 		return m.startOrConfirmGroupUp(stacks)
-	case "down", "restart", "recreate":
+	case "stop", "down", "restart", "recreate":
 		return m.confirmGroupAction(id, stacks)
 	case "pull":
 		return m.startGroupAction("pull", stacks)
@@ -508,6 +515,8 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 		return m.startProgressOp(title, cancel, client.UpManyLive(ctx, stacks, par))
 	case "down":
 		return m.startProgressOp(title, cancel, client.DownManyLive(ctx, stacks, par))
+	case "stop":
+		return m.startProgressOp(title, cancel, client.StopManyLive(ctx, stacks, par))
 	case "restart":
 		return m.startProgressOp(title, cancel, client.RestartManyLive(ctx, stacks, par))
 	case "recreate":
@@ -524,7 +533,7 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 
 func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc":
+	case "esc":
 		if m.logCancel != nil {
 			m.logCancel()
 			m.logCancel = nil
@@ -551,7 +560,7 @@ func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "q", "esc":
+	case "esc":
 		m.view = viewList
 	case "up", "k":
 		if m.composeScroll > 0 {
@@ -602,9 +611,15 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.actionCursor < len(m.backups)-1 {
 			m.actionCursor++
 		}
-	case "esc", "q":
+	case "esc":
 		m.view = viewList
 	case "c":
+		// État inconnu (liste pas encore chargée, Docker injoignable) : la
+		// capture serait vide et écraserait active_stacks, lu par les scripts.
+		if m.lastRefresh.IsZero() || m.err != nil {
+			m.setStatus("État des stacks inconnu (liste non chargée ou Docker injoignable) : capture impossible", true)
+			return m, clearStatusIn(5 * time.Second)
+		}
 		// On reste sur la vue : la nouvelle capture doit y apparaître,
 		// sinon rien ne prouve à l'utilisateur qu'elle a été faite.
 		// startOp arme aussi spinner.Tick, sans quoi le spinner reste figé.
@@ -621,11 +636,13 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, setBackupMeta(dir, snap, snap.Label, !snap.Pinned, done)
 		}
-	case "a":
+	case "A":
 		if hasSnap {
 			return m.confirmAlign(snap)
 		}
-	case "x", "delete":
+	case "delete", "backspace":
+		// backspace : la touche « delete » des claviers Mac envoie un retour
+		// arrière, sans elle la suppression y était impossible.
 		if !hasSnap {
 			return m, nil
 		}
@@ -729,7 +746,7 @@ func (m Model) confirmAlign(snap backup.Snapshot) (tea.Model, tea.Cmd) {
 		}
 		return m.startProgressOp(title, cancel, chainLive(ctx, phases))
 	}
-	return m.askConfirm("Aligner sur la capture du "+snap.Date.Format("02/01/2006 15:04"), warning, lines, run)
+	return m.askConfirm("Mettre à l'identique de la capture du "+snap.Date.Format("02/01/2006 15:04"), warning, lines, run)
 }
 
 // entriesOf retrouve, dans la capture, les entrées (avec leurs services) des
@@ -754,6 +771,12 @@ func (m Model) openRestorePick() (tea.Model, tea.Cmd) {
 	// cochées : celles déjà en marche (un up peut les recréer) et les
 	// introuvables ne le sont pas.
 	snap := m.backups[m.actionCursor]
+	// Comme l'alignement : les noms d'une capture prise depuis un autre
+	// répertoire désigneraient d'autres stacks (ou aucune) ici.
+	if snap.StackDir != "" && snap.StackDir != m.cfg.StackDir {
+		m.setStatus("Capture prise depuis "+snap.StackDir+" : relance impossible depuis ce répertoire", true)
+		return m, clearStatusIn(5 * time.Second)
+	}
 	m.view = viewRestorePick
 	m.restoreLabel = fmt.Sprintf("Capture du %s", snap.Date.Format("02/01/2006 15:04"))
 	if snap.Label != "" {
@@ -806,7 +829,7 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.restoreSel[e.name] = !all
 			}
 		}
-	case "esc", "q":
+	case "esc":
 		m.view = viewBackup
 	case "enter":
 		var items []backup.Entry
@@ -814,7 +837,9 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for _, e := range m.restoreEntries {
 			if m.restoreSel[e.name] {
 				items = append(items, backup.Entry{Name: e.name, Services: e.services})
-				anyRunning = anyRunning || e.kind == entryRunning
+				// Une stack « à relancer » peut être partielle : ses conteneurs
+				// en marche peuvent être recréés par le up, on prévoit aussi.
+				anyRunning = anyRunning || e.kind == entryRunning || e.stack.Running > 0
 			}
 		}
 		if len(items) == 0 {
@@ -829,10 +854,10 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// sur ctx.Background().
 		stacks, missing := resolveRestoreStacks(items, m.cfg.StackDir)
 		if len(stacks) == 0 {
-			m.setStatus(fmt.Sprintf("Aucune stack restaurable (%d introuvable(s) sur le disque)", len(missing)), true)
+			m.setStatus(fmt.Sprintf("Aucune stack relançable (%d introuvable(s) sur le disque)", len(missing)), true)
 			return m, clearStatusIn(5 * time.Second)
 		}
-		title := fmt.Sprintf("Restauration — %d stack(s)", len(stacks))
+		title := fmt.Sprintf("Relance — %d stack(s)", len(stacks))
 		if len(missing) > 0 {
 			// Signaler les introuvables au lieu de les ignorer en silence.
 			title += fmt.Sprintf(" (%d introuvable(s) ignorée(s))", len(missing))
@@ -868,13 +893,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.dirCursor < len(m.dirEntries)-1 {
 			m.dirCursor++
 		}
-	case "esc", "q":
+	case "esc":
+		// Premier lancement : aucune liste où revenir ; q (global) quitte.
 		if m.cfg.StackDir != "" {
 			m.view = viewList
-		} else if msg.String() == "q" {
-			// Premier lancement : aucune liste où revenir — q quitte (deux
-			// frappes), sinon le picker rendrait l'application inquittable.
-			return m.armOrQuit()
 		}
 	case "enter":
 		if len(m.dirEntries) == 0 {

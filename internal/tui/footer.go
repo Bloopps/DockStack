@@ -28,7 +28,7 @@ func renderFooterRefresh(width int, refreshing bool) string {
 		{"↑↓", "naviguer"},
 		{"↩", "action"},
 		{"␣", "sélect"},
-		{"b", "backup"},
+		{"b", "captures"},
 		{"R", "rafraîchir"},
 		{"q", "quitter"},
 	}, width, refreshing)
@@ -96,9 +96,9 @@ func (m Model) listFooterKeys() []footerKey {
 		// Par ordre d'importance : sur terminal étroit, les derniers chips
 		// non épinglés cèdent la place en premier.
 		return []footerKey{
-			{"␣", "cocher"}, {"u", "up"}, {"d", "stop"}, {"r", "restart"}, {"l", "logs"},
+			{"␣", "cocher"}, {"u", "up"}, {"t", "stop"}, {"r", "restart"}, {"l", "logs"},
 			{"e", "en défaut"}, {"/", "filtre"}, {"c", "recreate"}, {"p", "pull"},
-			{"D", "down"}, {"+", "dépendances"}, {"ctrl+a", "tout"},
+			{"d", "down"}, {"+", "dépendances"}, {"ctrl+a", "tout"},
 			// Épinglés en fin de barre : la sortie du mode ne doit jamais
 			// céder la place (q quitte toujours).
 			{"←", "retour"}, {"?", "aide"},
@@ -109,7 +109,7 @@ func (m Model) listFooterKeys() []footerKey {
 			{fmt.Sprintf("%d", n), "sélectionnées"},
 			{"u", "up"}, {"d", "down"}, {"r", "restart"},
 			{"b", "captures"},
-			{"↩", "plus"},
+			{"↩", "plus"}, {"t", "stop"},
 			{"esc", "désélect"},
 		}, tail...)
 	}
@@ -119,14 +119,14 @@ func (m Model) listFooterKeys() []footerKey {
 	case ok && row.header:
 		keys = []footerKey{
 			{"u", "up dossier"}, {"d", "down"}, {"r", "restart"},
-			{"b", "captures"}, {"↩", "replier"}, {"␣", "sélect. dossier"},
+			{"b", "captures"}, {"↩", "replier"}, {"␣", "sélect. dossier"}, {"t", "stop"},
 		}
 	case ok && row.more:
 		keys = []footerKey{{"↩", "afficher les non déployées"}}
 	case ok && row.isStack():
 		keys = []footerKey{
 			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}, {"s", "services"},
-			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"},
+			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"}, {"t", "stop"},
 		}
 	}
 	inactive := "afficher inactives"

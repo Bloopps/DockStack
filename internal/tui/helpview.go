@@ -1,32 +1,63 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 )
 
-// Aide-mémoire des raccourcis de la liste, ouvert avec « ? » et fermé par
-// n'importe quelle touche. Deux colonnes dès que la largeur le permet : sur
-// une seule, l'aide dépassait la hauteur d'un terminal courant et la fin
-// (captures, quitter) était coupée.
+// renderHelpView affiche l'aide sur height lignes. Si elle dépasse (terminal
+// bas ou étroit, une seule colonne), elle défile avec ↑↓ et la dernière ligne
+// indique ce qui reste caché : couper la fin masquait les captures et la règle
+// de sortie.
 func renderHelpView(m Model, height int) string {
+	lines := strings.Split(helpBox(m), "\n")
+	if len(lines) <= height || height < 2 {
+		return strings.Join(lines, "\n")
+	}
+	win := height - 1
+	start := min(m.helpScroll, len(lines)-win)
+	out := append([]string(nil), lines[start:start+win]...)
+	var hint []string
+	if start > 0 {
+		hint = append(hint, fmt.Sprintf("↑ %d ligne(s) au-dessus", start))
+	}
+	if below := len(lines) - start - win; below > 0 {
+		hint = append(hint, fmt.Sprintf("↓ %d ligne(s) en dessous", below))
+	}
+	return strings.Join(append(out, styleDim.Render("    "+strings.Join(hint, " · "))), "\n")
+}
+
+// helpMaxScroll : défilement maximal de l'aide (0 si elle tient à l'écran).
+func (m Model) helpMaxScroll() int {
+	n := strings.Count(helpBox(m), "\n") + 1
+	h := m.bodyHeight()
+	if n <= h || h < 2 {
+		return 0
+	}
+	return n - (h - 1)
+}
+
+// helpBox : aide-mémoire des raccourcis, ouvert avec « ? ». Deux colonnes dès
+// que la largeur le permet, sinon une seule (qui défile si besoin).
+func helpBox(m Model) string {
 	k := func(s string) string { return styleCyan.Bold(true).Render(s) }
 	d := func(s string) string { return styleDim.Render(s) }
 	title := func(s, note string) string { return styleYellow.Render(s) + d(note) }
 
 	actions := []string{
 		title("Actions", "  (sélection si active, sinon stack/dossier courant)"),
-		"  " + k("u") + "  Up           " + k("d") + "  Down",
-		"  " + k("r") + "  Restart      " + k("c") + "  Recreate",
-		"  " + k("p") + "  Pull         " + k("l") + "  Logs" + d("  (stack courante)"),
+		"  " + k("u") + "  Up      " + k("t") + "  Stop      " + k("d") + "  Down",
+		"  " + k("r") + "  Restart " + k("c") + "  Recreate  " + k("p") + "  Pull",
+		"  " + k("l") + "  Logs" + d("  (stack courante)"),
 		"  " + k("↩") + "  panneau d'actions" + d("  (dont Compose, Remove)"),
 	}
 	services := []string{
 		title("Services", "  (agir sur certains services, sans toucher aux autres)"),
 		"  " + k("→") + " / " + k("s") + "  entrer dans les services de la stack",
 		"  " + k("␣") + "  cocher   " + k("ctrl+a") + "  tout   " + k("e") + "  en défaut   " + k("/") + "  filtrer",
-		"  " + k("u") + " up  " + k("d") + " stop  " + k("D") + " down  " + k("r") + " restart  " + k("c") + " recreate  " + k("p") + " pull  " + k("l") + " logs",
+		"  " + k("u") + " up  " + k("t") + " stop  " + k("d") + " down  " + k("r") + " restart  " + k("c") + " recreate  " + k("p") + " pull  " + k("l") + " logs",
 		"  " + k("+") + "  inclure les dépendances" + d("  (up, recreate, pull)"),
 		"  " + k("←") + "  retour" + d("  (esc : efface le filtre, décoche, puis sort)"),
 	}
@@ -36,7 +67,7 @@ func renderHelpView(m Model, height int) string {
 		"  " + k("esc") + "  efface le filtre, puis la sélection",
 	}
 	groups := []string{
-		title("Dossiers", "  (sur l'en-tête : ␣ et u/d/r/c/p = tout le dossier)"),
+		title("Dossiers", "  (sur l'en-tête : ␣ et u/t/d/r/c/p = tout le dossier)"),
 		"  " + k("←") + "  replier   " + k("→") + "  déplier   " + k("↩") + "  replier/déplier",
 	}
 	list := []string{
@@ -50,12 +81,12 @@ func renderHelpView(m Model, height int) string {
 	}
 	captures := []string{
 		title("Captures d'état", ""),
-		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ restaurer, a aligner)"),
-		"  " + d("n nommer · p épingler (jamais supprimée) · x supprimer"),
+		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ relancer, A à l'identique)"),
+		"  " + d("n nommer · p épingler (jamais supprimée) · del supprimer"),
 	}
 	general := []string{
 		title("Général", ""),
-		"  " + k("q") + " / " + k("ctrl+c") + "  quitter" + d("  (deux frappes)") + "   " + k("?") + "  cette aide",
+		"  " + k("q") + "  quitter" + d("  (2 frappes, partout)") + "  " + k("esc") + "  retour  " + k("?") + "  aide",
 	}
 
 	join := func(blocks ...[]string) string {

@@ -299,9 +299,11 @@ func renderProgressView(m Model) string {
 	}
 	var footer string
 	switch {
+	case m.quitArmed:
+		footer = quitWarning()
 	case m.progressDone:
 		footer = renderFooterKeys([]struct{ key, desc string }{
-			{"↩ / q", "fermer"},
+			{"↩ / esc", "fermer"},
 		}, m.width) + scrollHint
 	case m.progressCancelling:
 		footer = styleYellow.PaddingLeft(2).Render("Annulation en cours…") + scrollHint

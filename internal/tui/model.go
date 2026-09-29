@@ -192,6 +192,9 @@ type Model struct {
 	status    string
 	statusErr bool
 
+	// Défilement de l'aide (?) quand elle dépasse la hauteur de l'écran.
+	helpScroll int
+
 	// Quitter en deux frappes (q/ctrl+c) ; quitSeq invalide les timers de
 	// désarmement périmés.
 	quitArmed bool
@@ -295,6 +298,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickMetrics()
 
 	case clientReadyMsg:
+		// Connexion déjà établie (deux R rapprochés pendant l'init, ou init de
+		// démarrage + R) : ignorer le doublon, sinon chaque client lancerait
+		// son abonnement aux événements et son minuteur d'occupation.
+		if m.client != nil {
+			return m, nil
+		}
 		m.client = msg.client
 		m.err = nil
 		if m.cfg.StackDir == "" {
@@ -623,12 +632,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Q (Maj ou verrouillage des majuscules) vaut q partout — sauf pendant la
-	// saisie du filtre, où c'est une lettre comme une autre.
-	if msg.String() == "Q" && !m.filtering {
+	// Q (Maj ou verrouillage des majuscules) vaut q partout — sauf pendant une
+	// saisie de texte, où c'est une lettre comme une autre.
+	if msg.String() == "Q" && !m.typing() {
 		msg = tea.KeyPressMsg{Code: 'q', Text: "q"}
 	}
 	if m.view == viewProgress {
+		// Toute touche autre que q désarme la sortie, comme ailleurs : sans
+		// ça, q puis esc puis q quittait depuis la liste.
+		if msg.String() != "q" {
+			m.quitArmed = false
+		}
 		switch msg.String() {
 		case "up", "k":
 			if m.progressScroll < m.progressMaxScroll() {
@@ -645,7 +659,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "g", "G":
 			m.progressScroll = 0
 			m.progressManualScroll = false
-		case "q", "esc", "ctrl+c":
+		case "q":
+			// Jamais de sortie en pleine opération : esc l'annule proprement.
+			if m.progressDone {
+				return m.armOrQuit()
+			}
+		case "esc", "ctrl+c":
 			if m.progressDone {
 				m.leaveProgressView()
 				break
@@ -671,9 +690,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// L'aide se ferme sur n'importe quelle touche (avant l'intercept global de r).
+	// L'aide défile (↑↓) si elle dépasse l'écran et se ferme sur toute autre
+	// touche (avant l'intercept global de r).
 	if m.view == viewHelp {
-		m.view = viewList
+		switch msg.String() {
+		case "up", "k":
+			m.helpScroll = max(m.helpScroll-1, 0)
+		case "down", "j":
+			m.helpScroll = min(m.helpScroll+1, m.helpMaxScroll())
+		case "pgup":
+			m.helpScroll = max(m.helpScroll-m.bodyHeight()/2, 0)
+		case "pgdown", "space":
+			m.helpScroll = min(m.helpScroll+m.bodyHeight()/2, m.helpMaxScroll())
+		default:
+			m.view = viewList
+		}
 		return m, nil
 	}
 	// ctrl+c quitte depuis n'importe quelle vue (deux frappes) : les vues qui
@@ -689,7 +720,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// R = reload global (r est réservé à Restart dans la liste). Si l'init
 	// Docker a échoué, R retente la connexion au lieu de ne rien faire.
-	if msg.String() == "R" && !m.filtering {
+	if msg.String() == "R" && !m.typing() {
 		if m.client == nil {
 			m.loading = true
 			m.err = nil
@@ -701,6 +732,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.manualR = true
 			return m, m.loadStacksCmd()
 		}
+	}
+	// q quitte partout (deux frappes), esc revient : règle unique pour toutes
+	// les vues. La liste et le mode services traitent q eux-mêmes (filtres
+	// texte) ; la saisie d'un libellé de capture garde q comme lettre.
+	if msg.String() == "q" && m.view != viewList && !m.captureLabeling {
+		return m.armOrQuit()
 	}
 	switch m.view {
 	case viewList:
@@ -947,8 +984,7 @@ func (m Model) selectedStacks() []compose.Stack {
 
 func (m Model) renderFooter() string {
 	if m.quitArmed {
-		return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
-			styleDim.Render("  ·  autre touche = annuler")
+		return quitWarning()
 	}
 	if m.status != "" {
 		msg := m.status
@@ -990,11 +1026,11 @@ func (m Model) renderFooter() string {
 		if len(m.backups) > 0 {
 			keys = append(keys,
 				struct{ key, desc string }{"↑↓", "naviguer"},
-				struct{ key, desc string }{"↩", "restaurer"},
-				struct{ key, desc string }{"a", "aligner"},
+				struct{ key, desc string }{"↩", "relancer"},
+				struct{ key, desc string }{"A", "à l'identique"},
 				struct{ key, desc string }{"n", "nommer"},
 				struct{ key, desc string }{"p", "épingler"},
-				struct{ key, desc string }{"x", "supprimer"})
+				struct{ key, desc string }{"del", "supprimer"})
 		}
 		keys = append(keys, struct{ key, desc string }{"esc", "retour"})
 		return renderFooterKeys(keys, m.width)
@@ -1021,6 +1057,9 @@ func (m Model) renderFooter() string {
 		}, m.width)
 	}
 	if m.view == viewHelp {
+		if m.helpMaxScroll() > 0 {
+			return styleDim.PaddingLeft(2).Render("↑↓ défiler · autre touche pour fermer")
+		}
 		return styleDim.PaddingLeft(2).Render("appuyer sur une touche pour fermer")
 	}
 	if m.view == viewList {
@@ -1060,7 +1099,8 @@ func truncate(s string, max int) string {
 var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 
 // sanitizeLogLine retire les séquences ANSI/escape et les caractères de
-// contrôle qu'un conteneur peut écrire dans ses logs : non filtrés, ils
+// contrôle qu'un conteneur peut écrire dans ses logs, et convertit les
+// tabulations en espaces : non filtrés, ils
 // corrompraient le rendu de la TUI, voire le terminal lui-même (titre,
 // presse-papiers…).
 //
@@ -1075,7 +1115,7 @@ func sanitizeLogLine(s string) string {
 		s = s[i+1:]
 	}
 	s = ansiCSI.ReplaceAllString(s, "")
-	return strings.Map(func(r rune) rune {
+	s = strings.Map(func(r rune) rune {
 		if r == '\t' {
 			return r
 		}
@@ -1084,6 +1124,29 @@ func sanitizeLogLine(s string) string {
 		}
 		return r
 	}, s)
+	return expandTabs(s)
+}
+
+// expandTabs remplace les tabulations par des espaces jusqu'au taquet suivant
+// (tous les 8 caractères) : le moteur de rendu ignore '\t', ce qui collait les
+// colonnes (« clé\tvaleur » affiché « clévaleur »).
+func expandTabs(s string) string {
+	if !strings.ContainsRune(s, '\t') {
+		return s
+	}
+	var b strings.Builder
+	col := 0
+	for _, r := range s {
+		if r == '\t' {
+			n := 8 - col%8
+			b.WriteString(strings.Repeat(" ", n))
+			col += n
+			continue
+		}
+		b.WriteRune(r)
+		col++
+	}
+	return b.String()
 }
 
 // listPosition renvoie « i/N » pour la stack sous le curseur (indices dans la
@@ -1115,6 +1178,26 @@ func tickMetrics() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return metricsMsg(monitor.Collect())
 	})
+}
+
+// quitWarning : avertissement de sortie armée. Toutes les vues l'affichent,
+// y compris celles qui ont leur propre pied de page (logs, compose,
+// progression, dossiers) : sinon le second q quittait sans prévenir.
+func quitWarning() string {
+	return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
+		styleDim.Render("  ·  autre touche = annuler")
+}
+
+// typing dit si une saisie de texte est en cours (filtre de la liste, filtre
+// des services, nom de capture) : les raccourcis globaux (R, Q) y sont des
+// lettres ordinaires.
+func (m Model) typing() bool {
+	return m.filtering || (m.svcFocus && m.svcFiltering) || m.captureLabeling
+}
+
+// bodyHeight : hauteur du corps des vues sous l'en-tête (footer d'une ligne).
+func (m Model) bodyHeight() int {
+	return max(m.height-headerHeight(m.metrics.NCores, m.width)-1, 0)
 }
 
 // armOrQuit applique la sortie en deux frappes : la première arme (désarmée
