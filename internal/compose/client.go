@@ -319,7 +319,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 func attachOrphans(stacks []Stack, items []container.Summary) {
 	hasOrphan := false
 	for i := range items {
-		if strings.TrimSpace(items[i].Labels["com.docker.compose.project"]) == "" {
+		if isOrphanCandidate(items[i].Labels) {
 			hasOrphan = true
 			break
 		}
@@ -343,7 +343,7 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 		svcAgg := make(map[string]*ServiceStatus)
 		for j := range items {
 			ctr := &items[j]
-			if consumed[ctr.ID] || strings.TrimSpace(ctr.Labels["com.docker.compose.project"]) != "" {
+			if consumed[ctr.ID] || !isOrphanCandidate(ctr.Labels) {
 				continue
 			}
 			svcName, ok := matchByNames(cand, ctr.Names)
@@ -413,6 +413,24 @@ func matchByNames(cand map[string]string, ctrNames []string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isOrphanCandidate dit si un conteneur peut être un orphelin compose : pas de
+// label projet, mais une trace de compose ou de watchtower (watchtower ne
+// repropage pas le label projet mais garde com.docker.compose.replace). Un
+// conteneur lancé à la main (docker run) n'en porte aucune : il n'est jamais
+// rattaché à une stack, même si son nom correspond à un container_name — sans
+// ce garde-fou, un Down sur la stack le supprimerait.
+func isOrphanCandidate(labels map[string]string) bool {
+	if strings.TrimSpace(labels["com.docker.compose.project"]) != "" {
+		return false
+	}
+	for k := range labels {
+		if strings.HasPrefix(k, "com.docker.compose.") || strings.HasPrefix(k, "com.centurylinklabs.watchtower.") {
+			return true
+		}
+	}
+	return false
 }
 
 // ProgressEvent is a single live event streamed during an operation.
@@ -623,7 +641,7 @@ func (c *Client) startByContainerName(ctx context.Context, proj *types.Project, 
 // un conteneur déjà rattaché à un projet. doneStatus décrit l'effet dans la
 // vue de progression. Renvoie le nombre d'orphelins retirés.
 func (c *Client) removeProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus string) int {
-	return c.eachProjectOrphan(ctx, stackName, proj, ch, doneStatus, "ré-adoption impossible : ",
+	return c.eachProjectOrphan(ctx, stackName, proj, ch, doneStatus, "ré-adoption impossible : ", false,
 		func(id string) error {
 			_, err := c.cli.Client().ContainerRemove(ctx, id, mobyclient.ContainerRemoveOptions{Force: true})
 			return err
@@ -634,17 +652,30 @@ func (c *Client) removeProjectOrphans(ctx context.Context, stackName string, pro
 // restart ne les voit pas (label projet absent), sans ça Restart serait un
 // no-op silencieux sur une stack ⟳.
 func (c *Client) restartProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent) {
-	c.eachProjectOrphan(ctx, stackName, proj, ch, "redémarré (orphelin)", "redémarrage impossible : ",
+	c.eachProjectOrphan(ctx, stackName, proj, ch, "redémarré (orphelin)", "redémarrage impossible : ", false,
 		func(id string) error {
 			_, err := c.cli.Client().ContainerRestart(ctx, id, mobyclient.ContainerRestartOptions{})
 			return err
 		})
 }
 
-// eachProjectOrphan applique act à chaque conteneur portant un nom du projet
-// mais sans label com.docker.compose.project, et publie le résultat dans la
-// vue de progression. Renvoie le nombre de succès.
-func (c *Client) eachProjectOrphan(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus, failPrefix string, act func(id string) error) int {
+// stopProjectOrphans arrête les orphelins EN MARCHE du projet : compose stop ne
+// les voit pas (label projet absent), sans ça Stop serait un no-op silencieux
+// sur une stack ⟳. Le conteneur est conservé, comme pour un stop compose.
+func (c *Client) stopProjectOrphans(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent) {
+	c.eachProjectOrphan(ctx, stackName, proj, ch, "arrêté (orphelin)", "arrêt impossible : ", true,
+		func(id string) error {
+			_, err := c.cli.Client().ContainerStop(ctx, id, mobyclient.ContainerStopOptions{})
+			return err
+		})
+}
+
+// eachProjectOrphan applique act à chaque orphelin du projet (nom du projet,
+// pas de label com.docker.compose.project, cf. isOrphanCandidate) — seulement
+// à ceux en marche si runningOnly — et publie le résultat dans la vue de
+// progression. Le projet peut être réduit (Stack.Only) : seuls les noms de ses
+// services sont candidats. Renvoie le nombre de succès.
+func (c *Client) eachProjectOrphan(ctx context.Context, stackName string, proj *types.Project, ch chan<- ProgressEvent, doneStatus, failPrefix string, runningOnly bool, act func(id string) error) int {
 	cand := projectContainerNames(proj)
 	if len(cand) == 0 {
 		return 0
@@ -655,8 +686,11 @@ func (c *Client) eachProjectOrphan(ctx context.Context, stackName string, proj *
 	}
 	ok := 0
 	for _, ctr := range result.Items {
-		if strings.TrimSpace(ctr.Labels["com.docker.compose.project"]) != "" {
-			continue // déjà rattaché à un projet : ne jamais voler
+		if !isOrphanCandidate(ctr.Labels) {
+			continue // rattaché à un projet (ne jamais voler) ou lancé hors compose
+		}
+		if runningOnly && ctr.State != container.StateRunning {
+			continue
 		}
 		if _, match := matchByNames(cand, ctr.Names); !match {
 			continue
@@ -733,7 +767,15 @@ func (c *Client) stopLive(ctx context.Context, stack Stack, ch chan<- ProgressEv
 	}
 	// Stop garde les conteneurs (contrairement à Down) : le redémarrage est
 	// immédiat et rien n'est perdu.
-	return svc.Stop(ctx, proj.Name, api.StopOptions{Project: proj, Services: stack.Only})
+	if err := svc.Stop(ctx, proj.Name, api.StopOptions{Project: proj, Services: stack.Only}); err != nil {
+		return err
+	}
+	// Orphelins watchtower : compose stop ne les voit pas. Le projet est déjà
+	// réduit aux services ciblés, les orphelins des autres ne sont pas touchés.
+	if stack.Orphaned {
+		c.stopProjectOrphans(ctx, stack.Name, proj, ch)
+	}
+	return nil
 }
 
 func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {

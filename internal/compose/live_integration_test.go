@@ -236,7 +236,9 @@ func TestLiveOrphans(t *testing.T) {
 	root := t.TempDir()
 	probeStack(t, root, "zzdsprobeorph",
 		"services:\n  web:\n    image: "+probeImage+"\n    command: [\"sleep\", \"3600\"]\n", "")
-	if out, err := dockerCLI("run", "-d", "--name", "zzdsprobeorph-web-1", probeImage, "sleep", "3600"); err != nil {
+	// Watchtower perd le label projet mais garde com.docker.compose.replace.
+	if out, err := dockerCLI("run", "-d", "--name", "zzdsprobeorph-web-1", "--label", "com.docker.compose.replace=web",
+		probeImage, "sleep", "3600"); err != nil {
 		t.Fatalf("création de l'orphelin : %v %s", err, out)
 	}
 	startedBefore, _ := dockerCLI("inspect", "-f", "{{.State.StartedAt}}", "zzdsprobeorph-web-1")
@@ -257,11 +259,109 @@ func TestLiveOrphans(t *testing.T) {
 		t.Fatalf("Restart n'a pas redémarré l'orphelin (événement=%v, StartedAt %s → %s)", restarted, startedBefore, startedAfter)
 	}
 
+	// PlanUp annonce la recréation de l'orphelin en marche (le up le supprime).
+	if plan, err := c.PlanUp(ctx, s); err != nil || len(plan) != 1 || plan[0].Service != "web" {
+		t.Errorf("PlanUp sur orphelin en marche = %+v, %v ; want web", plan, err)
+	}
+
+	// Stop arrête l'orphelin (compose stop ne le voit pas) et le conserve.
+	errs, _ = runOp(t, c.StopManyLive(ctx, []Stack{s}, 1))
+	mustOK(t, "Stop", errs)
+	if st, _ := dockerCLI("inspect", "-f", "{{.State.Status}}", "zzdsprobeorph-web-1"); st != "exited" {
+		t.Fatalf("après Stop : orphelin %q, want exited", st)
+	}
+
 	errs, _ = runOp(t, c.UpManyLive(ctx, []Stack{s}, 1))
 	mustOK(t, "Up (ré-adoption)", errs)
 	if s := stackState(t, c, root, "zzdsprobeorph"); s.Orphaned || s.State() != StateRunning {
 		t.Fatalf("après Up : Orphaned=%v %d/%d, want ré-adopté et en marche", s.Orphaned, s.Running, s.Total)
 	}
+}
+
+// TestLivePlanSharedNamespace : pas de faux positif sur un service en
+// network_mode: service:X (compose hache la référence résolue), et la
+// recréation du parent est annoncée en cascade — ce que compose fait vraiment.
+func TestLivePlanSharedNamespace(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	yaml := func(env string) string {
+		return "services:\n  vpn:\n    image: " + probeImage + "\n    command: [\"sleep\", \"3600\"]\n    environment: {X: \"" + env + "\"}\n" +
+			"  app:\n    image: " + probeImage + "\n    command: [\"sleep\", \"3600\"]\n    network_mode: \"service:vpn\"\n    depends_on: [vpn]\n"
+	}
+	st := probeStack(t, root, "zzdsprobens", yaml("1"), "")
+	errs, _ := runOp(t, c.UpManyLive(ctx, []Stack{st}, 1))
+	mustOK(t, "Up", errs)
+
+	if plan, err := c.PlanUp(ctx, st); err != nil || len(plan) != 0 {
+		t.Fatalf("stack inchangée : PlanUp = %+v, %v (faux positif network_mode)", plan, err)
+	}
+
+	writeFile(t, st.ComposeFile, yaml("2"))
+	plan, err := c.PlanUp(ctx, st)
+	got := map[string]string{}
+	for _, r := range plan {
+		got[r.Service] = r.Reason
+	}
+	if err != nil || got["vpn"] != "config modifiée" || !strings.HasPrefix(got["app"], "suit la recréation") {
+		t.Fatalf("après modification de vpn : PlanUp = %+v, %v", plan, err)
+	}
+	appBefore, _ := dockerCLI("inspect", "-f", "{{.Id}}", "zzdsprobens-app-1")
+	errs, _ = runOp(t, c.UpManyLive(ctx, []Stack{st}, 1))
+	mustOK(t, "Up après modification", errs)
+	if appAfter, _ := dockerCLI("inspect", "-f", "{{.Id}}", "zzdsprobens-app-1"); appAfter == appBefore {
+		t.Error("compose n'a pas recréé app : la cascade annoncée par PlanUp serait fausse")
+	}
+}
+
+// TestLiveEnvFileCLIParity : une stack à env_file déployée par la CLI docker
+// compose n'est ni annoncée modifiée par PlanUp, ni recréée par un Up de
+// dockstack (le hash de config doit être celui de la CLI).
+func TestLiveEnvFileCLIParity(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	st := probeStack(t, root, "zzdsprobeenvf",
+		"services:\n  web:\n    image: "+probeImage+"\n    command: [\"sleep\", \"3600\"]\n    env_file: [app.env]\n", "")
+	writeFile(t, filepath.Join(st.Dir, "app.env"), "FOO=bar\n")
+	if out, err := dockerCLI("compose", "-f", st.ComposeFile, "up", "-d"); err != nil {
+		t.Skipf("CLI docker compose indisponible : %v %s", err, out)
+	}
+	if plan, err := c.PlanUp(ctx, st); err != nil || len(plan) != 0 {
+		t.Fatalf("stack déployée par la CLI, inchangée : PlanUp = %+v, %v", plan, err)
+	}
+	before, _ := dockerCLI("inspect", "-f", "{{.Id}}", "zzdsprobeenvf-web-1")
+	errs, _ := runOp(t, c.UpManyLive(ctx, []Stack{st}, 1))
+	mustOK(t, "Up", errs)
+	if after, _ := dockerCLI("inspect", "-f", "{{.Id}}", "zzdsprobeenvf-web-1"); after != before {
+		t.Error("Up de dockstack a recréé un conteneur que la CLI laisse tel quel")
+	}
+	if env, _ := dockerCLI("exec", "zzdsprobeenvf-web-1", "printenv", "FOO"); env != "bar" {
+		t.Errorf("FOO = %q dans le conteneur, want bar", env)
+	}
+}
+
+// TestLivePlanNetworkDetached : un conteneur déconnecté de son réseau est
+// recréé par compose ; PlanUp doit l'annoncer.
+func TestLivePlanNetworkDetached(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	st := probeStack(t, root, "zzdsprobenet",
+		"services:\n  web:\n    image: "+probeImage+"\n    command: [\"sleep\", \"3600\"]\n", "")
+	errs, _ := runOp(t, c.UpManyLive(ctx, []Stack{st}, 1))
+	mustOK(t, "Up", errs)
+	if plan, err := c.PlanUp(ctx, st); err != nil || len(plan) != 0 {
+		t.Fatalf("stack inchangée : PlanUp = %+v, %v", plan, err)
+	}
+	if out, err := dockerCLI("network", "disconnect", "zzdsprobenet_default", "zzdsprobenet-web-1"); err != nil {
+		t.Fatalf("déconnexion : %v %s", err, out)
+	}
+	plan, err := c.PlanUp(ctx, st)
+	if err != nil || len(plan) != 1 || plan[0].Service != "web" {
+		t.Fatalf("après déconnexion : PlanUp = %+v, %v", plan, err)
+	}
+	runOp(t, c.DownManyLive(ctx, []Stack{st}, 1)) // retire aussi le réseau
 }
 
 // TestLiveNameConflictNotStolen : si le container_name est pris par le

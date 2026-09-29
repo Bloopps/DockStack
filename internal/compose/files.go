@@ -303,16 +303,23 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		WorkingDir:  stack.Dir,
 		ConfigFiles: configFiles,
 		Environment: env,
-	}, func(o *loader.Options) {
-		o.SkipValidation = true
-		// Parité CLI : COMPOSE_PROJECT_NAME (process ou .env) l'emporte même
-		// sur le name: du fichier ; sinon le basename sert de repli.
-		if n := env["COMPOSE_PROJECT_NAME"]; n != "" {
-			o.SetProjectName(n, true)
-		} else {
-			o.SetProjectName(fallback, false)
-		}
-	})
+	},
+		// Parité CLI : une fois leurs variables fusionnées dans environment, les
+		// entrées env_file sont retirées (WithServicesEnvironmentResolved(true)
+		// côté CLI). Gardées, elles entrent dans le hash de config : tout service
+		// à env_file déployé par la CLI paraissait modifié et un Up depuis
+		// dockstack le recréait sans raison (cas réel : jellysweep).
+		loader.WithDiscardEnvFiles,
+		func(o *loader.Options) {
+			o.SkipValidation = true
+			// Parité CLI : COMPOSE_PROJECT_NAME (process ou .env) l'emporte même
+			// sur le name: du fichier ; sinon le basename sert de repli.
+			if n := env["COMPOSE_PROJECT_NAME"]; n != "" {
+				o.SetProjectName(n, true)
+			} else {
+				o.SetProjectName(fallback, false)
+			}
+		})
 	if err != nil {
 		return nil, err
 	}

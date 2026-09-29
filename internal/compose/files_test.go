@@ -144,3 +144,24 @@ func TestLoadProjectName(t *testing.T) {
 		}
 	}
 }
+
+// Parité CLI : les variables d'env_file sont fusionnées dans environment puis
+// l'entrée env_file est retirée, sinon elle entre dans le hash de config et un
+// service déployé par la CLI paraît modifié (recréé à tort par un Up).
+func TestLoadProjectDiscardsEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	writeFile(t, file, "services:\n  web:\n    image: nginx\n    env_file: [app.env]\n")
+	writeFile(t, filepath.Join(dir, "app.env"), "FOO=bar\n")
+	proj, err := loadProject(Stack{Name: "p", Dir: dir, ComposeFile: file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := proj.Services["web"]
+	if v := sv.Environment["FOO"]; v == nil || *v != "bar" {
+		t.Errorf("FOO non fusionné dans environment : %v", sv.Environment)
+	}
+	if len(sv.EnvFiles) != 0 {
+		t.Errorf("env_file conservé : %v", sv.EnvFiles)
+	}
+}

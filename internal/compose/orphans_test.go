@@ -56,8 +56,8 @@ func TestAttachOrphans(t *testing.T) {
 
 	stacks := []Stack{{Name: "app", Dir: dir, ComposeFile: file}} // Total == 0 (paraît down)
 	items := []container.Summary{
-		{ID: "a", Names: []string{"/myweb"}, State: "running"},                                                               // orphelin → rattaché
-		{ID: "b", Names: []string{"/autre"}, State: "running", Labels: map[string]string{"com.docker.compose.project": "x"}}, // pas à nous
+		{ID: "a", Names: []string{"/myweb"}, State: "running", Labels: map[string]string{"com.docker.compose.replace": "web"}}, // orphelin watchtower → rattaché
+		{ID: "b", Names: []string{"/autre"}, State: "running", Labels: map[string]string{"com.docker.compose.project": "x"}},   // pas à nous
 	}
 
 	attachOrphans(stacks, items)
@@ -84,5 +84,38 @@ func TestAttachOrphansNoOrphan(t *testing.T) {
 	attachOrphans(stacks, items)
 	if stacks[0].Orphaned || stacks[0].Total != 0 {
 		t.Fatal("aucune attribution attendue sans orphelin (et loadProject ne doit pas être appelé)")
+	}
+}
+
+// Un conteneur lancé à la main (docker run, aucune trace compose/watchtower)
+// n'est jamais pris pour un orphelin, même s'il porte le container_name d'un
+// service : sinon un Down sur la stack le supprimerait.
+func TestAttachOrphansIgnoresHandRun(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	writeFile(t, file, "services:\n  db:\n    image: postgres\n    container_name: postgres\n")
+	stacks := []Stack{{Name: "dev", Dir: dir, ComposeFile: file}}
+	items := []container.Summary{{ID: "a", Names: []string{"/postgres"}, State: "running"}}
+	attachOrphans(stacks, items)
+	if stacks[0].Orphaned || stacks[0].Total != 0 {
+		t.Fatalf("conteneur docker run rattaché à tort : Orphaned=%v total=%d", stacks[0].Orphaned, stacks[0].Total)
+	}
+}
+
+func TestIsOrphanCandidate(t *testing.T) {
+	cases := []struct {
+		labels map[string]string
+		want   bool
+	}{
+		{nil, false}, // docker run nu
+		{map[string]string{"maintainer": "x"}, false},
+		{map[string]string{"com.docker.compose.replace": "web"}, true},
+		{map[string]string{"com.centurylinklabs.watchtower.enable": "true"}, true},
+		{map[string]string{"com.docker.compose.project": "p", "com.docker.compose.service": "web"}, false}, // rattaché
+	}
+	for _, c := range cases {
+		if got := isOrphanCandidate(c.labels); got != c.want {
+			t.Errorf("isOrphanCandidate(%v) = %v, want %v", c.labels, got, c.want)
+		}
 	}
 }
