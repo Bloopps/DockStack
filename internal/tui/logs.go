@@ -8,7 +8,8 @@ import (
 
 func renderLogsView(m Model) string {
 	title := styleBold.Foreground(lipgloss.Color("6")).Render(truncate("📋 Logs — "+m.logStack, max(m.width, 1)))
-	hint := styleDim.Render("  ↑↓ défiler  G fin  esc retour")
+	hint := renderBar([]footerKey{{"↑↓", "défiler"}, {"g/G", "haut/bas"}},
+		[]footerKey{{"esc", "retour"}, {"q", "quitter"}}, m.width, "")
 	if m.quitArmed {
 		hint = quitWarning()
 	}

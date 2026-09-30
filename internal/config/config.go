@@ -8,12 +8,19 @@ import (
 	"strings"
 )
 
+// DefaultMaxParallel : nombre de stacks traitées en même temps par une action
+// groupée quand la config n'en fixe pas (ou fixe une valeur absurde).
+const DefaultMaxParallel = 4
+
 type Config struct {
 	StackDir    string `json:"stack_dir"`
 	MaxParallel int    `json:"max_parallel"`
-	// ShowInactive affiche les stacks jamais déployées (masquées par défaut :
-	// sur un home, ce sont surtout des dépôts de dev et d'exemples).
-	ShowInactive bool `json:"show_inactive,omitempty"`
+	// ShowAll affiche aussi les stacks qui ne tournent pas (arrêtées ou jamais
+	// déployées). Par défaut la liste ne montre que ce qui tourne : sur un
+	// home, le reste est surtout des dépôts de dev et d'exemples. Remplace
+	// l'ancien show_inactive (non déployées seulement), ignoré à la lecture
+	// pour que le nouveau défaut s'applique.
+	ShowAll bool `json:"show_all,omitempty"`
 	// Exclude liste des chemins relatifs au dossier des stacks à ignorer
 	// (le chemin lui-même et tout ce qui est en dessous).
 	Exclude []string `json:"exclude,omitempty"`
@@ -39,7 +46,7 @@ func path() string {
 }
 
 func Load() (*Config, error) {
-	cfg := &Config{MaxParallel: 4}
+	cfg := &Config{MaxParallel: DefaultMaxParallel}
 
 	data, err := os.ReadFile(path())
 	if err != nil {
@@ -53,6 +60,12 @@ func Load() (*Config, error) {
 		// Le chemin dans l'erreur : sans lui, l'utilisateur ne sait pas quel
 		// fichier corriger ou supprimer pour pouvoir redémarrer.
 		return nil, fmt.Errorf("%s illisible (corriger ou supprimer le fichier) : %w", path(), err)
+	}
+	// 0 ou négatif (valeur écrite à 0 par erreur, ou saisie à la main) : on
+	// retombe sur le défaut, sinon les actions groupées passaient une stack à
+	// la fois sans que rien ne l'explique.
+	if cfg.MaxParallel <= 0 {
+		cfg.MaxParallel = DefaultMaxParallel
 	}
 	return cfg, nil
 }

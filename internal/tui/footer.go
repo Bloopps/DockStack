@@ -9,72 +9,61 @@ import (
 )
 
 var (
+	// Touche en bleu clair gras sur fond gris ardoise : lisible sur tout thème
+	// (l'ancien noir sur cyan de palette ne l'était pas), et moins criard que
+	// des pavés pleins répétés sur toute la barre.
 	styleFooterKey = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("0")).
-			Background(lipgloss.Color("6")).
+			Foreground(colorAccent).
+			Background(colorKeyBg).
 			Bold(true).
 			Padding(0, 1)
 
 	styleFooterDesc = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
+			Foreground(colorKeyTxt)
 
 	styleFooterSep = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238")).
 			SetString(" · ")
 )
 
-func renderFooterRefresh(width int, refreshing bool) string {
-	return renderFooterKeysRefresh([]struct{ key, desc string }{
-		{"↑↓", "naviguer"},
-		{"↩", "action"},
-		{"␣", "sélect"},
-		{"b", "captures"},
-		{"R", "rafraîchir"},
-		{"q", "quitter"},
-	}, width, refreshing)
-}
+type footerKey = struct{ key, desc string }
 
-func renderFooterKeys(keys []struct{ key, desc string }, width int) string {
-	return renderFooterKeysRefresh(keys, width, false)
-}
-
-func renderFooterKeysRefresh(keys []struct{ key, desc string }, width int, refreshing bool) string {
-	right := ""
-	if refreshing {
-		right = "↻"
+// renderBar rend un pied de page en deux blocs, identique dans toutes les vues :
+// à gauche les touches propres à l'écran, à droite (après « │ ») la sortie et
+// l'aide, toujours au même endroit. Sur un terminal étroit, ce sont les
+// dernières touches de gauche qui cèdent la place, jamais celles de droite.
+// info (position dans la liste, heure du rafraîchissement…) s'aligne tout à
+// droite s'il tient.
+func renderBar(left, right []footerKey, width int, info string) string {
+	chip := func(k footerKey) string {
+		return styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
 	}
-	return renderFooterKeysRight(keys, width, right)
-}
-
-// footerPinned : les derniers chips (aide/quitter, retour…) restent toujours
-// affichés ; ce sont ceux du milieu qui cèdent la place sur un terminal étroit.
-const footerPinned = 2
-
-// renderFooterKeysRight affiche les chips de raccourcis et, aligné à droite,
-// un indicateur libre (position dans la liste, refresh en cours…). Le rendu
-// coupe ce qui dépasse la largeur : sans cet ajustement, les derniers chips
-// (? aide, q quitter) disparaissaient en silence sous ~140 colonnes.
-func renderFooterKeysRight(keys []struct{ key, desc string }, width int, right string) string {
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
+	join := func(ks []footerKey) string {
+		parts := make([]string, len(ks))
+		for i, k := range ks {
+			parts[i] = chip(k)
+		}
+		return strings.Join(parts, styleFooterSep.String())
 	}
-	sep := styleFooterSep.String()
-	build := func(ps []string) string { return "  " + strings.Join(ps, sep) }
-
-	// Retire les chips non épinglés en partant de la fin, jusqu'à tenir.
-	line := build(parts)
-	for width > 0 && lipgloss.Width(line) > width && len(parts) > footerPinned {
-		drop := len(parts) - footerPinned - 1
-		parts = append(parts[:drop:drop], parts[drop+1:]...)
-		line = build(parts)
+	build := func(l []footerKey) string {
+		line := "  " + join(l)
+		if len(right) > 0 {
+			if len(l) > 0 {
+				line += styleFooterBlockSep
+			}
+			line += join(right)
+		}
+		return line
 	}
-
-	// L'indicateur de droite n'est affiché que s'il tient à côté.
-	if right != "" {
-		indicator := styleDim.Render(right)
-		if pad := width - lipgloss.Width(line) - lipgloss.Width(indicator) - 2; pad > 0 {
-			line += strings.Repeat(" ", pad) + indicator
+	line := build(left)
+	for width > 0 && lipgloss.Width(line) > width && len(left) > 0 {
+		left = left[:len(left)-1]
+		line = build(left)
+	}
+	if info != "" {
+		ind := styleDim.Render(info)
+		if pad := width - lipgloss.Width(line) - lipgloss.Width(ind) - 2; pad > 0 {
+			line += strings.Repeat(" ", pad) + ind
 		}
 	}
 	if width > 0 {
@@ -83,66 +72,41 @@ func renderFooterKeysRight(keys []struct{ key, desc string }, width int, right s
 	return line
 }
 
-type footerKey = struct{ key, desc string }
+// styleFooterBlockSep sépare les touches de l'écran de la sortie et de l'aide.
+var styleFooterBlockSep = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("   │   ")
 
-// listFooterKeys : raccourcis de la liste selon ce qui est sous le curseur. Les
-// actions directes (u/d/r/l) y figurent : ce sont les touches les plus
-// utilisées, et sans elles il fallait ouvrir l'aide pour les découvrir. Sur
-// terminal étroit, les chips précédant « ? aide » tombent en premier : l'ordre
-// va donc du plus utile au moins utile.
-func (m Model) listFooterKeys() []footerKey {
-	tail := []footerKey{{"?", "aide"}, {"q", "quitter"}}
+// listFooter : pied de page de la liste. Il sert à naviguer : les actions sur
+// la stack sont dans le volet de droite (selon son état), pas répétées ici —
+// sauf si le volet est masqué faute de largeur. Il ne change pas d'une ligne à
+// l'autre, seulement avec le mode (liste, sélection, services).
+func (m Model) listFooter() (left, right []footerKey) {
+	help := footerKey{"?", "aide"}
 	if m.svcFocus {
-		// Par ordre d'importance : sur terminal étroit, les derniers chips
-		// non épinglés cèdent la place en premier.
-		return []footerKey{
-			{"␣", "cocher"}, {"u", "up"}, {"t", "stop"}, {"r", "restart"}, {"l", "logs"},
-			{"e", "en défaut"}, {"/", "filtre"}, {"c", "recreate"}, {"p", "pull"},
-			{"d", "down"}, {"+", "dépendances"}, {"ctrl+a", "tout"},
-			// Épinglés en fin de barre : la sortie du mode ne doit jamais
-			// céder la place (q quitte toujours).
-			{"←", "retour"}, {"?", "aide"},
-		}
+		return []footerKey{{"␣", "cocher"}, {"e", "en défaut"}, {"/", "filtre"}, {"+", "dépendances"}},
+			[]footerKey{{"←", "retour"}, help}
 	}
 	if n := len(m.selectedStacks()); n > 0 {
-		return append([]footerKey{
-			{fmt.Sprintf("%d", n), "sélectionnées"},
-			{"u", "up"}, {"d", "down"}, {"r", "restart"},
-			{"b", "captures"},
-			{"↩", "plus"}, {"t", "stop"},
-			{"esc", "désélect"},
-		}, tail...)
+		return []footerKey{
+				{fmt.Sprintf("%d", n), "cochée" + plural(n)},
+				{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"},
+				{"↩", "toutes les actions"},
+			},
+			[]footerKey{{"esc", "décocher"}, help}
 	}
-	var keys []footerKey
+	right = []footerKey{help, {"q", "quitter"}}
+	common := []footerKey{{"/", "filtre"}, {"b", "captures"}, {"o", "dossier"}}
 	row, ok := m.cursorRow()
 	switch {
 	case ok && row.header:
-		keys = []footerKey{
-			{"u", "up dossier"}, {"d", "down"}, {"r", "restart"},
-			{"b", "captures"}, {"↩", "replier"}, {"␣", "sélect. dossier"}, {"t", "stop"},
+		left = []footerKey{{"↩", "replier"}, {"␣", "cocher le dossier"}}
+		if !m.previewVisible() {
+			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}}, left...)
 		}
-	case ok && row.more:
-		keys = []footerKey{{"↩", "afficher les non déployées"}}
 	case ok && row.isStack():
-		keys = []footerKey{
-			{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}, {"s", "services"},
-			{"b", "captures"}, {"↩", "plus"}, {"␣", "sélect"}, {"t", "stop"},
+		left = []footerKey{{"↩", "actions"}, {"␣", "cocher"}}
+		if !m.previewVisible() {
+			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}}, left...)
 		}
 	}
-	inactive := "afficher inactives"
-	if m.cfg.ShowInactive {
-		inactive = "masquer inactives"
-	}
-	if !ok || !row.isStack() && !row.header {
-		keys = append(keys, footerKey{"b", "captures"})
-	}
-	keys = append(keys,
-		footerKey{"/", "filtre"},
-		footerKey{"a", inactive},
-		footerKey{"v", "aperçu"},
-		footerKey{"x", "exclure"},
-		footerKey{"o", "dossier"},
-		footerKey{"R", "rafraîchir"},
-	)
-	return append(keys, tail...)
+	return append(left, common...), right
 }

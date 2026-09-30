@@ -23,12 +23,13 @@ de l'utiliser sur des stacks importantes.
 
 - Liste des stacks Docker Compose détectées, groupées par dossier, avec état
   (running / stopped / unhealthy) et compte de conteneurs
-- Actions : Up, Down, Restart, Recreate, Pull, Remove (avec confirmation),
-  Logs
+- Actions : Up, Stop, Down, Restart, Recreate, Pull, Remove (avec
+  confirmation), Logs, avec les mêmes lettres dans la liste, le mode services
+  et le panneau d'actions
 - Actions groupées sur une sélection multiple ou un dossier entier
 - Volet de détail à droite de la liste : services (problèmes en premier),
   état et actions adaptées ; `tab` bascule vers le fichier compose
-- Gestion **service par service** (`→` ou `s`) : cocher des services, les
+- Gestion **service par service** (`→`, `←` pour sortir) : cocher des services, les
   filtrer (`/`), cocher ceux en défaut (`e`), puis stop / up / restart /
   recreate / pull / logs sans toucher aux autres. Image, ports et statut
   Docker du service sous le curseur ; avertissement si une dépendance est
@@ -41,9 +42,9 @@ de l'utiliser sur des stacks importantes.
 - Captures d'état (`b`) : mémorisent quelles stacks **et quels services** tournent
   (jamais leurs données). Restauration sélective : seules les stacks à
   relancer sont cochées, les services arrêtés volontairement ne sont pas
-  relancés. `A` met l'état actuel à l'identique d'une capture (démarre ce qui manque,
+  relancés. `i` met l'état actuel à l'identique d'une capture (démarre ce qui manque,
   arrête ce qui n'y figure pas, après confirmation). `n` nomme une capture,
-  `p` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
+  `*` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
   au lancement, les stacks de la dernière capture qui ne tournent plus
 - Filtrage / recherche dans la liste des stacks
 
@@ -90,8 +91,10 @@ lancement) :
   `compose.yaml` / `compose.yml` / `docker-compose.yml` / `docker-compose.yaml`
   (un seul par dossier, dans cet ordre de priorité, comme la CLI)
 - `max_parallel` : nombre d'opérations simultanées lors des actions groupées
-- `show_inactive` : afficher les stacks jamais déployées (défaut `false`,
-  bascule avec `a`)
+  (défaut 4, aussi utilisé si la valeur est absente ou à 0)
+- `show_all` : afficher aussi les stacks qui ne tournent pas, arrêtées ou
+  jamais déployées (défaut `false` : seules celles qui tournent sont listées ;
+  bascule avec `a`). Remplace l'ancien `show_inactive`, ignoré
 - `exclude` : chemins relatifs à `stack_dir` ignorés par le scan, avec tout
   ce qu'ils contiennent (ajout avec `x` ; retirer l'entrée pour annuler),
   par ex. `["dockerstack", "tests/fixtures"]`
@@ -100,18 +103,19 @@ lancement) :
 
 | Touche                | Action                                              |
 |-----------------------|-----------------------------------------------------|
-| `u` / `t` / `d` / `r` / `c` / `p` | Up / Stop / Down / Restart / Recreate / Pull |
+| `u` / `s` / `d` / `r` / `c` / `p` | Up / Stop / Down / Restart / Recreate / Pull |
 | `l`                   | Logs de la stack courante                            |
-| `↩`                   | Panneau d'actions (dont Remove)                      |
+| `↩`                   | Panneau d'actions (mêmes lettres, plus Remove)       |
 | `␣`                   | Sélectionner                                         |
 | `ctrl+a`              | Tout sélectionner (visible)                          |
 | `esc`                 | Désélectionner / fermer                              |
-| `←` / `→`             | Replier / déplier un groupe                          |
+| `←` / `→`             | Sortir / entrer : dossier, ou services d'une stack   |
+| `g` / `G`             | Haut / bas (liste, logs, progression, captures…)     |
 | `/`                   | Filtrer                                              |
-| `v` / `vv`            | Aperçu compose (volet) / plein écran                 |
+| `v`                   | Fichier compose en plein écran (`tab` : dans le volet) |
 | `R`                   | Rafraîchir (auto sur événement Docker + toutes les 60 s) |
-| `b`                   | Captures d'état (`c` capturer, `↩` relancer, `A` à l'identique, `del` ou `⌫` supprimer) |
-| `a`                   | Afficher / masquer les stacks non déployées (masquées par défaut) |
+| `b`                   | Captures d'état (`c` capturer, `↩` relancer, `i` à l'identique, `n` nommer, `*` épingler, `del` ou `⌫` supprimer) |
+| `a`                   | Afficher / masquer les stacks arrêtées et non déployées (masquées par défaut) |
 | `x`                   | Exclure du scan la stack ou le dossier sous le curseur |
 | `o`                   | Changer de répertoire                                |
 | `?`                   | Aide (`↑↓` pour défiler si elle dépasse l'écran)     |

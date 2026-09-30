@@ -17,10 +17,6 @@ import (
 	"github.com/Bloopps/dockstack/internal/config"
 )
 
-// doubleVDelay est la fenêtre pendant laquelle un second appui sur v escalade
-// du volet d'aperçu vers la vue compose plein écran.
-const doubleVDelay = 700 * time.Millisecond
-
 // menuAction : une entrée de panneau d'actions. Une SEULE liste sert au rendu
 // et à l'exécution : deux listes parallèles avaient divergé (« Compose » ajouté
 // à l'une seulement), décalant tout le menu — « Retour » lançait Remove.
@@ -29,29 +25,32 @@ type menuAction struct {
 	icon  string
 	label string
 	color string // index de couleur ANSI
+	key   string // raccourci, le même que dans la liste ("" = aucun : Remove)
 }
 
+// Remove n'a volontairement pas de raccourci : détruire les volumes doit
+// passer par le panneau, jamais par une lettre tapée par erreur.
 var stackActions = []menuAction{
-	{"up", "▶", "Up", "2"},
-	{"stop", "■", "Stop", "1"},
-	{"down", "▪", "Down", "1"},
-	{"restart", "↺", "Restart", "3"},
-	{"recreate", "↻", "Recreate", "3"},
-	{"pull", "↓", "Pull", "6"},
-	{"logs", "≡", "Logs", "6"},
-	{"compose", "▤", "Compose", "6"},
-	{"remove", "✕", "Remove", "1"},
-	{"back", "←", "Retour", "8"},
+	{"up", "▶", "Up", "2", "u"},
+	{"stop", "■", "Stop", "1", "s"},
+	{"down", "▪", "Down", "1", "d"},
+	{"restart", "↺", "Restart", "3", "r"},
+	{"recreate", "↻", "Recreate", "3", "c"},
+	{"pull", "↓", "Pull", "6", "p"},
+	{"logs", "≡", "Logs", "6", "l"},
+	{"compose", "▤", "Compose", "6", "v"},
+	{"remove", "✕", "Remove", "1", ""},
+	{"back", "←", "Retour", "8", "esc"},
 }
 
 var groupActions = []menuAction{
-	{"up", "▶", "Up", "2"},
-	{"stop", "■", "Stop", "1"},
-	{"down", "▪", "Down", "1"},
-	{"restart", "↺", "Restart", "3"},
-	{"recreate", "↻", "Recreate", "3"},
-	{"pull", "↓", "Pull", "6"},
-	{"back", "←", "Retour", "8"},
+	{"up", "▶", "Up", "2", "u"},
+	{"stop", "■", "Stop", "1", "s"},
+	{"down", "▪", "Down", "1", "d"},
+	{"restart", "↺", "Restart", "3", "r"},
+	{"recreate", "↻", "Recreate", "3", "c"},
+	{"pull", "↓", "Pull", "6", "p"},
+	{"back", "←", "Retour", "8", "esc"},
 }
 
 // ---- list ----
@@ -112,6 +111,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 	case "down", "j":
 		m.moveCursor(1)
+	case "g", "home":
+		m.cursorToEdge(false)
+	case "G", "end":
+		m.cursorToEdge(true)
 	case "left":
 		// Replie le groupe courant et pose le curseur sur son en-tête.
 		if g, ok := m.cursorGroup(); ok && m.filter.Value() == "" {
@@ -165,9 +168,6 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.actionCursor = 0
 			return m, nil
 		}
-		if row, ok := m.cursorRow(); ok && row.more {
-			return m.toggleInactive()
-		}
 		if row, ok := m.cursorRow(); ok && row.header {
 			if m.foldedGroups[row.group] {
 				delete(m.foldedGroups, row.group)
@@ -182,13 +182,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.view = viewAction
 		m.actionCursor = 0
-	case "u", "t", "d", "r", "c":
-		// Raccourcis directs calqués sur les noms compose (up/down/restart/
-		// recreate) : agissent sur la sélection si elle existe, sinon sur le
-		// groupe (si le curseur est sur un en-tête), sinon sur la stack sous
-		// le curseur. Les actions groupées destructives (Down/Restart/
-		// Recreate) passent par la confirmation.
-		action := map[string]string{"u": "up", "t": "stop", "d": "down", "r": "restart", "c": "recreate"}[msg.String()]
+	case "u", "s", "d", "r", "c":
+		// Raccourcis directs calqués sur les noms compose (up/stop/down/
+		// restart/recreate), les mêmes dans la liste, le mode services et le
+		// panneau d'actions : agissent sur la sélection si elle existe, sinon
+		// sur le groupe (si le curseur est sur un en-tête), sinon sur la stack
+		// sous le curseur. Ce qui perturbe un service passe par la confirmation.
+		action := map[string]string{"u": "up", "s": "stop", "d": "down", "r": "restart", "c": "recreate"}[msg.String()]
 		if sel := m.selectedStacks(); len(sel) > 0 {
 			if action == "up" {
 				return m.startOrConfirmGroupUp(sel)
@@ -225,24 +225,13 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.startStackAction("logs", stack)
 		}
 	case "v":
-		// Premier appui : (dé)montre le volet d'aperçu. Second appui rapproché
-		// alors que le volet est déjà ouvert : escalade vers la vue compose
-		// plein écran sur la stack courante.
-		doubleTap := m.previewOn && time.Since(m.lastVAt) < doubleVDelay
-		m.lastVAt = time.Now()
-		if doubleTap {
-			if s, ok := m.cursorStack(); ok {
-				return m.openComposeView(s)
-			}
-			// Curseur sur un en-tête de dossier : pas de compose unique à
-			// ouvrir. Garder le volet ouvert et l'expliquer, plutôt que de le
-			// refermer (effet « clignotement » trompeur).
-			m.setStatus("Plein écran : viser une stack (→ pour ouvrir le dossier), pas le dossier", false)
-			return m, clearStatusIn(4 * time.Second)
+		// Fichier compose en plein écran (le volet de droite, lui, est
+		// toujours affiché quand la largeur le permet).
+		if s, ok := m.cursorStack(); ok {
+			return m.openComposeView(s)
 		}
-		m.previewOn = !m.previewOn
-	case "s":
-		return m.enterServices()
+		m.setStatus("Compose : viser une stack, pas un dossier", false)
+		return m, clearStatusIn(3 * time.Second)
 	case "tab":
 		// Volet ouvert : bascule détail de la stack ↔ fichier compose.
 		if m.previewVisible() {
@@ -268,21 +257,22 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// toggleInactive affiche/masque les stacks jamais déployées (choix mémorisé).
-// Depuis la ligne « N masquées », le curseur se pose sur la première
-// d'entre elles : c'est pour en déployer une qu'on les affiche.
+// toggleInactive affiche/masque les stacks qui ne tournent pas (arrêtées ou
+// jamais déployées ; choix mémorisé), touche a. Si le curseur était sur la
+// ligne « N masquées » (liste sans aucune stack en marche), il se pose sur la
+// première d'entre elles : c'est pour en démarrer une qu'on les affiche.
 func (m Model) toggleInactive() (tea.Model, tea.Cmd) {
 	anchor := m.cursorAnchor()
 	fromMore := false
 	if row, ok := m.cursorRow(); ok && row.more {
 		fromMore = true
 	}
-	m.cfg.ShowInactive = !m.cfg.ShowInactive
+	m.cfg.ShowAll = !m.cfg.ShowAll
 	m.invalidateRows()
 	m.seekCursor(anchor)
 	if fromMore {
 		for i, r := range m.listRows() {
-			if r.isStack() && r.stack.State() == compose.StateUnknown {
+			if r.isStack() && dormant(r.stack) {
 				m.cursor = i
 				break
 			}
@@ -307,7 +297,7 @@ func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 		target = row.group
 	}
 	// Lister TOUT ce que l'exclusion retire : elle vaut pour le chemin et tout
-	// ce qui est en dessous (sous-stacks, stacks non déployées masquées), pas
+	// ce qui est en dessous (sous-stacks, stacks masquées), pas
 	// seulement la ligne visée.
 	probe := config.Config{Exclude: []string{target}}
 	var names []string
@@ -364,11 +354,28 @@ func (m Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "esc":
 		m.view = viewList
+	case "g", "home":
+		m.actionCursor = 0
+	case "G", "end":
+		m.actionCursor = len(m.actionLabels()) - 1
 	case "enter":
 		if len(m.selectedStacks()) > 0 {
 			return m.execGroupAction()
 		}
 		return m.execStackAction()
+	default:
+		// Les lettres de la liste marchent aussi dans le panneau (affichées à
+		// côté de chaque entrée) : y apprendre d puis devoir descendre avec
+		// les flèches jusqu'à Down n'avait pas de sens.
+		for i, a := range m.actionLabels() {
+			if a.key != "" && a.key != "esc" && a.key == msg.String() {
+				m.actionCursor = i
+				if len(m.selectedStacks()) > 0 {
+					return m.execGroupAction()
+				}
+				return m.execStackAction()
+			}
+		}
 	}
 	return m, nil
 }
@@ -550,7 +557,9 @@ func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.logScroll < max(0, len(m.logLines)-m.logsHeight()) {
 			m.logScroll++
 		}
-	case "G":
+	case "g", "home":
+		m.logScroll = 0
+	case "G", "end":
 		m.logScroll = max(0, len(m.logLines)-m.logsHeight())
 	}
 	return m, nil
@@ -628,7 +637,12 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if hasSnap {
 			m.captureLabeling, m.captureLabel = true, snap.Label
 		}
-	case "p":
+	case "g", "home":
+		m.actionCursor = 0
+	case "G", "end":
+		m.actionCursor = max(len(m.backups)-1, 0)
+	case "*":
+		// Épingler : * (p reste Pull partout ailleurs).
 		if hasSnap {
 			done := "Capture épinglée : elle ne sera jamais supprimée par la rotation"
 			if snap.Pinned {
@@ -636,7 +650,9 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, setBackupMeta(dir, snap, snap.Label, !snap.Pinned, done)
 		}
-	case "A":
+	case "i":
+		// À l'identique : toujours confirmé (liste de ce qui démarre et
+		// s'arrête).
 		if hasSnap {
 			return m.confirmAlign(snap)
 		}
@@ -806,6 +822,10 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.restoreCursor < n-1 {
 			m.restoreCursor++
 		}
+	case "g", "home":
+		m.restoreCursor = 0
+	case "G", "end":
+		m.restoreCursor = max(n-1, 0)
 	case " ", "space":
 		if m.restoreCursor < n {
 			e := m.restoreEntries[m.restoreCursor]

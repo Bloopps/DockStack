@@ -98,7 +98,7 @@ func (m Model) enterServices() (tea.Model, tea.Cmd) {
 		m.setStatus("Terminal trop étroit pour gérer les services (100 colonnes min.)", true)
 		return m, clearStatusIn(4 * time.Second)
 	}
-	m.previewOn, m.previewCompose = true, false
+	m.previewCompose = false
 	m.svcFocus, m.svcStack, m.svcCursor = true, s.Name, 0
 	m.svcSel, m.svcFilter, m.svcFiltering, m.svcDeps = make(map[string]bool), "", false, false
 	return m, nil
@@ -165,10 +165,10 @@ func stackLabel(s compose.Stack) string {
 	return s.Name + " · " + strings.Join(shown, ", ") + extra
 }
 
-// serviceKeys : actions du mode services. t ARRÊTE (compose stop : le
-// conteneur est conservé, le redémarrage est immédiat) ; d le retire (down),
-// comme dans la liste.
-var serviceKeys = map[string]string{"u": "up", "t": "stop", "d": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}
+// serviceKeys : actions du mode services, les mêmes lettres que dans la liste.
+// s ARRÊTE (compose stop : le conteneur est conservé, le redémarrage est
+// immédiat) ; d le retire (down).
+var serviceKeys = map[string]string{"u": "up", "s": "stop", "d": "down", "r": "restart", "c": "recreate", "p": "pull", "l": "logs"}
 
 func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	stack, ok := m.focusedStack()
@@ -224,7 +224,9 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			return m.leaveServices(), nil
 		}
-	case "left", "h", "tab":
+	case "left":
+		// Sortie : ← (ou esc). h et tab n'y servent plus : tab bascule
+		// l'affichage ailleurs, h n'avait pas de pendant pour entrer.
 		return m.leaveServices(), nil
 	case "up", "k":
 		m.svcCursor = max(m.svcCursor-1, 0)
@@ -278,7 +280,7 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "+":
 		// Inclure les dépendances (depends_on) pour up/recreate/pull.
 		m.svcDeps = !m.svcDeps
-	case "u", "t", "d", "r", "c", "p", "l":
+	case "u", "s", "d", "r", "c", "p", "l":
 		if len(vis) == 0 {
 			return m, nil
 		}
@@ -401,6 +403,16 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	var detail []string
 	if m.svcCursor < len(svcs) {
 		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner)
+		// Actions : sur les services cochés, sinon sur celui du curseur. Le pied
+		// de page ne les répète pas (il garde cocher, filtrer, retour).
+		target := "Actions sur " + svcs[m.svcCursor].Name
+		if n := len(m.svcSel); n > 0 {
+			target = fmt.Sprintf("Actions sur %d service%s coché%s", n, plural(n), plural(n))
+		}
+		detail = append(detail, "", styleDim.Render(truncate(target, inner)))
+		detail = append(detail, keyGrid([]footerKey{
+			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
+		}, inner)...)
 	}
 	avail := max(height-len(out)-len(detail), 1)
 	start := 0

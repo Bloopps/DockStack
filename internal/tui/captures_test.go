@@ -189,9 +189,9 @@ func TestCaptureLabelAndPin(t *testing.T) {
 	if m.captureLabeling || m.backups[0].Label != "avant maj" {
 		t.Fatalf("libellé non enregistré : %+v", m.backups[0])
 	}
-	m = exec(m, tea.KeyPressMsg{Code: 'p', Text: "p"})
+	m = exec(m, tea.KeyPressMsg{Code: '*', Text: "*"})
 	if !m.backups[0].Pinned {
-		t.Error("p doit épingler la capture")
+		t.Error("* doit épingler la capture")
 	}
 	out := ansi.Strip(m.viewContent())
 	if !strings.Contains(out, "★") || !strings.Contains(out, "avant maj") {
@@ -208,9 +208,9 @@ func TestAlignFlow(t *testing.T) {
 	m := backupModel(fake, stacks, snap)
 	m.view = viewBackup
 
-	m = press(m, "A")
+	m = press(m, "i")
 	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Mettre à l'identique") {
-		t.Fatalf("A doit ouvrir la confirmation d'alignement (vue %v)", m.view)
+		t.Fatalf("i doit ouvrir la confirmation d'alignement (vue %v)", m.view)
 	}
 	txt := strings.Join(m.confirmNames, "|")
 	if !strings.Contains(txt, "▶ démarrer down") || !strings.Contains(txt, "■ arrêter stranger") || m.confirmWarning == "" {
@@ -223,7 +223,7 @@ func TestAlignFlow(t *testing.T) {
 	if m.view != viewBackup {
 		t.Errorf("annuler ramène aux captures, vue %v", m.view)
 	}
-	press(m, "A", "y")
+	press(m, "i", "y")
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && len(fake.called("stop")) == 0 {
 		time.Sleep(10 * time.Millisecond)

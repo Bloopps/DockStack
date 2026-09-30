@@ -10,11 +10,29 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
+// Couleurs de mise en évidence, partagées par la ligne sous le curseur et les
+// touches du pied de page. Indices 16-255 de la palette 256 couleurs : fixes
+// (les thèmes de terminal ne redéfinissent que les 16 premières) et rendus à
+// l'identique même sans couleurs 24 bits (SSH sans COLORTERM), là où un code
+// hexadécimal serait approché, parfois loin (gris devenu bleu canard).
 var (
-	// Ligne sous curseur : bande cyan, texte noir — pas de Reverse(true), qui
-	// rend une bande grise dépendante du thème du terminal.
-	styleSelected   = lipgloss.NewStyle().Background(lipgloss.Color("6")).Foreground(lipgloss.Color("0")).Bold(true)
-	styleCursorMark = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true)
+	colorSelBg  = lipgloss.Color("24")  // bleu nuit #005f87
+	colorSelFg  = lipgloss.Color("231") // blanc
+	colorAccent = lipgloss.Color("117") // bleu clair #87d7ff : flèche, touches
+	colorKeyBg  = lipgloss.Color("237") // gris ardoise #3a3a3a : fond des touches
+	colorKeyTxt = lipgloss.Color("250") // gris clair #bcbcbc : libellé des touches
+)
+
+var (
+	// Ligne sous curseur : bande pleine — pas de Reverse(true), qui rend une
+	// bande grise dépendante du thème du terminal.
+	//
+	// Couleurs FIXES (hexadécimales) et non de palette : « noir sur cyan » de
+	// la palette dépend du thème du terminal et devenait gris foncé sur bleu
+	// moyen (Windows Terminal), illisible. Bleu nuit + blanc : contraste élevé
+	// sur tout thème sombre.
+	styleSelected   = lipgloss.NewStyle().Background(colorSelBg).Foreground(colorSelFg).Bold(true)
+	styleCursorMark = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleGroup      = styleMagenta.Bold(true)
 
 	// Per-state name styles
@@ -138,7 +156,7 @@ type listRow struct {
 	header   bool
 	sep      bool
 	note     string // texte d'une ligne séparatrice informative (non navigable)
-	more     bool   // ligne « N non déployées masquées » : navigable, ↩ les affiche
+	more     bool   // ligne « N … masquées » : informative, sautée par le curseur (a affiche tout)
 	group    string
 	size     int
 	folded   bool
@@ -148,7 +166,7 @@ type listRow struct {
 }
 
 // isStack : la ligne représente une stack (ni en-tête, ni séparateur, ni
-// ligne « non déployées masquées »).
+// ligne « … masquées »).
 func (r listRow) isStack() bool { return !r.header && !r.sep && !r.more }
 
 type groupCounts struct{ run, part, unhealthy, stop, off int }
@@ -190,10 +208,12 @@ type rowsCacheBox struct {
 	counts   StackCounts
 	countsOK bool
 
-	// Stacks affichées (non déployées masquées) et nombre de masquées.
-	shown   []compose.Stack
-	hidden  int
-	shownOK bool
+	// Stacks affichées (celles qui ne tournent pas sont masquées) et nombre
+	// de masquées, dont arrêtées (le reste n'a jamais été déployé).
+	shown         []compose.Stack
+	hidden        int
+	hiddenStopped int
+	shownOK       bool
 
 	nameW int // largeur de la colonne des noms (calculée avec rows)
 }
@@ -205,31 +225,43 @@ func (m Model) invalidateRows() {
 	m.rowsCache.shownOK = false
 }
 
-// hidingInactive : les stacks jamais déployées sont masquées, sauf si
-// l'utilisateur les affiche (a) ou filtre (on doit pouvoir tout retrouver).
-func (m Model) hidingInactive() bool {
-	return !m.cfg.ShowInactive && m.filter.Value() == ""
+// dormant : la stack ne tourne pas du tout (arrêtée ou jamais déployée). Une
+// stack partielle ou unhealthy tourne encore : elle reste toujours affichée.
+func dormant(s compose.Stack) bool {
+	st := s.State()
+	return st == compose.StateStopped || st == compose.StateUnknown
 }
 
-// shownStacks : stacks filtrées, moins les non déployées si elles sont masquées.
+// hidingDormant : par défaut la liste ne montre que les stacks qui tournent,
+// sauf si l'utilisateur affiche tout (a) ou filtre (on doit pouvoir tout
+// retrouver).
+func (m Model) hidingDormant() bool {
+	return !m.cfg.ShowAll && m.filter.Value() == ""
+}
+
+// shownStacks : stacks filtrées, moins celles qui ne tournent pas si elles
+// sont masquées.
 // C'est la liste que voit l'utilisateur : lignes, groupes, position i/N.
 func (m Model) shownStacks() []compose.Stack {
 	if m.rowsCache.shownOK {
 		return m.rowsCache.shown
 	}
 	all := m.filteredStacks()
-	shown, hidden := all, 0
-	if m.hidingInactive() {
+	shown, hidden, stopped := all, 0, 0
+	if m.hidingDormant() {
 		shown = make([]compose.Stack, 0, len(all))
 		for _, s := range all {
-			if s.State() == compose.StateUnknown {
+			if dormant(s) {
 				hidden++
+				if s.State() == compose.StateStopped {
+					stopped++
+				}
 				continue
 			}
 			shown = append(shown, s)
 		}
 	}
-	m.rowsCache.shown, m.rowsCache.hidden, m.rowsCache.shownOK = shown, hidden, true
+	m.rowsCache.shown, m.rowsCache.hidden, m.rowsCache.hiddenStopped, m.rowsCache.shownOK = shown, hidden, stopped, true
 	return shown
 }
 
@@ -321,10 +353,22 @@ func (m Model) buildListRows() []listRow {
 		rows = append(rows, listRow{stack: s, indented: inMulti})
 	}
 	if n := m.rowsCache.hidden; n > 0 {
-		rows = append(rows, listRow{more: true,
-			note: fmt.Sprintf("○ %d non déployée%s masquée%s — ↩ ou a pour afficher", n, plural(n), plural(n))})
+		rows = append(rows, listRow{more: true, note: hiddenNote(m.rowsCache.hiddenStopped, n-m.rowsCache.hiddenStopped)})
 	}
 	return rows
+}
+
+// hiddenNote : texte de la ligne qui résume les stacks masquées.
+func hiddenNote(stopped, undeployed int) string {
+	var parts []string
+	if stopped > 0 {
+		parts = append(parts, fmt.Sprintf("%d arrêtée%s", stopped, plural(stopped)))
+	}
+	if undeployed > 0 {
+		parts = append(parts, fmt.Sprintf("%d non déployée%s", undeployed, plural(undeployed)))
+	}
+	n := stopped + undeployed
+	return fmt.Sprintf("○ %s masquée%s — a pour tout afficher", strings.Join(parts, " et "), plural(n))
 }
 
 // cursorRow renvoie la ligne sous le curseur, clampé si la liste a rétréci.
@@ -407,8 +451,26 @@ func (m *Model) moveCursor(delta int) {
 		if c < 0 || c >= len(rows) {
 			return
 		}
-		if !rows[c].sep {
+		// La ligne « masquées » est informative : le curseur la saute, sinon
+		// ↩ dessus semblait être le moyen d'afficher (seul a l'est).
+		if !rows[c].sep && !rows[c].more {
 			m.cursor = c
+			return
+		}
+	}
+}
+
+// cursorToEdge place le curseur sur la première (ou dernière) ligne
+// navigable (g / G).
+func (m *Model) cursorToEdge(last bool) {
+	rows := m.listRows()
+	for k := range rows {
+		i := k
+		if last {
+			i = len(rows) - 1 - k
+		}
+		if !rows[i].sep && !rows[i].more {
+			m.cursor = i
 			return
 		}
 	}
@@ -419,7 +481,7 @@ func (m *Model) moveCursor(delta int) {
 func (m *Model) clampCursor() {
 	rows := m.listRows()
 	m.cursor = max(0, min(m.cursor, len(rows)-1))
-	if m.cursor < len(rows) && rows[m.cursor].sep {
+	if m.cursor < len(rows) && (rows[m.cursor].sep || rows[m.cursor].more) {
 		m.moveCursor(-1)
 	}
 }

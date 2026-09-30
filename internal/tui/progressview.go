@@ -293,25 +293,20 @@ func renderProgressView(m Model) string {
 	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.usage, m.width)
 	bodyH := m.progressBodyHeight()
 
-	scrollHint := ""
-	if m.progressManualScroll {
-		scrollHint = styleDim.Render("  ↑↓ scroll  g=bas")
-	}
 	var footer string
 	switch {
 	case m.quitArmed:
 		footer = quitWarning()
 	case m.progressDone:
-		footer = renderFooterKeys([]struct{ key, desc string }{
-			{"↩ / esc", "fermer"},
-		}, m.width) + scrollHint
+		footer = renderBar([]footerKey{{"↑↓", "défiler"}, {"g/G", "haut/bas"}},
+			[]footerKey{{"↩", "fermer"}, {"q", "quitter"}}, m.width, "")
 	case m.progressCancelling:
-		footer = styleYellow.PaddingLeft(2).Render("Annulation en cours…") + scrollHint
+		footer = styleYellow.PaddingLeft(2).Render("Annulation en cours…")
 	case m.progressConfirmCancel:
 		footer = styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Annuler l'opération ?") +
 			styleDim.Render("  esc = oui  ·  autre touche = non")
 	default:
-		footer = styleDim.PaddingLeft(2).Render("esc  annuler l'opération") + scrollHint
+		footer = renderBar([]footerKey{{"↑↓", "défiler"}}, []footerKey{{"esc", "annuler"}}, m.width, "")
 	}
 
 	// Première passe : comptage seul (aucune ligne construite) pour placer la

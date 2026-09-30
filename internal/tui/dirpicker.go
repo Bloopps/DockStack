@@ -35,11 +35,12 @@ func renderDirPicker(m Model) string {
 	if m.dirErr != nil {
 		body += "\n\n  " + styleRed.Render("⚠ "+truncate(m.dirErr.Error(), max(m.width-6, 10)))
 	}
-	hint := styleDim.Render("  ↑↓ naviguer  ↩ ouvrir/choisir  Échap annuler")
+	exit := footerKey{"esc", "annuler"}
 	if m.cfg.StackDir == "" {
 		// Premier lancement : esc n'a nulle part où revenir, q quitte.
-		hint = styleDim.Render("  ↑↓ naviguer  ↩ ouvrir/choisir  q quitter")
+		exit = footerKey{"q", "quitter"}
 	}
+	hint := renderBar([]footerKey{{"↑↓", "naviguer"}, {"↩", "ouvrir / choisir"}}, []footerKey{exit}, m.width, "")
 	// Cette vue a son propre pied de page : la confirmation de sortie doit y
 	// être visible aussi (le footer commun ne s'affiche pas ici).
 	if m.quitArmed {

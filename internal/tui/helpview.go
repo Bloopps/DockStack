@@ -48,16 +48,16 @@ func helpBox(m Model) string {
 
 	actions := []string{
 		title("Actions", "  (sélection si active, sinon stack/dossier courant)"),
-		"  " + k("u") + "  Up      " + k("t") + "  Stop      " + k("d") + "  Down",
+		"  " + k("u") + "  Up      " + k("s") + "  Stop      " + k("d") + "  Down",
 		"  " + k("r") + "  Restart " + k("c") + "  Recreate  " + k("p") + "  Pull",
 		"  " + k("l") + "  Logs" + d("  (stack courante)"),
-		"  " + k("↩") + "  panneau d'actions" + d("  (dont Compose, Remove)"),
+		"  " + k("↩") + "  panneau d'actions" + d("  (mêmes lettres, plus Remove)"),
 	}
 	services := []string{
 		title("Services", "  (agir sur certains services, sans toucher aux autres)"),
-		"  " + k("→") + " / " + k("s") + "  entrer dans les services de la stack",
+		"  " + k("→") + "  entrer dans les services de la stack",
 		"  " + k("␣") + "  cocher   " + k("ctrl+a") + "  tout   " + k("e") + "  en défaut   " + k("/") + "  filtrer",
-		"  " + k("u") + " up  " + k("t") + " stop  " + k("d") + " down  " + k("r") + " restart  " + k("c") + " recreate  " + k("p") + " pull  " + k("l") + " logs",
+		"  " + k("u") + " up  " + k("s") + " stop  " + k("d") + " down  " + k("r") + " restart  " + k("c") + " recreate  " + k("p") + " pull  " + k("l") + " logs",
 		"  " + k("+") + "  inclure les dépendances" + d("  (up, recreate, pull)"),
 		"  " + k("←") + "  retour" + d("  (esc : efface le filtre, décoche, puis sort)"),
 	}
@@ -67,22 +67,22 @@ func helpBox(m Model) string {
 		"  " + k("esc") + "  efface le filtre, puis la sélection",
 	}
 	groups := []string{
-		title("Dossiers", "  (sur l'en-tête : ␣ et u/t/d/r/c/p = tout le dossier)"),
+		title("Dossiers", "  (sur l'en-tête : ␣ et u/s/d/r/c/p = tout le dossier)"),
 		"  " + k("←") + "  replier   " + k("→") + "  déplier   " + k("↩") + "  replier/déplier",
 	}
 	list := []string{
 		title("Liste", ""),
-		"  " + k("↑↓") + " / " + k("j k") + "  naviguer",
+		"  " + k("↑↓") + " / " + k("j k") + "  naviguer   " + k("g G") + "  haut / bas",
 		"  " + k("/") + "  filtrer" + d("  (↩ fige le filtre, esc l'efface)"),
-		"  " + k("v") + "  aperçu compose" + d("  (") + k("vv") + d(" = plein écran)"),
-		"  " + k("a") + "  afficher/masquer les non déployées" + d("  (ou ↩ sur leur ligne)"),
+		"  " + k("v") + "  fichier compose en plein écran" + d("  (") + k("tab") + d(" : dans le volet)"),
+		"  " + k("a") + "  afficher/masquer les stacks arrêtées" + d("  (et non déployées)"),
 		"  " + k("x") + "  exclure du scan" + d("  (réversible dans ~/.dockstack/config.json)"),
 		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  changer de répertoire",
 	}
 	captures := []string{
 		title("Captures d'état", ""),
-		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ relancer, A à l'identique)"),
-		"  " + d("n nommer · p épingler (jamais supprimée) · del supprimer"),
+		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ relancer, i à l'identique)"),
+		"  " + d("n nommer · * épingler (jamais supprimée) · del supprimer"),
 	}
 	general := []string{
 		title("Général", ""),

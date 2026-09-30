@@ -24,10 +24,10 @@ func TestQArmsQuitAndEscGoesBack(t *testing.T) {
 	}
 }
 
-// t = Stop dans la liste, confirmé comme Down.
+// s = Stop dans la liste, confirmé comme Down.
 func TestListStopKey(t *testing.T) {
-	m := press(newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)}), "down", "t")
+	m := press(newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)}), "down", "s")
 	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Stop") {
-		t.Fatalf("t doit demander confirmation de Stop (vue %v, %q)", m.view, m.confirmLabel)
+		t.Fatalf("s doit demander confirmation de Stop (vue %v, %q)", m.view, m.confirmLabel)
 	}
 }

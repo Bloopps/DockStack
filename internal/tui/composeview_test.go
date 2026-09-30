@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -14,34 +13,20 @@ import (
 
 var keyV = tea.KeyPressMsg{Code: 'v', Text: "v"}
 
-func TestDoubleVEscalatesToCompose(t *testing.T) {
+// v ouvre directement le fichier compose en plein écran sur une stack (plus de
+// double frappe) ; sur un en-tête de dossier, rien ne s'ouvre.
+func TestVOpensCompose(t *testing.T) {
 	m := newTestModel([]compose.Stack{stack("solo", "", 1, 1, 0)})
-	m.previewOn = false
-
-	// Premier v : ouvre le volet, reste dans la liste.
 	mm, _ := m.handleListKey(keyV)
-	m = mm.(Model)
-	if !m.previewOn || m.view != viewList {
-		t.Fatalf("premier v : volet ouvert et toujours dans la liste ; eu on=%v view=%v", m.previewOn, m.view)
+	if m = mm.(Model); m.view != viewCompose {
+		t.Fatalf("v sur une stack : vue compose attendue, eu %v", m.view)
 	}
 
-	// Second v rapproché : escalade en vue compose plein écran.
+	m = newTestModel([]compose.Stack{stack("g/a", "g", 1, 1, 0), stack("g/b", "g", 1, 1, 0)})
+	m.cursor = 0 // en-tête du dossier g
 	mm, _ = m.handleListKey(keyV)
-	m = mm.(Model)
-	if m.view != viewCompose {
-		t.Fatalf("second v rapproché : vue compose attendue, eu %v", m.view)
-	}
-
-	// Deux v espacés : pas d'escalade, simple bascule du volet.
-	m = newTestModel([]compose.Stack{stack("solo", "", 1, 1, 0)})
-	m.previewOn = false
-	mm, _ = m.handleListKey(keyV)
-	m = mm.(Model)
-	m.lastVAt = time.Now().Add(-time.Second) // appui « ancien »
-	mm, _ = m.handleListKey(keyV)
-	m = mm.(Model)
-	if m.view != viewList || m.previewOn {
-		t.Fatalf("v espacés : volet refermé sans escalade ; eu on=%v view=%v", m.previewOn, m.view)
+	if m = mm.(Model); m.view != viewList {
+		t.Fatalf("v sur un dossier : reste dans la liste, eu %v", m.view)
 	}
 }
 

@@ -49,3 +49,26 @@ func TestLoadCorrupt(t *testing.T) {
 		t.Error("JSON invalide : erreur attendue")
 	}
 }
+
+// Une config avec max_parallel à 0 (ou négatif) retombe sur le défaut : sinon
+// les actions groupées traitaient les stacks une par une.
+func TestLoadZeroParallelUsesDefault(t *testing.T) {
+	for _, v := range []string{"0", "-2"} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		dir := filepath.Join(home, ".dockstack")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"stack_dir":"/srv","max_parallel":`+v+`}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.MaxParallel != DefaultMaxParallel || cfg.StackDir != "/srv" {
+			t.Errorf("max_parallel %s : config = %+v, want MaxParallel %d", v, cfg, DefaultMaxParallel)
+		}
+	}
+}

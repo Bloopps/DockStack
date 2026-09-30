@@ -100,11 +100,9 @@ type Model struct {
 	rowsCache    *rowsCacheBox
 	refreshing   bool
 
-	// Aperçu compose : volet à droite de la liste qui suit le curseur (touche
-	// v). previewCache évite de relire le fichier à chaque frame. lastVAt date le
-	// dernier appui sur v : un second appui rapproché (volet déjà ouvert) escalade
-	// vers la vue compose plein écran.
-	previewOn bool
+	// Volet de détail à droite de la liste, qui suit le curseur : toujours
+	// affiché quand la largeur le permet. previewCache évite de relire le
+	// fichier compose à chaque frame.
 	// previewCompose : le volet montre le fichier compose (tab) au lieu du
 	// détail de la stack (services, état, actions), vue par défaut.
 	previewCompose bool
@@ -120,7 +118,6 @@ type Model struct {
 	svcFiltering bool
 	svcDeps      bool
 	previewCache *previewCacheBox
-	lastVAt      time.Time
 
 	// Vue compose plein écran (ouverte depuis le menu d'actions). Bascule entre
 	// le fichier brut et la config résolue (docker compose config).
@@ -266,7 +263,6 @@ func New(cfg *config.Config) Model {
 		foldedGroups: make(map[string]bool),
 		rowsCache:    &rowsCacheBox{},
 		previewCache: &previewCacheBox{},
-		previewOn:    true,
 		svcCache:     &svcCacheBox{},
 		loading:      true,
 	}
@@ -656,7 +652,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.progressScroll == 0 {
 				m.progressManualScroll = false
 			}
-		case "g", "G":
+		case "g", "home":
+			// Haut, comme partout ailleurs (g descendait en bas ici).
+			m.progressScroll = m.progressMaxScroll()
+			m.progressManualScroll = m.progressScroll > 0
+		case "G", "end":
 			m.progressScroll = 0
 			m.progressManualScroll = false
 		case "q":
@@ -1006,75 +1006,52 @@ func (m Model) renderFooter() string {
 		return bar
 	}
 	if m.err != nil {
-		return renderFooterKeys([]struct{ key, desc string }{
-			{"R", "réessayer"},
-			{"o", "répertoire"},
-			{"q", "quitter"},
-		}, m.width)
+		return renderBar([]footerKey{{"R", "réessayer"}, {"o", "dossier"}}, []footerKey{{"q", "quitter"}}, m.width, "")
 	}
-	if m.view == viewConfirm {
-		return renderFooterKeys([]struct{ key, desc string }{
-			{"y / ↩", "confirmer"},
-			{"n / esc", "annuler"},
-		}, m.width)
-	}
-	if m.view == viewBackup {
+	back := []footerKey{{"esc", "retour"}}
+	switch m.view {
+	case viewConfirm:
+		return renderBar([]footerKey{{"y / ↩", "confirmer"}}, []footerKey{{"n / esc", "annuler"}}, m.width, "")
+	case viewBackup:
 		if m.captureLabeling {
-			return renderFooterKeys([]struct{ key, desc string }{{"↩", "valider"}, {"esc", "annuler"}}, m.width)
+			return renderBar([]footerKey{{"↩", "valider"}}, []footerKey{{"esc", "annuler"}}, m.width, "")
 		}
-		keys := []struct{ key, desc string }{{"c", "capturer"}}
+		left := []footerKey{{"c", "capturer"}}
 		if len(m.backups) > 0 {
-			keys = append(keys,
-				struct{ key, desc string }{"↑↓", "naviguer"},
-				struct{ key, desc string }{"↩", "relancer"},
-				struct{ key, desc string }{"A", "à l'identique"},
-				struct{ key, desc string }{"n", "nommer"},
-				struct{ key, desc string }{"p", "épingler"},
-				struct{ key, desc string }{"del", "supprimer"})
+			left = append(left, footerKey{"↩", "relancer"}, footerKey{"i", "à l'identique"},
+				footerKey{"n", "nommer"}, footerKey{"*", "épingler"}, footerKey{"⌫", "supprimer"})
 		}
-		keys = append(keys, struct{ key, desc string }{"esc", "retour"})
-		return renderFooterKeys(keys, m.width)
-	}
-	if m.view == viewAction {
-		return renderFooterKeys([]struct{ key, desc string }{
-			{"↑↓", "naviguer"},
-			{"↩", "valider"},
-			{"esc", "retour"},
-		}, m.width)
-	}
-	if m.view == viewRestorePick {
+		return renderBar(left, back, m.width, "")
+	case viewAction:
+		return renderBar([]footerKey{{"↑↓", "choisir"}, {"↩ / lettre", "valider"}}, back, m.width, "")
+	case viewRestorePick:
 		n := 0
 		for _, v := range m.restoreSel {
 			if v {
 				n++
 			}
 		}
-		return renderFooterKeys([]struct{ key, desc string }{
-			{"␣", "(dé)sélect"},
-			{"ctrl+a", "tout"},
-			{"↩", fmt.Sprintf("relancer %d stack(s)", n)},
-			{"esc", "retour"},
-		}, m.width)
-	}
-	if m.view == viewHelp {
+		return renderBar([]footerKey{{"␣", "cocher"}, {"ctrl+a", "tout"}, {"↩", fmt.Sprintf("relancer %d stack%s", n, plural(n))}},
+			back, m.width, "")
+	case viewHelp:
+		var left []footerKey
 		if m.helpMaxScroll() > 0 {
-			return styleDim.PaddingLeft(2).Render("↑↓ défiler · autre touche pour fermer")
+			left = []footerKey{{"↑↓", "défiler"}}
 		}
-		return styleDim.PaddingLeft(2).Render("appuyer sur une touche pour fermer")
-	}
-	if m.view == viewList {
-		// À droite : état du rafraîchissement (en cours / heure du dernier)
-		// puis position dans la liste.
-		right := m.listPosition()
+		return renderBar(left, []footerKey{{"esc", "fermer"}}, m.width, "")
+	case viewList:
+		// Tout à droite : état du rafraîchissement puis position dans la liste.
+		info := m.listPosition()
 		switch {
 		case m.refreshing:
-			right = "↻ actualisation…   " + right
+			info = "↻ actualisation…   " + info
 		case !m.lastRefresh.IsZero():
-			right = "maj " + m.lastRefresh.Format("15:04:05") + "   " + right
+			info = "maj " + m.lastRefresh.Format("15:04:05") + "   " + info
 		}
-		return renderFooterKeysRight(m.listFooterKeys(), m.width, right)
+		left, right := m.listFooter()
+		return renderBar(left, right, m.width, info)
 	}
-	return renderFooterRefresh(m.width, m.refreshing)
+	return renderBar(nil, []footerKey{{"?", "aide"}, {"q", "quitter"}}, m.width, "")
 }
 
 // truncate coupe s à max caractères (suffixe « … ») en comptant des runes,

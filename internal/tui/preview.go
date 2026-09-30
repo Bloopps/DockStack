@@ -26,11 +26,10 @@ const (
 	previewMaxWidth = 80
 )
 
-// previewVisible dit si le volet d'aperçu doit être rendu : activé par
-// l'utilisateur (touche v), uniquement dans la liste et si le terminal est
-// assez large.
+// previewVisible dit si le volet de détail doit être rendu : toujours dans la
+// liste, si le terminal est assez large.
 func (m Model) previewVisible() bool {
-	return m.previewOn && m.view == viewList && m.width >= minPreviewTermWidth
+	return m.view == viewList && m.width >= minPreviewTermWidth
 }
 
 // previewWidth renvoie la largeur du volet (rule comprise) ; suppose
@@ -109,11 +108,11 @@ func renderPreviewPane(m Model, height, paneW int) string {
 	case !ok || row.sep || row.more:
 		content = []string{styleDim.Render("(rien à afficher)")}
 	case row.header:
-		content = previewGroup(m, row.group, inner, height)
+		content = previewGroup(m, row.group, inner, height, len(m.selectedStacks()))
 	case m.previewCompose:
 		content = previewStack(m, row.stack, inner, height)
 	default:
-		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height)
+		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, len(m.selectedStacks()))
 	}
 
 	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste.
@@ -184,7 +183,7 @@ func previewStack(m Model, s compose.Stack, inner, height int) []string {
 // états, puis chaque stack membre avec sa pastille d'état colorée et son
 // compteur conteneurs (x/y). Un dossier regroupe plusieurs stacks ayant chacune
 // son propre compose : pas de fichier unique à prévisualiser, d'où ce bilan.
-func previewGroup(m Model, group string, inner, height int) []string {
+func previewGroup(m Model, group string, inner, height, selected int) []string {
 	members := m.groupStacks(group)
 
 	out := []string{
@@ -195,7 +194,14 @@ func previewGroup(m Model, group string, inner, height int) []string {
 	}
 	out = append(out, "")
 
-	avail := height - len(out)
+	// Actions sur tout le dossier, sous la liste des membres (place réservée).
+	actions := append([]string{"", styleDim.Render("Actions sur tout le dossier")}, keyGrid([]footerKey{
+		{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"←", "replier"},
+	}, inner)...)
+	if selected > 0 {
+		actions = append([]string{""}, selectionActions(selected, inner)...)
+	}
+	avail := height - len(out) - len(actions)
 	for i, s := range members {
 		if i >= avail {
 			out[len(out)-1] = styleDim.Render(fmt.Sprintf("… +%d", len(members)-avail+1))
@@ -213,7 +219,7 @@ func previewGroup(m Model, group string, inner, height int) []string {
 		}
 		out = append(out, name)
 	}
-	return out
+	return append(out, actions...)
 }
 
 // groupRollup résume les états des stacks d'un groupe en segments colorés
@@ -365,7 +371,7 @@ func isYamlNumber(t string) bool {
 // previewDetail rend le détail d'une stack : état global, services (les
 // problèmes d'abord), remarque éventuelle, puis les actions possibles adaptées
 // à l'état. C'est la vue par défaut du volet ; tab bascule vers le compose.
-func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height int) []string {
+func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height, selected int) []string {
 	dot, dotStyle := stateStyle(s.State())
 	out := []string{dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2))}
 
@@ -379,7 +385,13 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 	if r, err := filepath.Rel(stackDir, s.Dir); err == nil && !strings.HasPrefix(r, "..") {
 		dir = r
 	}
-	out = append(out, styleDim.Render(truncate(dir, inner)), "")
+	// Le nom d'une stack EST son chemin relatif au dossier scanné : la ligne
+	// du dossier le répétait mot pour mot. Elle ne reste que si elle apporte
+	// quelque chose (stack hors du dossier scanné).
+	if dir != s.Name {
+		out = append(out, styleDim.Render(truncate(dir, inner)))
+	}
+	out = append(out, "")
 
 	if len(services) > 0 {
 		out = append(out, styleDim.Render("Services"))
@@ -432,20 +444,65 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 		out = append(out, styleYellow.Render(truncate("⚠ conteneurs rattachés par nom (recréés hors compose ?)", inner)), "")
 	}
 
-	// Actions utiles selon l'état : on ne propose pas Down à une stack arrêtée.
-	k := func(key, desc string) string { return styleCyan.Render(key) + " " + desc }
-	out = append(out, styleDim.Render("Actions"))
+	// Actions utiles selon l'état (vocabulaire docker compose) : c'est ICI
+	// qu'on les lit, le pied de page ne les répète pas. Pas de Down proposé à
+	// une stack arrêtée.
+	var acts []footerKey
 	switch s.State() {
-	case compose.StateStopped, compose.StateUnknown:
-		out = append(out, "  "+k("u", "démarrer")+"   "+k("p", "pull"))
+	case compose.StateStopped:
+		acts = []footerKey{{"u", "up"}, {"p", "pull"}, {"l", "logs"}}
+	case compose.StateUnknown:
+		acts = []footerKey{{"u", "up"}, {"p", "pull"}}
 	case compose.StatePartial:
-		out = append(out, "  "+k("u", "relancer les manquants")+"   "+k("r", "restart"), "  "+k("d", "down")+"   "+k("l", "logs")+"   "+k("p", "pull"))
+		acts = []footerKey{{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}, {"p", "pull"}}
 	case compose.StateUnhealthy:
-		out = append(out, "  "+k("l", "voir les logs")+"   "+k("r", "restart"), "  "+k("c", "recreate")+"   "+k("d", "down"))
+		acts = []footerKey{{"l", "logs"}, {"r", "restart"}, {"c", "recreate"}, {"s", "stop"}, {"d", "down"}}
 	default:
-		out = append(out, "  "+k("r", "restart")+"   "+k("d", "down")+"   "+k("l", "logs"), "  "+k("c", "recreate")+"   "+k("p", "pull"))
+		acts = []footerKey{{"r", "restart"}, {"s", "stop"}, {"d", "down"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"}}
 	}
-	out = append(out, "", styleDim.Render("→ gérer les services · tab compose"))
+	acts = append(acts, footerKey{"v", "compose"}, footerKey{"→", "services"})
+	if selected > 0 {
+		// Avec des stacks cochées, u/s/d/r… visent la sélection, pas la stack
+		// affichée : lister ses actions ici induirait en erreur.
+		return append(out, selectionActions(selected, inner)...)
+	}
+	out = append(out, styleDim.Render("Actions"))
+	return append(out, keyGrid(acts, inner)...)
+}
+
+// selectionActions : bloc d'actions du volet quand des stacks sont cochées —
+// les lettres visent alors la sélection, quelle que soit la ligne affichée.
+func selectionActions(n, inner int) []string {
+	title := styleYellow.Render(fmt.Sprintf("Actions sur les %d stack%s cochée%s", n, plural(n), plural(n)))
+	if n == 1 {
+		title = styleYellow.Render("Actions sur la stack cochée")
+	}
+	return append([]string{title}, keyGrid([]footerKey{
+		{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"↩", "toutes"},
+	}, inner)...)
+}
+
+// keyGrid dispose des raccourcis « touche action » en colonnes alignées (trois
+// au plus), la touche dans la couleur d'accent comme dans le pied de page.
+func keyGrid(items []footerKey, inner int) []string {
+	colW := 0
+	for _, it := range items {
+		colW = max(colW, lipgloss.Width(it.key)+1+lipgloss.Width(it.desc))
+	}
+	colW += 3
+	cols := min(3, max(1, (inner-2)/colW))
+	var out []string
+	for i := 0; i < len(items); i += cols {
+		line := " "
+		for j := i; j < min(i+cols, len(items)); j++ {
+			w := lipgloss.Width(items[j].key) + 1 + lipgloss.Width(items[j].desc)
+			line += " " + styleCursorMark.Render(items[j].key) + " " + items[j].desc
+			if j < min(i+cols, len(items))-1 {
+				line += strings.Repeat(" ", max(colW-w, 1))
+			}
+		}
+		out = append(out, line)
+	}
 	return out
 }
 

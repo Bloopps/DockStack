@@ -43,7 +43,7 @@ func TestTypingKeepsShortcutLetters(t *testing.T) {
 	m = newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
 	m.client = &fakeClient{}
 	m.width, m.height = 140, 40
-	m, _ = update(m, keyMsg("s"))
+	m, _ = update(m, keyMsg("right"))
 	m, _ = update(m, keyMsg("/"))
 	m, _ = update(m, keyShiftR)
 	if m.svcFilter != "R" || m.refreshing {
@@ -155,7 +155,7 @@ func TestHelpScrollsToEnd(t *testing.T) {
 func TestExcludeListsChildren(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newTestModel([]compose.Stack{stack("immich", "immich", 0, 0, 0), stack("immich/immich", "immich", 1, 1, 0), stack("zz", "zz", 1, 1, 0)})
-	m.cfg.ShowInactive = true
+	m.cfg.ShowAll = true
 	m.invalidateRows()
 	for i, r := range m.listRows() {
 		if r.isStack() && r.stack.Name == "immich" {
@@ -230,5 +230,157 @@ func TestDuplicateClientReadyIgnored(t *testing.T) {
 func TestSanitizeExpandsTabs(t *testing.T) {
 	if got := sanitizeLogLine("ab\tc\td"); got != "ab      c       d" {
 		t.Errorf("sanitizeLogLine = %q", got)
+	}
+}
+
+// Changer de dossier doit se découvrir sans connaître l'outil : l'en-tête
+// rappelle « o changer » à côté du dossier, à toutes les largeurs, et le pied
+// de page garde « o dossier » dès 120 colonnes (il tombait sous ~220).
+func TestChangeDirDiscoverable(t *testing.T) {
+	for _, w := range []int{80, 100, 120, 140, 160, 200} {
+		m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
+		m.width, m.height, m.loading = w, 40, false
+		m.metrics.NCores = 8
+		lines := strings.Split(ansi.Strip(m.viewContent()), "\n")
+		if !strings.Contains(lines[0], "o changer") {
+			t.Errorf("w=%d : en-tête sans rappel de o : %q", w, lines[0])
+		}
+		if foot := lines[len(lines)-1]; w >= 120 && !strings.Contains(foot, "o  dossier") {
+			t.Errorf("w=%d : « o dossier » absent du pied de page : %q", w, foot)
+		}
+	}
+}
+
+// Par défaut la liste ne montre que les stacks qui tournent (partielles et
+// unhealthy comprises) ; les arrêtées et non déployées sont résumées sur une
+// ligne informative (sautée par le curseur, ↩ n'y fait rien), a les affiche,
+// et le filtre les retrouve.
+func TestOnlyRunningByDefault(t *testing.T) {
+	m := newTestModel([]compose.Stack{
+		stack("run", "run", 1, 1, 0), stack("part", "part", 1, 2, 0), stack("sick", "sick", 1, 1, 1),
+		stack("stop", "stop", 0, 1, 0), stack("new", "new", 0, 0, 0),
+	})
+	var names []string
+	for _, s := range m.visibleStacks() {
+		names = append(names, s.Name)
+	}
+	if got := strings.Join(names, ","); got != "run,part,sick" {
+		t.Fatalf("stacks visibles = %s, want run,part,sick", got)
+	}
+	rows := m.listRows()
+	last := rows[len(rows)-1]
+	if !last.more || !strings.Contains(last.note, "1 arrêtée et 1 non déployée masquées") {
+		t.Fatalf("ligne récapitulative = %+v", last)
+	}
+
+	for i := 0; i < len(rows); i++ {
+		m.moveCursor(1)
+	}
+	if row, _ := m.cursorRow(); row.more {
+		t.Fatal("le curseur ne doit pas se poser sur la ligne récapitulative")
+	}
+	t.Setenv("HOME", t.TempDir())
+	m, _ = update(m, keyMsg("a"))
+	if !m.cfg.ShowAll || len(m.visibleStacks()) != 5 {
+		t.Fatalf("a doit tout afficher (ShowAll=%v, %d visibles)", m.cfg.ShowAll, len(m.visibleStacks()))
+	}
+
+	m.cfg.ShowAll = false
+	m.filter.SetValue("sto")
+	m.invalidateRows()
+	if v := m.visibleStacks(); len(v) != 1 || v[0].Name != "stop" {
+		t.Errorf("le filtre doit retrouver une stack arrêtée : %+v", v)
+	}
+}
+
+// Grille de raccourcis cohérente : une lettre garde son sens partout.
+func TestKeymapCoherent(t *testing.T) {
+	// Panneau d'actions : les lettres de la liste y marchent, et y sont affichées.
+	m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 120, 40, false
+	m, _ = update(m, keyMsg("enter"))
+	if out := ansi.Strip(m.viewContent()); !strings.Contains(out, "Down") || !strings.Contains(out, "d") {
+		t.Fatalf("panneau sans lettres :\n%s", out)
+	}
+	m, _ = update(m, keyMsg("d"))
+	if m.view != viewConfirm || !strings.HasPrefix(m.confirmLabel, "Down") {
+		t.Fatalf("d dans le panneau doit demander confirmation de Down (vue %v, %q)", m.view, m.confirmLabel)
+	}
+
+	// s = Stop dans la liste ; → entre dans les services, ← en sort, h et tab non.
+	m = newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
+	m.width, m.height = 140, 40
+	if got, _ := update(m, keyMsg("s")); got.view != viewConfirm || !strings.HasPrefix(got.confirmLabel, "Stop") {
+		t.Fatalf("s doit demander confirmation de Stop (vue %v)", got.view)
+	}
+	m, _ = update(m, keyMsg("right"))
+	for _, k := range []string{"h", "tab"} {
+		if got, _ := update(m, keyMsg(k)); !got.svcFocus {
+			t.Errorf("%s ne doit plus quitter les services", k)
+		}
+	}
+	if got, _ := update(m, keyMsg("left")); got.svcFocus {
+		t.Error("← doit quitter les services")
+	}
+
+	// g / G : haut / bas dans la liste, les logs et la progression.
+	m = newTestModel([]compose.Stack{stack("a", "", 1, 1, 0), stack("b", "", 1, 1, 0), stack("c", "", 1, 1, 0)})
+	m, _ = update(m, keyMsg("G"))
+	if st, _ := m.cursorStack(); st.Name != "c" {
+		t.Errorf("G dans la liste : curseur sur %q, want c", st.Name)
+	}
+	m, _ = update(m, keyMsg("g"))
+	if st, _ := m.cursorStack(); st.Name != "a" {
+		t.Errorf("g dans la liste : curseur sur %q, want a", st.Name)
+	}
+
+	m.view, m.height = viewLogs, 10
+	m.logLines = make([]string, 50)
+	m.logScroll = 20
+	m, _ = update(m, keyMsg("g"))
+	if m.logScroll != 0 {
+		t.Errorf("g dans les logs : défilement %d, want 0", m.logScroll)
+	}
+
+	m = newTestModel(nil)
+	m.width, m.height = 120, 20
+	m.view, m.progressDone, m.progress = viewProgress, true, newProgressState()
+	for i := 0; i < 40; i++ {
+		m.progress.apply(compose.ProgressEvent{StackName: "s", Container: string(rune('a' + i)), State: "done"})
+	}
+	m, _ = update(m, keyMsg("g"))
+	if m.progressScroll == 0 || m.progressScroll != m.progressMaxScroll() {
+		t.Errorf("g dans la progression doit remonter en haut (défilement %d, max %d)", m.progressScroll, m.progressMaxScroll())
+	}
+	m, _ = update(m, keyMsg("G"))
+	if m.progressScroll != 0 {
+		t.Errorf("G dans la progression doit revenir en bas (défilement %d)", m.progressScroll)
+	}
+}
+
+// Avec des stacks cochées, le volet annonce que les actions visent la
+// sélection (et non la stack affichée sous le curseur).
+func TestPaneActionsFollowSelection(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0), stack("b", "", 1, 1, 0)})
+	m.width, m.height, m.loading = 140, 40, false
+	if out := ansi.Strip(m.viewContent()); !strings.Contains(out, "r restart") || strings.Contains(out, "cochée") {
+		t.Fatalf("sans sélection : actions de la stack attendues")
+	}
+	m.selected["b"] = true
+	out := ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "Actions sur la stack cochée") {
+		t.Fatalf("avec sélection : le volet doit viser la stack cochée :\n%s", out)
+	}
+}
+
+// Le volet n'affiche pas deux fois le nom de la stack (la ligne du dossier le
+// répétait, le nom étant le chemin relatif au dossier scanné).
+func TestPaneNameNotRepeated(t *testing.T) {
+	st := stack("wg-easy", "", 1, 1, 0)
+	st.Dir = "/srv/wg-easy"
+	out := ansi.Strip(strings.Join(previewDetail("/srv", st, nil, 60, 30, 0), "\n"))
+	if n := strings.Count(out, "wg-easy"); n != 1 {
+		t.Fatalf("nom affiché %d fois :\n%s", n, out)
 	}
 }

@@ -45,53 +45,61 @@ func TestHeaderFooterFitWidth(t *testing.T) {
 			if lw := lipgloss.Width(f); lw > w {
 				t.Errorf("w=%d sélection=%v : footer de %d colonnes", w, sel, lw)
 			}
-			if !strings.Contains(f, "aide") || !strings.Contains(f, "quitter") {
-				t.Errorf("w=%d sélection=%v : aide/quitter absents du footer %q", w, sel, f)
+			// Le bloc de droite (sortie, aide) ne cède jamais la place.
+			exit := "quitter"
+			if sel {
+				exit = "décocher"
 			}
-			if w >= 100 && !strings.Contains(f, "captures") {
-				t.Errorf("w=%d sélection=%v : b captures absent du footer %q", w, sel, f)
+			if !strings.Contains(f, "aide") || !strings.Contains(f, exit) {
+				t.Errorf("w=%d sélection=%v : aide/%s absents du footer %q", w, sel, exit, f)
 			}
 		}
 	}
 }
 
-// TestListFooterContext : le footer de la liste montre les actions directes
-// adaptées à la ligne sous le curseur, et le raccourci des captures (b) reste
-// présent avec ou sans sélection.
+// TestListFooterContext : le pied de page de la liste sert à naviguer. Les
+// actions sur la stack sont dans le volet de droite ; elles ne reviennent dans
+// le pied de page que si le volet est masqué faute de largeur. Il ne change
+// qu'avec le mode (sélection).
 func TestListFooterContext(t *testing.T) {
 	m := newTestModel([]compose.Stack{
 		stack("solo", "solo", 1, 1, 0),
 		stack("g/a", "g", 1, 1, 0), stack("g/b", "g", 0, 1, 0),
 	})
-	m.width = 400
-	has := func(f, s string) bool { return strings.Contains(f, s) }
+	m.cfg.ShowAll = true // g/b est arrêtée : l'afficher pour avoir un dossier à 2 stacks
+	m.invalidateRows()
+	has := func(f, s string) bool { return strings.Contains(ansi.Strip(f), s) }
 
-	for i, r := range m.listRows() {
-		m.cursor = i
-		f := m.renderFooter()
-		switch {
-		case r.header:
-			if !has(f, "up dossier") || has(f, "logs") {
-				t.Errorf("en-tête : footer %q", f)
+	for _, w := range []int{400, 90} { // volet visible, puis masqué
+		m.width = w
+		for i, r := range m.listRows() {
+			m.cursor = i
+			f := m.renderFooter()
+			switch {
+			case r.header:
+				if !has(f, "replier") {
+					t.Errorf("w=%d en-tête : footer %q", w, ansi.Strip(f))
+				}
+			case r.isStack():
+				if !has(f, "actions") {
+					t.Errorf("w=%d stack : « ↩ actions » absent : %q", w, ansi.Strip(f))
+				}
+				if got := has(f, "restart"); got != (w < minPreviewTermWidth) {
+					t.Errorf("w=%d stack : actions dans le pied de page = %v, want %v", w, got, w < minPreviewTermWidth)
+				}
 			}
-		case !r.sep:
-			if !has(f, "logs") || !has(f, "restart") {
-				t.Errorf("stack : footer %q", f)
-			}
-		}
-		if !has(f, "captures") {
-			t.Errorf("ligne %d : b captures absent", i)
 		}
 	}
+	m.width = 400
 	m.selected["solo"] = true
-	if f := m.renderFooter(); !has(f, "sélectionnées") || !has(f, "captures") {
-		t.Errorf("sélection : footer %q", f)
+	if f := m.renderFooter(); !has(f, "cochée") || !has(f, "toutes les actions") || !has(f, "décocher") {
+		t.Errorf("sélection : footer %q", ansi.Strip(f))
 	}
 }
 
 // TestInactiveHiddenByDefault : les stacks jamais déployées sont masquées et
-// résumées en une ligne navigable ; ↩ dessus les affiche et pose le curseur
-// sur la première (pour pouvoir la déployer) ; un filtre les inclut.
+// résumées en une ligne informative que le curseur saute ; a les affiche ;
+// un filtre les inclut.
 func TestInactiveHiddenByDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newTestModel([]compose.Stack{stack("up", "up", 1, 1, 0), stack("dev", "dev", 0, 0, 0)})
@@ -100,23 +108,17 @@ func TestInactiveHiddenByDefault(t *testing.T) {
 		t.Fatalf("lignes = %+v, want [up, ligne « 1 non déployée… »]", rows)
 	}
 	m.moveCursor(1)
-	if m.cursor != 1 {
-		t.Fatal("la ligne « non déployées » doit être navigable")
-	}
-	if _, ok := m.cursorStack(); ok {
-		t.Fatal("la ligne « non déployées » n'est pas une stack")
+	if m.cursor != 0 {
+		t.Fatal("la ligne « non déployées » doit être sautée par le curseur")
 	}
 
-	out, _ := m.handleListKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+	out, _ := m.handleListKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	m = out.(Model)
-	if !m.cfg.ShowInactive {
-		t.Fatal("↩ sur la ligne doit afficher les non déployées")
-	}
-	if s, ok := m.cursorStack(); !ok || s.Name != "dev" {
-		t.Errorf("curseur sur %+v, want la stack non déployée « dev »", s)
+	if !m.cfg.ShowAll || len(m.visibleStacks()) != 2 {
+		t.Fatal("a doit afficher les non déployées")
 	}
 
-	m.cfg.ShowInactive = false
+	m.cfg.ShowAll = false
 	m.filter.SetValue("dev")
 	m.invalidateRows()
 	if s := m.shownStacks(); len(s) != 1 || s[0].Name != "dev" {
@@ -227,7 +229,7 @@ func TestHelpFits(t *testing.T) {
 	m := newTestModel(nil)
 	m.width, m.height, m.loading, m.view = 200, 30, false, viewHelp
 	out := ansi.Strip(m.viewContent())
-	for _, want := range []string{"Captures d'état", "quitter", "↩ sur leur ligne", "╰"} {
+	for _, want := range []string{"Captures d'état", "quitter", "et non déployées", "╰"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("aide coupée : %q absent", want)
 		}

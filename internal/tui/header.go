@@ -168,7 +168,10 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 
 	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
 	title := styleBold.Foreground(lipgloss.Color("2")).Render("🐳 Docker Stack Manager")
-	path := L.Render("📂") + " " + sc.Dir
+	// Le dossier scanné et la touche pour en changer, côte à côte : sans ce
+	// rappel, un nouvel utilisateur ne sait pas comment quitter un mauvais
+	// dossier (le raccourci o ne tient pas toujours dans le pied de page).
+	path := L.Render("📂") + " " + sc.Dir + styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
 	// L'état des stacks est sur la ligne Docker (dockerLine), avec les
 	// conteneurs : un seul endroit pour « est-ce que tout tourne ? ».
 	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")

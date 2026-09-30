@@ -40,20 +40,23 @@ func renderActionMenu(m Model, height int) string {
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, panel)
 }
 
-// menuLines rend les entrées d'un panneau d'actions, curseur mis en valeur.
+// menuLines rend les entrées d'un panneau d'actions, curseur mis en valeur,
+// avec leur raccourci aligné à droite (les mêmes lettres que dans la liste).
 func menuLines(actions []menuAction, cursor, inner int) []string {
 	lines := make([]string, len(actions))
 	for i, st := range actions {
 		col := lipgloss.NewStyle().Foreground(lipgloss.Color(st.color))
+		var line string
 		if i == cursor {
-			line := col.Bold(true).Render("▌") + " " + col.Bold(true).Render(fmt.Sprintf("%s  %s", st.icon, st.label))
-			if pad := inner - lipgloss.Width("  "+st.icon+"  "+st.label); pad > 0 {
-				line += strings.Repeat(" ", pad)
-			}
-			lines[i] = line
-			continue
+			line = col.Bold(true).Render("▌") + " " + col.Bold(true).Render(fmt.Sprintf("%s  %s", st.icon, st.label))
+		} else {
+			line = "  " + col.Render(st.icon) + "  " + styleDim.Render(st.label)
 		}
-		lines[i] = "  " + col.Render(st.icon) + "  " + styleDim.Render(st.label)
+		if st.key != "" {
+			pad := max(inner-lipgloss.Width(line)-lipgloss.Width(st.key), 1)
+			line += strings.Repeat(" ", pad) + styleCursorMark.Render(st.key)
+		}
+		lines[i] = line
 	}
 	return lines
 }
@@ -154,7 +157,7 @@ func buildGroupPanel(selected []compose.Stack, cursor, height int) string {
 		dot, dotStyle := stateStyle(s.State())
 		names[i] = "  " + dotStyle.Render(dot) + " " + styleDim.Render(s.Name)
 	}
-	rows := fitPanel([]string{title}, []string{divider, ""}, menuLines(groupActions, cursor, 0), cursor,
+	rows := fitPanel([]string{title}, []string{divider, ""}, menuLines(groupActions, cursor, inner), cursor,
 		divider, names, func(n int) string { return styleDim.Render(fmt.Sprintf("  … et %d autres", n)) }, false, height)
 	return stylePanel.Width(panelWidth).Render(strings.Join(rows, "\n"))
 }
