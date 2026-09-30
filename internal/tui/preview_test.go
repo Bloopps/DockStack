@@ -90,7 +90,7 @@ func TestPreviewDetailAndTab(t *testing.T) {
 	st.Services = []compose.ServiceStatus{{Name: "app", Running: 1, Total: 1}, {Name: "db", Running: 0, Total: 2}}
 	m := newTestModel([]compose.Stack{st})
 	m.width, m.height = 120, 40
-	out := ansi.Strip(strings.Join(previewDetail("", st, st.Services, 60, 30, 0), "\n"))
+	out := ansi.Strip(strings.Join(previewDetail("", st, st.Services, 60, 30, 0, previewExtra{}), "\n"))
 	// Stack partielle : ses actions (vocabulaire docker) sont listées ici.
 	if !strings.Contains(out, "Services") || !strings.Contains(out, "u up") || !strings.Contains(out, "s stop") {
 		t.Fatalf("détail incomplet :\n%s", out)
@@ -116,7 +116,7 @@ func TestPreviewDetailManyServices(t *testing.T) {
 		st.Services = append(st.Services, compose.ServiceStatus{Name: fmt.Sprintf("svc-%02d", i), Running: r, Total: 1})
 	}
 	for _, h := range []int{15, 24, 40} {
-		lines := previewDetail("", st, st.Services, 60, h, 0)
+		lines := previewDetail("", st, st.Services, 60, h, 0, previewExtra{})
 		if len(lines) > h {
 			t.Errorf("h=%d : %d lignes, dépasse la hauteur", h, len(lines))
 		}

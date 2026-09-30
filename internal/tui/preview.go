@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 )
@@ -112,7 +113,7 @@ func renderPreviewPane(m Model, height, paneW int) string {
 	case m.previewCompose:
 		content = previewStack(m, row.stack, inner, height)
 	default:
-		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, len(m.selectedStacks()))
+		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, len(m.selectedStacks()), m.previewExtraFor(row.stack))
 	}
 
 	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste.
@@ -151,7 +152,9 @@ func previewStack(m Model, s compose.Stack, inner, height int) []string {
 	if ov := compose.FindOverrideFile(s.Dir); ov != "" {
 		head = append(head, styleDim.Render(truncate("+ override : "+filepath.Base(ov), inner)))
 	}
-	head = append(head, "")
+	// Comment en sortir : sans ce rappel, le volet semble figé sur le compose.
+	hint := styleCursorMark.Render("tab") + styleDim.Render(" retour au détail · ") + styleCursorMark.Render("v") + styleDim.Render(" plein écran")
+	head = append(head, ansi.Truncate(hint, inner, "…"), "")
 
 	lines, err := m.previewCache.readFile(s.ComposeFile)
 	if err != nil {
@@ -371,7 +374,7 @@ func isYamlNumber(t string) bool {
 // previewDetail rend le détail d'une stack : état global, services (les
 // problèmes d'abord), remarque éventuelle, puis les actions possibles adaptées
 // à l'état. C'est la vue par défaut du volet ; tab bascule vers le compose.
-func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height, selected int) []string {
+func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height, selected int, ex previewExtra) []string {
 	dot, dotStyle := stateStyle(s.State())
 	out := []string{dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2))}
 
@@ -393,51 +396,23 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 	}
 	out = append(out, "")
 
+	if line := stackUsageLine(ex, inner); line != "" {
+		out = append(out, line, "")
+	}
+
 	if len(services) > 0 {
-		out = append(out, styleDim.Render("Services"))
 		svcs := append([]compose.ServiceStatus(nil), services...)
 		sort.SliceStable(svcs, func(i, j int) bool {
 			return serviceOrder(svcs[i].State()) < serviceOrder(svcs[j].State())
 		})
-		nameW := 0
-		for _, sv := range svcs {
-			if w := lipgloss.Width(sv.Name); w > nameW {
-				nameW = w
-			}
-		}
-		if nameW > inner-16 {
-			nameW = max(inner-16, 8)
-		}
-		// Place restante pour les services : on réserve l'en-tête déjà rendu,
-		// la note d'orphelins éventuelle et le bloc d'actions (4 lignes + pied).
-		reserved := len(out) + 1 + 6
+		// Place restante pour les services : on réserve l'en-tête déjà rendu
+		// (+ le titre « Services »), la note d'orphelins éventuelle et le bloc
+		// d'actions (titre, 3 lignes de touches, rappel de tab).
+		reserved := len(out) + 1 + 1 + 6
 		if s.Orphaned {
 			reserved += 2
 		}
-		avail := max(height-reserved, 3)
-		hidden, hiddenWhat := 0, ""
-		if len(svcs) > avail {
-			rest := svcs[avail-1:]
-			hidden = len(rest)
-			svcs = svcs[:avail-1]
-			hiddenWhat = "services"
-			same := true
-			for _, r := range rest {
-				same = same && r.State() == rest[0].State()
-			}
-			if same {
-				hiddenWhat = "services " + stateWord(rest[0].State())
-			}
-		}
-		for _, sv := range svcs {
-			d, st := stateStyle(sv.State())
-			name := truncate(sv.Name, nameW)
-			pad := strings.Repeat(" ", max(nameW-lipgloss.Width(name), 0))
-			out = append(out, "  "+st.Render(d)+" "+name+pad+"  "+st.Render(stateWord(sv.State())))
-		}
-		if hidden > 0 {
-			out = append(out, styleDim.Render(fmt.Sprintf("  … +%d autres %s", hidden, hiddenWhat)))
-		}
+		out = append(out, renderServiceBlock(svcs, inner, max(height-reserved, 3))...)
 		out = append(out, "")
 	}
 	if s.Orphaned {
@@ -467,7 +442,10 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 		return append(out, selectionActions(selected, inner)...)
 	}
 	out = append(out, styleDim.Render("Actions"))
-	return append(out, keyGrid(acts, inner)...)
+	out = append(out, keyGrid(acts, inner)...)
+	// Rappel des deux façons de lire le compose : c'est ici qu'on le cherche.
+	hint := "  " + styleCursorMark.Render("tab") + styleDim.Render(" aperçu du compose ici · ") + styleCursorMark.Render("v") + styleDim.Render(" plein écran")
+	return append(out, ansi.Truncate(hint, inner, "…"))
 }
 
 // selectionActions : bloc d'actions du volet quand des stacks sont cochées —

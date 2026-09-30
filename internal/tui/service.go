@@ -16,6 +16,8 @@ type dockerService interface {
 	SubscribeEvents(ctx context.Context) <-chan compose.DockerEvent
 	LogsAsync(ctx context.Context, stack compose.Stack) (<-chan compose.LogEntry, error)
 	Usage(ctx context.Context, withVolumes bool) (compose.DockerUsage, error)
+	// Consommation CPU/RAM des conteneurs donnés (ceux des lignes à l'écran).
+	ContainerUsages(ctx context.Context, ids []string) (map[string]compose.ContainerUsage, error)
 
 	// Prévision des services en marche qu'un up recréerait (avant confirmation).
 	PlanUp(ctx context.Context, stack compose.Stack) ([]compose.Recreation, error)

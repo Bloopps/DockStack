@@ -74,3 +74,19 @@ func TestStacksSummary(t *testing.T) {
 		}
 	}
 }
+
+// Le compteur du démon inclut les conteneurs hors compose : l'en-tête doit
+// expliquer l'écart avec les stacks et signaler les arrêtés parmi eux.
+func TestDockerItemsOutsideStacks(t *testing.T) {
+	du := &compose.DockerUsage{Running: 39, Containers: 40}
+	sc := StackCounts{Total: 14, CtrRunning: 28, CtrTotal: 28}
+	got := ansi.Strip(dockerItems(du, sc, true)[1])
+	if !strings.Contains(got, "39/40") || !strings.Contains(got, "12 hors stack (1 arrêté)") {
+		t.Fatalf("écart non expliqué : %q", got)
+	}
+	// Tous les conteneurs sont dans des stacks : aucune note.
+	got = ansi.Strip(dockerItems(du, StackCounts{Total: 14, CtrRunning: 39, CtrTotal: 40}, true)[1])
+	if strings.Contains(got, "hors stack") {
+		t.Fatalf("note superflue : %q", got)
+	}
+}

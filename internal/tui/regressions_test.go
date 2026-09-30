@@ -379,7 +379,7 @@ func TestPaneActionsFollowSelection(t *testing.T) {
 func TestPaneNameNotRepeated(t *testing.T) {
 	st := stack("wg-easy", "", 1, 1, 0)
 	st.Dir = "/srv/wg-easy"
-	out := ansi.Strip(strings.Join(previewDetail("/srv", st, nil, 60, 30, 0), "\n"))
+	out := ansi.Strip(strings.Join(previewDetail("/srv", st, nil, 60, 30, 0, previewExtra{}), "\n"))
 	if n := strings.Count(out, "wg-easy"); n != 1 {
 		t.Fatalf("nom affiché %d fois :\n%s", n, out)
 	}

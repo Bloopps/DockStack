@@ -108,5 +108,12 @@ func (m Model) listFooter() (left, right []footerKey) {
 			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}}, left...)
 		}
 	}
+	if m.previewVisible() && ok && row.isStack() {
+		label := "compose"
+		if m.previewCompose {
+			label = "détail"
+		}
+		common = append(common, footerKey{"tab", label})
+	}
 	return append(left, common...), right
 }

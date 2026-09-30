@@ -117,6 +117,9 @@ type StackCounts struct {
 	Unhealthy int
 	Stopped   int
 	NotDep    int
+	// Conteneurs rattachés aux stacks (en marche / total) : le compteur du
+	// démon les compte tous, y compris ceux lancés hors compose (docker run).
+	CtrRunning, CtrTotal int
 }
 
 func colorForPct(pct int) lipgloss.Style {
@@ -154,11 +157,11 @@ func bar(pct, width int) string {
 func fmtRate(kbs int) string {
 	switch {
 	case kbs >= 10240:
-		return fmt.Sprintf("%dM", kbs/1024)
+		return fmt.Sprintf("%dMo", kbs/1024)
 	case kbs >= 1024:
-		return fmt.Sprintf("%d.%dM", kbs/1024, kbs*10/1024%10)
+		return fmt.Sprintf("%d.%dMo", kbs/1024, kbs*10/1024%10)
 	default:
-		return fmt.Sprintf("%dK", kbs)
+		return fmt.Sprintf("%dKo", kbs)
 	}
 }
 
@@ -211,7 +214,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 		L.Render("Swap"), swapCol.Render(fmt.Sprintf("%3d%%", m.SwapPercent)),
 		m.SwapUsedGB, m.SwapTotalGB,
 		sep,
-		L.Render("Up"), m.Uptime,
+		L.Render("Actif"), m.Uptime,
 	)
 
 	// ── Ligne 4 : Disk │ IO │ Load ────────────────────────────────────────
@@ -230,7 +233,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 
 	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
 	loadStr := fmt.Sprintf("%s 1m:%s 5m:%s 15m:%s",
-		L.Render("Load"),
+		L.Render("Charge"),
 		l1c.Render(m.Load1), l5c.Render(m.Load5), l15c.Render(m.Load15),
 	)
 
@@ -497,11 +500,11 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCou
 	dot := styleDim.Render(" · ")
 	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
 	foot := fmt.Sprintf("  %s %s %s%s%s%s%s %s  %s  %s ↓%s/s ↑%s/s  %s  %s %s",
-		L.Render(fmt.Sprintf("%-7s", "Système")), L.Render("Load"), l1c.Render(m.Load1), dot, l5c.Render(m.Load5), dot, l15c.Render(m.Load15),
+		L.Render(fmt.Sprintf("%-7s", "Système")), L.Render("Charge"), l1c.Render(m.Load1), dot, l5c.Render(m.Load5), dot, l15c.Render(m.Load15),
 		styleDim.Render("(1/5/15 min)"),
 		styleDim.Render("·"), L.Render("IO"),
 		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)), ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)),
-		styleDim.Render("·"), L.Render("Uptime"), m.Uptime,
+		styleDim.Render("·"), L.Render("Actif"), m.Uptime,
 	)
 
 	// Titres des deux colonnes sur la ligne de respiration : sans eux, les
@@ -592,6 +595,16 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 			st = styleYellow
 		}
 		ctrs = st.Render(fmt.Sprintf("%d/%d", du.Running, du.Containers))
+		// Écart avec les stacks : conteneurs lancés hors compose, dont on
+		// signale ceux qui sont arrêtés (c'est souvent eux qui jaunissent le
+		// compteur). Sans stacks chargées, rien à comparer.
+		if out := du.Containers - sc.CtrTotal; sc.Total > 0 && out > 0 {
+			note := fmt.Sprintf(" · %d hors stack", out)
+			if stopped := (du.Containers - du.Running) - (sc.CtrTotal - sc.CtrRunning); stopped > 0 {
+				note += fmt.Sprintf(" (%d arrêté%s)", stopped, plural(stopped))
+			}
+			ctrs += styleDim.Render(note)
+		}
 		images = fmtBytes(du.ImagesSize)
 		if du.ImagesReclaimable > 0 {
 			images += styleDim.Render(" (" + fmtBytes(du.ImagesReclaimable) + " libres)")

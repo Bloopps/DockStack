@@ -229,6 +229,11 @@ type Model struct {
 	usageBusy bool
 	volumesAt time.Time
 
+	// Consommation CPU/RAM par conteneur (ID), lue pour les lignes à l'écran
+	// (cf. stats.go). statsBusy évite d'empiler les lectures.
+	ctrUsage  map[string]compose.ContainerUsage
+	statsBusy bool
+
 	// Terminal
 	width  int
 	height int
@@ -277,6 +282,7 @@ func (m Model) Init() tea.Cmd {
 		prewarmStacks(m.cfg.StackDir),
 		collectMetricsNow(),
 		tickStacks(),
+		tickStats(statsFirstDelay),
 		loadBackups(m.cfg.ConfigDir()), // pour le bandeau « stacks à relancer »
 	)
 }
@@ -349,11 +355,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.volumesAt = time.Now()
 		} else if m.usage != nil && m.usage.VolumesOK {
 			u.VolumesSize, u.VolumesOK = m.usage.VolumesSize, true
+			u.VolumesByProject = m.usage.VolumesByProject
+			u.LayersByProject = m.usage.LayersByProject
 		}
 		if u.RootDir != "" && (m.usage == nil || m.usage.RootDir != u.RootDir) {
 			monitor.SetDiskPath(u.RootDir)
 		}
 		m.usage = &u
+
+	case statsTickMsg:
+		return m.onStatsTick()
+
+	case statsMsg:
+		m = m.onStatsResult(msg)
 
 	case usageTickMsg:
 		if m.client == nil || m.usageBusy {
@@ -929,6 +943,8 @@ func (m Model) stackCounts() StackCounts {
 	}
 	sc := StackCounts{Dir: m.cfg.StackDir, Total: len(m.stacks)}
 	for _, s := range m.stacks {
+		sc.CtrRunning += s.Running
+		sc.CtrTotal += s.Total
 		switch s.State() {
 		case compose.StateUnhealthy:
 			sc.Unhealthy++

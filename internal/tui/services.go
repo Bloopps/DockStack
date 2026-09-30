@@ -344,7 +344,7 @@ func depWarning(sv compose.ServiceStatus, all []compose.ServiceStatus, withDeps 
 }
 
 // serviceDetail : lignes de détail du service sous le curseur, sous la liste.
-func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDeps bool, inner int) []string {
+func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDeps bool, inner int, ex previewExtra) []string {
 	_, st := stateStyle(sv.State())
 	row := func(k, v string) string {
 		return styleDim.Render(fmt.Sprintf("%-6s", k)) + " " + truncate(v, max(inner-7, 1))
@@ -355,6 +355,12 @@ func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDe
 	}
 	if sv.Ports != "" {
 		out = append(out, row("ports", sv.Ports))
+	}
+	if sv.Running > 0 {
+		cpu, mem := usageCells(sv.IDs, ex.usage)
+		out = append(out, row("conso", "CPU "+cpu+" · RAM "+mem))
+		rd, wr := ioCells(sv.IDs, ex.usage)
+		out = append(out, row("io", "↓ "+rd+"/s · ↑ "+wr+"/s"))
 	}
 	status := sv.Status
 	if status == "" {
@@ -402,7 +408,7 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 
 	var detail []string
 	if m.svcCursor < len(svcs) {
-		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner)
+		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner, m.previewExtraFor(s))
 		// Actions : sur les services cochés, sinon sur celui du curseur. Le pied
 		// de page ne les répète pas (il garde cocher, filtrer, retour).
 		target := "Actions sur " + svcs[m.svcCursor].Name

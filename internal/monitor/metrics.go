@@ -294,7 +294,7 @@ func uptime(m *Metrics) {
 	d, h, min := sec/86400, (sec%86400)/3600, (sec%3600)/60
 	switch {
 	case d > 0:
-		m.Uptime = fmt.Sprintf("%dd %dh", d, h)
+		m.Uptime = fmt.Sprintf("%dj %dh", d, h)
 	case h > 0:
 		m.Uptime = fmt.Sprintf("%dh %dm", h, min)
 	default:

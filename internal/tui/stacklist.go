@@ -358,6 +358,10 @@ func (m Model) buildListRows() []listRow {
 	return rows
 }
 
+// hiddenHint : fin de la ligne « masquées ». La touche (première lettre) est
+// rendue comme celles du pied de page pour qu'on la repère.
+const hiddenHint = "a pour tout afficher"
+
 // hiddenNote : texte de la ligne qui résume les stacks masquées.
 func hiddenNote(stopped, undeployed int) string {
 	var parts []string
@@ -368,7 +372,7 @@ func hiddenNote(stopped, undeployed int) string {
 		parts = append(parts, fmt.Sprintf("%d non déployée%s", undeployed, plural(undeployed)))
 	}
 	n := stopped + undeployed
-	return fmt.Sprintf("○ %s masquée%s — a pour tout afficher", strings.Join(parts, " et "), plural(n))
+	return fmt.Sprintf("○ %s masquée%s — %s", strings.Join(parts, " et "), plural(n), hiddenHint)
 }
 
 // cursorRow renvoie la ligne sous le curseur, clampé si la liste a rétréci.
@@ -504,6 +508,10 @@ func renderStackList(m Model, height, width int) string {
 	if filterBar != "" {
 		height--
 	}
+	colHeader := m.listColumnHeader(width)
+	if colHeader != "" {
+		height--
+	}
 
 	stacks := m.filteredStacks()
 	if len(stacks) == 0 {
@@ -563,14 +571,14 @@ func renderStackList(m Model, height, width int) string {
 			if i == cursor {
 				lines = append(lines, styleSelected.Render(text+strings.Repeat(" ", max(width-lipgloss.Width(text), 0))))
 			} else {
-				lines = append(lines, styleDim.Render(text))
+				lines = append(lines, renderHiddenNote(text))
 			}
 		case row.sep:
 			lines = append(lines, styleDim.Render("  "+strings.Repeat("─", max(width-6, 1))))
 		case row.header:
 			lines = append(lines, renderGroupHeader(row, i == cursor, width))
 		default:
-			lines = append(lines, renderStackLine(row.stack, i == cursor, m.selected[row.stack.Name], width, row.indented, m.rowsCache.nameW))
+			lines = append(lines, renderStackLine(row.stack, i == cursor, m.selected[row.stack.Name], width, row.indented, m.rowsCache.nameW, m.rowUsageFor(row.stack)))
 		}
 	}
 	if moreBelow > 0 {
@@ -578,6 +586,9 @@ func renderStackList(m Model, height, width int) string {
 	}
 
 	body := strings.Join(lines, "\n")
+	if colHeader != "" {
+		body = colHeader + "\n" + body
+	}
 	if filterBar != "" {
 		return filterBar + "\n" + body
 	}
@@ -642,7 +653,7 @@ func stateWord(st compose.State) string {
 // compteur de conteneurs et l'état alignés en colonne juste après le nom le
 // plus long (nameW) — et non collés au bord droit, loin des noms sur un écran
 // large. La ligne sous le curseur est surlignée sur toute la largeur.
-func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, indented bool, nameW int) string {
+func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, indented bool, nameW int, use rowUsage) string {
 	dot, dotStyle := stateStyle(s.State())
 
 	var countText string
@@ -655,22 +666,61 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	if indented {
 		indent = "   "
 	}
-	// Colonnes : [indent][marque][ ][●][ ][nom…][  ][compteur 5][  ][état]
-	const countW = 5
+	// Colonnes : [indent][marque][ ][●][ ][nom…][  ][compteur 5][  ][état 9][  ][CPU 6][ ][RAM 7][ ][disque 7][ ][lect 7][ ][écr 7]
+	// L'état est calé sur 9 colonnes (« en marche », « partielle », « unhealthy »)
+	// pour aligner les colonnes suivantes. CPU/RAM : stacks qui tournent ;
+	// disque : toute stack qui a des conteneurs ; lecture/écriture disque : stacks
+	// qui tournent. Largeurs partagées avec listColumnHeader (stats.go).
+	const countW, wordW, cpuW, memW, diskW, ioW = colCount, colWord, colCPU, colMem, colDisk, colIO
 	lead := len(indent) + 4 // indent + marque + espace + pastille + espace
-	tailW := 2 + countW + 2 + lipgloss.Width(word)
+	cols := use.show || use.disk != ""
+	wordPad := 0
+	if cols {
+		wordPad = max(wordW-lipgloss.Width(word), 0)
+	}
+	// Les colonnes IO (lecture, écriture) ne se montrent que derrière le disque :
+	// elles partent en premier quand la place manque.
+	showWord, showCols, showDisk, showIO := true, cols, use.disk != "", use.show && use.disk != ""
+	tailFor := func() int {
+		w := 2 + countW
+		if showWord {
+			w += 2 + lipgloss.Width(word)
+			if showCols {
+				w += wordPad + 2 + cpuW + 1 + memW
+				if showDisk {
+					w += 1 + diskW
+					if showIO {
+						w += 2 * (1 + ioW)
+					}
+				}
+			}
+		}
+		return w
+	}
+	tailW := tailFor()
 
 	// Largeur réservée au nom sur cette ligne : colonne commune, réduite si
-	// la ligne ne tient pas (volet d'aperçu, terminal étroit) ; l'état est
-	// abandonné en premier, puis le nom est tronqué.
+	// la ligne ne tient pas (volet d'aperçu, terminal étroit). Trop étroit :
+	// le disque part d'abord, puis CPU/RAM, puis l'état, puis le nom est tronqué.
 	colW := nameW - (len(indent) - 1)
 	if colW < 1 {
 		colW = 1
 	}
-	showWord := true
+	if lead+colW+tailW > width && showIO {
+		showIO = false
+		tailW = tailFor()
+	}
+	if lead+colW+tailW > width && showDisk {
+		showDisk = false
+		tailW = tailFor()
+	}
+	if lead+colW+tailW > width && showCols {
+		showCols, showDisk, showIO = false, false, false
+		tailW = tailFor()
+	}
 	if lead+colW+tailW > width {
 		showWord = false
-		tailW = 2 + countW
+		tailW = tailFor()
 	}
 	if lead+colW+tailW > width {
 		colW = max(width-lead-tailW, 1)
@@ -685,6 +735,20 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	tail := "  " + fmt.Sprintf("%*s", countW, countText)
 	if showWord {
 		tail += "  " + word
+		if showCols {
+			tail += strings.Repeat(" ", wordPad) + "  "
+			if use.show {
+				tail += fmt.Sprintf("%*s %*s", cpuW, use.cpu, memW, use.mem)
+			} else {
+				tail += strings.Repeat(" ", cpuW+1+memW)
+			}
+			if showDisk {
+				tail += fmt.Sprintf(" %*s", diskW, use.disk)
+				if showIO {
+					tail += fmt.Sprintf(" %*s %*s", ioW, use.rd, ioW, use.wr)
+				}
+			}
+		}
 	}
 
 	if isCursor {
@@ -728,8 +792,32 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	line += strings.Repeat(" ", namePad) + "  " + countStyle.Render(fmt.Sprintf("%*s", countW, countText))
 	if showWord {
 		line += "  " + styleDim.Render(word)
+		if showCols {
+			line += strings.Repeat(" ", wordPad) + "  "
+			if use.show {
+				line += usageCell(use.cpu, cpuW) + " " + usageCell(use.mem, memW)
+			} else {
+				line += strings.Repeat(" ", cpuW+1+memW)
+			}
+			if showDisk {
+				line += " " + usageCell(use.disk, diskW)
+				if showIO {
+					line += " " + usageCell(use.rd, ioW) + " " + usageCell(use.wr, ioW)
+				}
+			}
+		}
 	}
 	return line
+}
+
+// usageCell : valeur de CPU ou de RAM alignée à droite ; « … » (pas encore
+// mesuré) en grisé pour ne pas se lire comme une valeur.
+func usageCell(v string, w int) string {
+	pad := strings.Repeat(" ", max(w-lipgloss.Width(v), 0))
+	if v == "…" || v == "—" || v == "0" || v == "<1 Ko" {
+		return pad + styleDim.Render(v)
+	}
+	return pad + v
 }
 
 func plural(n int) string {
@@ -737,4 +825,16 @@ func plural(n int) string {
 		return "s"
 	}
 	return ""
+}
+
+// renderHiddenNote rend la ligne « masquées » en grisé, avec la touche « a » en
+// accent. Si la ligne a été tronquée (terminal étroit), retombe sur le grisé seul.
+func renderHiddenNote(text string) string {
+	prefix, ok := strings.CutSuffix(text, hiddenHint)
+	if !ok {
+		return styleDim.Render(text)
+	}
+	return styleDim.Render(prefix) +
+		lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("a") +
+		styleDim.Render(strings.TrimPrefix(hiddenHint, "a"))
 }

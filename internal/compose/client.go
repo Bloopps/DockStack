@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	dockercli "github.com/docker/cli/cli/command"
@@ -42,6 +44,9 @@ type Stack struct {
 	Total       int
 	Unhealthy   int
 	Services    []ServiceStatus // par service compose, trié par nom
+	// Project : nom du projet compose (label des conteneurs, à défaut le nom du
+	// dossier). Sert à retrouver les volumes de la stack.
+	Project string
 	// Only restreint toute action (up/down/restart/recreate/pull/logs) à ces
 	// services, sans dépendances ni effet sur les autres. Vide = toute la stack.
 	// Posé par l'appelant sur une copie de la Stack, jamais par ListStacks.
@@ -70,6 +75,9 @@ type ServiceStatus struct {
 	// TUI depuis DeclaredServices, pas par ListStacks).
 	DependsOn []string
 	Status    string // statut Docker brut : « Exited (137) 3 hours ago », « Up 2 days (unhealthy) »…
+	// IDs des conteneurs EN MARCHE du service : de quoi mesurer leur CPU/RAM à
+	// la demande, sans relister le démon.
+	IDs []string
 }
 
 // statusRank classe les conteneurs d'un service pour choisir celui dont on
@@ -136,6 +144,11 @@ type LogEntry struct {
 type Client struct {
 	svc api.Compose
 	cli dockercli.Cli
+
+	// Dernier échantillon CPU de chaque conteneur : le CPU est un écart entre
+	// deux lectures (cf. ContainerUsages).
+	statsMu   sync.Mutex
+	statsPrev map[string]usageSample
 }
 
 func New() (*Client, error) {
@@ -181,6 +194,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		running, total, unhealthy int
 		image, ports, status      string
 		rank                      int
+		ids                       []string
 	}
 	addServiceCount := func(m map[string]map[string]counts, key, svc string, ctr *container.Summary, running, unhealthy bool) {
 		sc, ok := m[key]
@@ -192,6 +206,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		c.total++
 		if running {
 			c.running++
+			c.ids = append(c.ids, ctr.ID)
 		}
 		if unhealthy {
 			c.unhealthy++
@@ -207,6 +222,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 	dirCounts := make(map[string]counts, len(result.Items))
 	projCounts := make(map[string]counts, len(result.Items)) // fallback: par nom de projet
 	projDir := make(map[string]string)                       // nom de projet → premier working_dir vu
+	dirProject := make(map[string]string)                    // working_dir → nom de projet
 	dirServices := make(map[string]map[string]counts)        // working_dir -> service -> counts
 	projServices := make(map[string]map[string]counts)       // projet -> service -> counts (fallback)
 
@@ -228,6 +244,9 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 				cnt.unhealthy++
 			}
 			dirCounts[wd] = cnt
+			if p := ctr.Labels["com.docker.compose.project"]; p != "" {
+				dirProject[wd] = p
+			}
 			if svc != "" {
 				addServiceCount(dirServices, wd, svc, &result.Items[idx], running, unhealthy)
 			}
@@ -282,15 +301,19 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 				svcCounts = projServices[projName]
 			}
 		}
+		project := dirProject[cleanDir]
+		if project == "" {
+			project = strings.ToLower(filepath.Base(dir))
+		}
 		services := make([]ServiceStatus, 0, len(svcCounts))
 		for name, c := range svcCounts {
-			services = append(services, ServiceStatus{Name: name, Running: c.running, Total: c.total, Unhealthy: c.unhealthy, Image: c.image, Ports: c.ports, Status: c.status})
+			services = append(services, ServiceStatus{Name: name, Running: c.running, Total: c.total, Unhealthy: c.unhealthy, Image: c.image, Ports: c.ports, Status: c.status, IDs: c.ids})
 		}
 		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 		stacks = append(stacks, Stack{
 			Name: rel, NameLC: strings.ToLower(rel), Dir: dir, ComposeFile: f,
 			Group: group, Running: cnt.running, Total: cnt.total, Unhealthy: cnt.unhealthy,
-			Services: services,
+			Services: services, Project: project,
 		})
 	}
 
@@ -369,6 +392,7 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 			if running {
 				ss.Running++
 				stacks[i].Running++
+				ss.IDs = append(ss.IDs, ctr.ID)
 			}
 			if unhealthy {
 				ss.Unhealthy++
@@ -379,6 +403,7 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 			continue
 		}
 		stacks[i].Orphaned = true
+		stacks[i].Project = proj.Name
 		services := make([]ServiceStatus, 0, len(svcAgg))
 		for _, ss := range svcAgg {
 			services = append(services, *ss)
@@ -992,7 +1017,13 @@ type DockerUsage struct {
 	ImagesReclaimable   int64 // octets libérables (images inutilisées)
 	VolumesSize         int64 // octets ; valide seulement si VolumesOK
 	VolumesOK           bool
-	RootDir             string // dossier de données du démon (ex. /var/lib/docker)
+	// VolumesByProject : taille des volumes nommés par projet compose (mis en
+	// minuscules). Issue du même appel que VolumesSize, donc valide avec lui.
+	VolumesByProject map[string]int64
+	// LayersByProject : taille des couches d'écriture des conteneurs (ce qu'ils
+	// ont écrit hors volumes) par projet compose, même cadence que les volumes.
+	LayersByProject map[string]int64
+	RootDir         string // dossier de données du démon (ex. /var/lib/docker)
 }
 
 // Usage interroge le démon : Info (compteurs, dossier de données) et l'espace
@@ -1005,11 +1036,32 @@ func (c *Client) Usage(ctx context.Context, withVolumes bool) (DockerUsage, erro
 	if err != nil {
 		return DockerUsage{}, err
 	}
-	du, err := api.DiskUsage(ctx, mobyclient.DiskUsageOptions{Images: true, Volumes: withVolumes})
+	du, err := api.DiskUsage(ctx, mobyclient.DiskUsageOptions{Images: true, Volumes: withVolumes, Containers: withVolumes,
+		// Sans Verbose le démon ne renvoie que le total des volumes, pas la liste
+		// (donc pas la ventilation par projet) ; le coût est le même.
+		Verbose: withVolumes})
 	if err != nil {
 		return DockerUsage{}, err
 	}
+	var byProject, layers map[string]int64
+	if withVolumes {
+		layers = make(map[string]int64)
+		for _, ctr := range du.Containers.Items {
+			if p := strings.ToLower(ctr.Labels["com.docker.compose.project"]); p != "" && ctr.SizeRw > 0 {
+				layers[p] += ctr.SizeRw
+			}
+		}
+		byProject = make(map[string]int64)
+		for _, v := range du.Volumes.Items {
+			p := strings.ToLower(v.Labels["com.docker.compose.project"])
+			if p != "" && v.UsageData != nil && v.UsageData.Size > 0 {
+				byProject[p] += v.UsageData.Size
+			}
+		}
+	}
 	return DockerUsage{
+		VolumesByProject:  byProject,
+		LayersByProject:   layers,
 		Running:           info.Info.ContainersRunning,
 		Containers:        info.Info.Containers,
 		ImagesSize:        du.Images.TotalSize,
@@ -1018,4 +1070,168 @@ func (c *Client) Usage(ctx context.Context, withVolumes bool) (DockerUsage, erro
 		VolumesOK:         withVolumes,
 		RootDir:           info.Info.DockerRootDir,
 	}, nil
+}
+
+// ContainerUsage : consommation instantanée d'un conteneur en marche.
+type ContainerUsage struct {
+	CPU      float64 // % d'un cœur, comme « docker stats » (peut dépasser 100)
+	CPUOK    bool    // faux à la première lecture : le CPU est un écart entre deux lectures
+	MemBytes uint64  // mémoire utilisée hors cache de pages
+	// Débits disque (octets/s) du conteneur, vus par le cgroup : lecture et
+	// écriture sur les périphériques bloc. IOOK est faux à la première lecture,
+	// comme CPUOK : un débit est un écart entre deux lectures.
+	ReadBps, WriteBps float64
+	IOOK              bool
+}
+
+// usageSample : compteurs (cumulatifs) d'un conteneur à une lecture.
+type usageSample struct {
+	total, system uint64    // CPU conteneur / CPU système
+	read, write   uint64    // octets lus / écrits sur disque
+	at            time.Time // instant de la lecture côté démon
+}
+
+const (
+	// usageParallel borne les lectures simultanées.
+	usageParallel = 16
+	// cpuSampleMaxAge : au-delà, l'écart avec la lecture précédente ne dit plus
+	// rien de l'instant présent (la liste n'était plus à l'écran, par exemple).
+	cpuSampleMaxAge = 30 * time.Second
+)
+
+// ContainerUsages lit la consommation des conteneurs donnés, en une lecture
+// chacun (≈0,6 ms : 68 conteneurs en 40 ms ici). Le CPU est calculé contre la
+// lecture précédente gardée par le client, donc disponible dès le second appel
+// seulement ; la mémoire l'est tout de suite. Les conteneurs disparus sont
+// ignorés ; l'erreur n'est renvoyée que si aucune lecture n'a abouti.
+func (c *Client) ContainerUsages(ctx context.Context, ids []string) (map[string]ContainerUsage, error) {
+	api := c.cli.Client()
+	type result struct {
+		id string
+		st container.StatsResponse
+	}
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, usageParallel)
+		results  = make([]result, 0, len(ids))
+		firstErr error
+	)
+	for _, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			st, err := readStats(ctx, api, id)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			results = append(results, result{id, st})
+		}()
+	}
+	wg.Wait()
+	if len(ids) > 0 && len(results) == 0 {
+		return nil, firstErr
+	}
+
+	now := time.Now()
+	out := make(map[string]ContainerUsage, len(results))
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	if c.statsPrev == nil {
+		c.statsPrev = make(map[string]usageSample)
+	}
+	for _, r := range results {
+		u := ContainerUsage{MemBytes: memUsage(r.st)}
+		rd, wr := blkioBytes(r.st)
+		at := r.st.Read
+		if at.IsZero() {
+			at = now
+		}
+		cur := usageSample{total: r.st.CPUStats.CPUUsage.TotalUsage, system: r.st.CPUStats.SystemUsage, read: rd, write: wr, at: at}
+		if prev, ok := c.statsPrev[r.id]; ok && cur.at.Sub(prev.at) <= cpuSampleMaxAge {
+			u.CPU, u.CPUOK = cpuPercent(prev, cur, cpuCores(r.st))
+			u.ReadBps, u.WriteBps, u.IOOK = ioRates(prev, cur)
+		}
+		c.statsPrev[r.id] = cur
+		out[r.id] = u
+	}
+	// Oublier les conteneurs qu'on ne lit plus (supprimés ou hors écran).
+	for id, p := range c.statsPrev {
+		if now.Sub(p.at) > cpuSampleMaxAge {
+			delete(c.statsPrev, id)
+		}
+	}
+	return out, nil
+}
+
+func readStats(ctx context.Context, api mobyclient.APIClient, id string) (container.StatsResponse, error) {
+	var st container.StatsResponse
+	res, err := api.ContainerStats(ctx, id, mobyclient.ContainerStatsOptions{})
+	if err != nil {
+		return st, err
+	}
+	defer res.Body.Close()
+	err = json.NewDecoder(res.Body).Decode(&st)
+	return st, err
+}
+
+func cpuCores(st container.StatsResponse) float64 {
+	cores := float64(st.CPUStats.OnlineCPUs)
+	if cores == 0 {
+		cores = float64(len(st.CPUStats.CPUUsage.PercpuUsage))
+	}
+	return max(cores, 1)
+}
+
+// cpuPercent : formule de « docker stats » entre deux lectures. Faux si les
+// compteurs ont reculé (conteneur redémarré) ou si le temps système n'a pas avancé.
+func cpuPercent(prev, cur usageSample, cores float64) (float64, bool) {
+	if cur.total < prev.total || cur.system <= prev.system {
+		return 0, false
+	}
+	return float64(cur.total-prev.total) / float64(cur.system-prev.system) * cores * 100, true
+}
+
+// blkioBytes cumule les octets lus et écrits par le conteneur sur ses
+// périphériques bloc (cgroup v1 ou v2 : « read » / « write », casse variable).
+func blkioBytes(st container.StatsResponse) (read, write uint64) {
+	for _, e := range st.BlkioStats.IoServiceBytesRecursive {
+		switch strings.ToLower(e.Op) {
+		case "read":
+			read += e.Value
+		case "write":
+			write += e.Value
+		}
+	}
+	return
+}
+
+// ioRates : débits moyens entre deux lectures. Faux si les compteurs ont reculé
+// (conteneur redémarré) ou si l'intervalle est nul.
+func ioRates(prev, cur usageSample) (readBps, writeBps float64, ok bool) {
+	dt := cur.at.Sub(prev.at).Seconds()
+	if dt <= 0 || cur.read < prev.read || cur.write < prev.write {
+		return 0, 0, false
+	}
+	return float64(cur.read-prev.read) / dt, float64(cur.write-prev.write) / dt, true
+}
+
+// memUsage retire le cache de pages inactif, comme « docker stats » (cgroup v2
+// puis v1) : sinon un conteneur qui lit beaucoup de fichiers paraît gourmand.
+func memUsage(st container.StatsResponse) uint64 {
+	used := st.MemoryStats.Usage
+	cache := st.MemoryStats.Stats["inactive_file"]
+	if cache == 0 {
+		cache = st.MemoryStats.Stats["total_inactive_file"]
+	}
+	if cache < used {
+		used -= cache
+	}
+	return used
 }

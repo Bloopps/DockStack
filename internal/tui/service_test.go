@@ -75,6 +75,9 @@ func (f *fakeClient) LogsAsync(context.Context, compose.Stack) (<-chan compose.L
 func (f *fakeClient) Usage(context.Context, bool) (compose.DockerUsage, error) {
 	return compose.DockerUsage{}, nil
 }
+func (f *fakeClient) ContainerUsages(context.Context, []string) (map[string]compose.ContainerUsage, error) {
+	return nil, nil
+}
 func (f *fakeClient) UpManyLive(_ context.Context, st []compose.Stack, _ int) <-chan compose.ProgressEvent {
 	f.rec("up", st)
 	if f.autoDone {

@@ -27,8 +27,16 @@ de l'utiliser sur des stacks importantes.
   confirmation), Logs, avec les mêmes lettres dans la liste, le mode services
   et le panneau d'actions
 - Actions groupées sur une sélection multiple ou un dossier entier
-- Volet de détail à droite de la liste : services (problèmes en premier),
-  état et actions adaptées ; `tab` bascule vers le fichier compose
+- CPU, RAM, disque et débits disque (lecture/écriture par seconde) sur la ligne
+  de chaque stack, sous un en-tête de colonnes. CPU, RAM et débits : lecture des
+  seuls conteneurs à l'écran, toutes les 3 s (CPU et débits apparaissent à la
+  seconde lecture, ce sont des écarts). Disque : volumes nommés + couches
+  d'écriture des conteneurs, remesurés toutes les 10 min ; « — » = rien côté
+  Docker, les bind mounts ne sont pas comptés. Écran étroit : les colonnes
+  partent dans l'ordre débits, disque, CPU/RAM
+- Volet de détail à droite de la liste : services (problèmes en premier) avec
+  image et ports, détail du disque de la stack, actions adaptées ; `tab` bascule
+  vers le fichier compose
 - Gestion **service par service** (`→`, `←` pour sortir) : cocher des services, les
   filtrer (`/`), cocher ceux en défaut (`e`), puis stop / up / restart /
   recreate / pull / logs sans toucher aux autres. Image, ports et statut
