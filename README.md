@@ -29,7 +29,9 @@ de l'utiliser sur des stacks importantes.
 - Actions groupées sur une sélection multiple ou un dossier entier
 - CPU, RAM, disque et débits disque (lecture/écriture par seconde) sur la ligne
   de chaque stack, sous un en-tête de colonnes. CPU, RAM et débits : lecture des
-  seuls conteneurs à l'écran, toutes les 3 s (CPU et débits apparaissent à la
+  seuls conteneurs à l'écran, toutes les 3 s, directement dans les cgroups v2
+  quand dockstack tourne sur l'hôte Docker (sans solliciter le démon), sinon
+  via l'API (CPU et débits apparaissent à la
   seconde lecture, ce sont des écarts). Disque : volumes nommés + couches
   d'écriture des conteneurs, remesurés toutes les 10 min ; « — » = rien côté
   Docker, les bind mounts ne sont pas comptés. Écran étroit : les colonnes

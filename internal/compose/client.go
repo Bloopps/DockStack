@@ -3,6 +3,7 @@ package compose
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -149,6 +150,9 @@ type Client struct {
 	// deux lectures (cf. ContainerUsages).
 	statsMu   sync.Mutex
 	statsPrev map[string]usageSample
+	// cg lit la consommation dans les cgroups v2 de l'hôte ; nil si
+	// indisponibles (tout passe alors par l'API, cf. cgroup.go).
+	cg *cgroupReader
 }
 
 func New() (*Client, error) {
@@ -174,7 +178,21 @@ func New() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{svc: svc, cli: cli}, nil
+	c := &Client{svc: svc, cli: cli}
+	c.cg = newCgroupReader("/sys/fs/cgroup", c.containerPID)
+	return c, nil
+}
+
+// containerPID : PID principal d'un conteneur en marche, sur l'hôte du démon.
+func (c *Client) containerPID(ctx context.Context, id string) (int, error) {
+	res, err := c.cli.Client().ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return 0, err
+	}
+	if res.Container.State == nil {
+		return 0, errors.New("état du conteneur inconnu")
+	}
+	return res.Container.State.Pid, nil
 }
 
 // ListStacks scans stackDir for compose files and enriches each with
@@ -1086,9 +1104,12 @@ type ContainerUsage struct {
 
 // usageSample : compteurs (cumulatifs) d'un conteneur à une lecture.
 type usageSample struct {
-	total, system uint64    // CPU conteneur / CPU système
+	total, system uint64    // CPU conteneur / CPU système (ns)
 	read, write   uint64    // octets lus / écrits sur disque
-	at            time.Time // instant de la lecture côté démon
+	at            time.Time // instant de la lecture
+	// cgroup : lu dans les cgroups (system inutilisé, total en ns) plutôt
+	// que via l'API.
+	cgroup bool
 }
 
 const (
@@ -1105,19 +1126,41 @@ const (
 // seulement ; la mémoire l'est tout de suite. Les conteneurs disparus sont
 // ignorés ; l'erreur n'est renvoyée que si aucune lecture n'a abouti.
 func (c *Client) ContainerUsages(ctx context.Context, ids []string) (map[string]ContainerUsage, error) {
-	api := c.cli.Client()
 	type result struct {
-		id string
-		st container.StatsResponse
+		id    string
+		cur   usageSample
+		mem   uint64
+		cores float64
+	}
+	results := make([]result, 0, len(ids))
+
+	// Cgroups d'abord : aucune requête au démon. Les conteneurs introuvables
+	// ainsi (démon distant, cgroups v1…) passent par l'API ci-dessous.
+	rest := ids
+	if c.cg != nil {
+		rest = nil
+		for _, id := range ids {
+			sm, ok := c.cg.sample(ctx, id)
+			if !ok {
+				rest = append(rest, id)
+				continue
+			}
+			results = append(results, result{id: id, mem: sm.mem, cur: usageSample{
+				total: sm.cpuUsec * 1000, read: sm.read, write: sm.write, at: sm.at, cgroup: true}})
+		}
+	}
+
+	var api mobyclient.APIClient
+	if len(rest) > 0 {
+		api = c.cli.Client()
 	}
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
 		sem      = make(chan struct{}, usageParallel)
-		results  = make([]result, 0, len(ids))
 		firstErr error
 	)
-	for _, id := range ids {
+	for _, id := range rest {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
@@ -1131,7 +1174,13 @@ func (c *Client) ContainerUsages(ctx context.Context, ids []string) (map[string]
 				}
 				return
 			}
-			results = append(results, result{id, st})
+			rd, wr := blkioBytes(st)
+			at := st.Read
+			if at.IsZero() {
+				at = time.Now()
+			}
+			results = append(results, result{id: id, mem: memUsage(st), cores: cpuCores(st), cur: usageSample{
+				total: st.CPUStats.CPUUsage.TotalUsage, system: st.CPUStats.SystemUsage, read: rd, write: wr, at: at}})
 		}()
 	}
 	wg.Wait()
@@ -1147,15 +1196,16 @@ func (c *Client) ContainerUsages(ctx context.Context, ids []string) (map[string]
 		c.statsPrev = make(map[string]usageSample)
 	}
 	for _, r := range results {
-		u := ContainerUsage{MemBytes: memUsage(r.st)}
-		rd, wr := blkioBytes(r.st)
-		at := r.st.Read
-		if at.IsZero() {
-			at = now
-		}
-		cur := usageSample{total: r.st.CPUStats.CPUUsage.TotalUsage, system: r.st.CPUStats.SystemUsage, read: rd, write: wr, at: at}
-		if prev, ok := c.statsPrev[r.id]; ok && cur.at.Sub(prev.at) <= cpuSampleMaxAge {
-			u.CPU, u.CPUOK = cpuPercent(prev, cur, cpuCores(r.st))
+		u := ContainerUsage{MemBytes: r.mem}
+		cur := r.cur
+		// Deux lectures de même source seulement : les compteurs de l'API et
+		// ceux des cgroups n'ont pas la même base.
+		if prev, ok := c.statsPrev[r.id]; ok && prev.cgroup == cur.cgroup && cur.at.Sub(prev.at) <= cpuSampleMaxAge {
+			if cur.cgroup {
+				u.CPU, u.CPUOK = cgroupCPUPercent(prev, cur)
+			} else {
+				u.CPU, u.CPUOK = cpuPercent(prev, cur, r.cores)
+			}
 			u.ReadBps, u.WriteBps, u.IOOK = ioRates(prev, cur)
 		}
 		c.statsPrev[r.id] = cur
@@ -1168,6 +1218,17 @@ func (c *Client) ContainerUsages(ctx context.Context, ids []string) (map[string]
 		}
 	}
 	return out, nil
+}
+
+// cgroupCPUPercent : temps CPU consommé sur le temps écoulé, en % d'un cœur.
+// C'est ce que donne la formule de « docker stats » (le temps système y vaut
+// le temps écoulé multiplié par le nombre de cœurs, qui se simplifie).
+func cgroupCPUPercent(prev, cur usageSample) (float64, bool) {
+	dt := cur.at.Sub(prev.at)
+	if dt <= 0 || cur.total < prev.total {
+		return 0, false
+	}
+	return float64(cur.total-prev.total) / float64(dt.Nanoseconds()) * 100, true
 }
 
 func readStats(ctx context.Context, api mobyclient.APIClient, id string) (container.StatsResponse, error) {

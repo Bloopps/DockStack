@@ -14,9 +14,11 @@ import (
 
 // Consommation (CPU/RAM) des stacks affichée sur leur ligne.
 //
-// Une lecture coûte ≈0,6 ms par conteneur (68 en 40 ms) ; on ne lit pourtant
-// que les conteneurs des lignes à l'écran (et d'un écran de marge de chaque
-// côté), pas ceux des centaines de stacks de la liste. Le CPU est un écart
+// Sur l'hôte du démon, les compteurs sont lus dans les cgroups (≈8 ms pour
+// 58 conteneurs, rien côté démon) ; sinon via l'API (≈0,6 ms par conteneur
+// et ≈1,3 ms de CPU pour le démon). Dans les deux cas on ne lit que les
+// conteneurs des lignes à l'écran (et d'un écran de marge de chaque côté),
+// pas ceux des centaines de stacks de la liste. Le CPU est un écart
 // entre deux lectures : il apparaît donc au second passage, après statsInterval.
 const (
 	statsFirstDelay = time.Second
