@@ -66,7 +66,7 @@ func renderComposeView(m Model) string {
 	if m.composeResolved {
 		mode = "résolu"
 	}
-	title := styleBold.Foreground(lipgloss.Color("6")).Render("📄 "+m.composeStack.Name) +
+	title := styleTitle.Render("📄 "+m.composeStack.Name) +
 		styleDim.Render("  ("+mode+")")
 	// Hint dépendant du mode souris, tronqué à la largeur : un hint qui wrappe
 	// ajouterait une ligne et décalerait le calcul de hauteur du corps.

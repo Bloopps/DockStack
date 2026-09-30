@@ -8,24 +8,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-var (
-	// Touche en bleu clair gras sur fond gris ardoise : lisible sur tout thème
-	// (l'ancien noir sur cyan de palette ne l'était pas), et moins criard que
-	// des pavés pleins répétés sur toute la barre.
-	styleFooterKey = lipgloss.NewStyle().
-			Foreground(colorAccent).
-			Background(colorKeyBg).
-			Bold(true).
-			Padding(0, 1)
-
-	styleFooterDesc = lipgloss.NewStyle().
-			Foreground(colorKeyTxt)
-
-	styleFooterSep = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("238")).
-			SetString(" · ")
-)
-
 type footerKey = struct{ key, desc string }
 
 // renderBar rend un pied de page en deux blocs, identique dans toutes les vues :
@@ -72,9 +54,6 @@ func renderBar(left, right []footerKey, width int, info string) string {
 	return line
 }
 
-// styleFooterBlockSep sépare les touches de l'écran de la sortie et de l'aide.
-var styleFooterBlockSep = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("   │   ")
-
 // listFooter : pied de page de la liste. Il sert à naviguer : les actions sur
 // la stack sont dans le volet de droite (selon son état), pas répétées ici —
 // sauf si le volet est masqué faute de largeur. Il ne change pas d'une ligne à
@@ -115,5 +94,6 @@ func (m Model) listFooter() (left, right []footerKey) {
 		}
 		common = append(common, footerKey{"tab", label})
 	}
+	common = append(common, footerKey{"t", "thème"})
 	return append(left, common...), right
 }

@@ -13,14 +13,6 @@ import (
 
 const captureListWidth = 38 // largeur hors-tout du volet des captures
 
-var (
-	styleCapturePanel = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("6")).
-				Padding(0, 1)
-	styleDetailPanel = styleCapturePanel.BorderForeground(lipgloss.Color("8"))
-)
-
 // Statut d'une stack de la capture, comparée à l'état actuel.
 type captureEntryKind int
 

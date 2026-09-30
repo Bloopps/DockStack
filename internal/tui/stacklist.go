@@ -10,45 +10,6 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
-// Couleurs de mise en évidence, partagées par la ligne sous le curseur et les
-// touches du pied de page. Indices 16-255 de la palette 256 couleurs : fixes
-// (les thèmes de terminal ne redéfinissent que les 16 premières) et rendus à
-// l'identique même sans couleurs 24 bits (SSH sans COLORTERM), là où un code
-// hexadécimal serait approché, parfois loin (gris devenu bleu canard).
-var (
-	colorSelBg  = lipgloss.Color("24")  // bleu nuit #005f87
-	colorSelFg  = lipgloss.Color("231") // blanc
-	colorAccent = lipgloss.Color("117") // bleu clair #87d7ff : flèche, touches
-	colorKeyBg  = lipgloss.Color("237") // gris ardoise #3a3a3a : fond des touches
-	colorKeyTxt = lipgloss.Color("250") // gris clair #bcbcbc : libellé des touches
-)
-
-var (
-	// Ligne sous curseur : bande pleine — pas de Reverse(true), qui rend une
-	// bande grise dépendante du thème du terminal.
-	//
-	// Couleurs FIXES (hexadécimales) et non de palette : « noir sur cyan » de
-	// la palette dépend du thème du terminal et devenait gris foncé sur bleu
-	// moyen (Windows Terminal), illisible. Bleu nuit + blanc : contraste élevé
-	// sur tout thème sombre.
-	styleSelected   = lipgloss.NewStyle().Background(colorSelBg).Foreground(colorSelFg).Bold(true)
-	styleCursorMark = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
-	styleGroup      = styleMagenta.Bold(true)
-
-	// Per-state name styles
-	styleNameRunning   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true)
-	styleNamePartial   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleNameUnhealthy = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
-	styleNameStopped   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleNameInactive  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	// Per-state count badge
-	styleCountRunning   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Faint(true)
-	styleCountPartial   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Faint(true)
-	styleCountUnhealthy = lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Faint(true)
-	styleCountStopped   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Faint(true)
-)
-
 func statePriority(s compose.State) int {
 	switch s {
 	case compose.StateUnhealthy:
@@ -835,6 +796,6 @@ func renderHiddenNote(text string) string {
 		return styleDim.Render(text)
 	}
 	return styleDim.Render(prefix) +
-		lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render("a") +
+		styleCursorMark.Render("a") +
 		styleDim.Render(strings.TrimPrefix(hiddenHint, "a"))
 }

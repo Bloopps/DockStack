@@ -14,7 +14,7 @@ type dirLoadedMsg struct {
 }
 
 func renderDirPicker(m Model) string {
-	title := styleBold.Foreground(lipgloss.Color("6")).Render("📂 Choisir le répertoire des stacks")
+	title := styleTitle.Render("📂 Choisir le répertoire des stacks")
 	sub := styleDim.Render(fmt.Sprintf("  Répertoire actuel : %s", m.dirPath))
 
 	var lines []string

@@ -16,6 +16,7 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/config"
 	"github.com/Bloopps/dockstack/internal/monitor"
+	"github.com/Bloopps/dockstack/internal/theme"
 )
 
 type view int
@@ -36,6 +37,7 @@ const (
 	viewHelp
 	viewRestorePick
 	viewCompose
+	viewTheme
 )
 
 // ---- message types ----
@@ -238,6 +240,18 @@ type Model struct {
 	width  int
 	height int
 
+	// Thème de couleurs : themeName est le thème affiché (aperçu compris).
+	// Sélecteur (t) : catalogue chargé à l'ouverture, filtre texte et par
+	// luminosité, thème d'avant l'ouverture rétabli par esc.
+	themeName      string
+	themes         []theme.Palette
+	themeErrs      []error
+	themeOrig      string
+	themeCursor    int
+	themeFilter    string
+	themeFiltering bool
+	themeKind      int
+
 	loading bool
 	err     error
 }
@@ -245,22 +259,13 @@ type Model struct {
 func New(cfg *config.Config) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 
 	ti := textinput.New()
 	ti.Prompt = "/ "
 	ti.Placeholder = "filtrer..."
 	ti.CharLimit = 64
-	// v2: per-state styling via the Styles struct instead of PromptStyle/TextStyle/…
-	tiStyles := ti.Styles()
-	tiStyles.Focused.Prompt = styleCyan
-	tiStyles.Focused.Text = lipgloss.NewStyle()
-	tiStyles.Focused.Placeholder = styleDim
-	tiStyles.Blurred.Prompt = styleCyan
-	tiStyles.Blurred.Placeholder = styleDim
-	ti.SetStyles(tiStyles)
 
-	return Model{
+	m := Model{
 		cfg:          cfg,
 		spinner:      sp,
 		filter:       ti,
@@ -271,6 +276,22 @@ func New(cfg *config.Config) Model {
 		svcCache:     &svcCacheBox{},
 		loading:      true,
 	}
+	m.loadTheme()
+	return m
+}
+
+// restyleWidgets recopie les couleurs du thème actif dans les composants qui
+// gardent leur propre style (spinner, champ de filtre).
+func (m *Model) restyleWidgets() {
+	m.spinner.Style = styleCyan
+	// v2: per-state styling via the Styles struct instead of PromptStyle/TextStyle/…
+	tiStyles := m.filter.Styles()
+	tiStyles.Focused.Prompt = styleCyan
+	tiStyles.Focused.Text = lipgloss.NewStyle()
+	tiStyles.Focused.Placeholder = styleDim
+	tiStyles.Blurred.Prompt = styleCyan
+	tiStyles.Blurred.Placeholder = styleDim
+	m.filter.SetStyles(tiStyles)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -284,7 +305,17 @@ func (m Model) Init() tea.Cmd {
 		tickStacks(),
 		tickStats(statsFirstDelay),
 		loadBackups(m.cfg.ConfigDir()), // pour le bandeau « stacks à relancer »
+		m.startupStatusClear(),
 	)
+}
+
+// startupStatusClear efface l'éventuel avertissement de New (thème de la
+// config introuvable) après quelques secondes.
+func (m Model) startupStatusClear() tea.Cmd {
+	if m.status == "" {
+		return nil
+	}
+	return clearStatusIn(6 * time.Second)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -704,6 +735,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// t ouvre le sélecteur de thème depuis la liste, mode services compris,
+	// et depuis l'aide. T aussi (verrouillage des majuscules), comme Q. Pas
+	// pendant une saisie : c'est alors une lettre du filtre.
+	if k := msg.String(); (k == "t" || k == "T") && (m.view == viewList || m.view == viewHelp) && !m.typing() {
+		m.quitArmed = false
+		return m.openThemePicker()
+	}
 	// L'aide défile (↑↓) si elle dépasse l'écran et se ferme sur toute autre
 	// touche (avant l'intercept global de r).
 	if m.view == viewHelp {
@@ -750,7 +788,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// q quitte partout (deux frappes), esc revient : règle unique pour toutes
 	// les vues. La liste et le mode services traitent q eux-mêmes (filtres
 	// texte) ; la saisie d'un libellé de capture garde q comme lettre.
-	if msg.String() == "q" && m.view != viewList && !m.captureLabeling {
+	if msg.String() == "q" && m.view != viewList && !m.typing() {
 		return m.armOrQuit()
 	}
 	switch m.view {
@@ -770,6 +808,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRestorePickKey(msg)
 	case viewCompose:
 		return m.handleComposeKey(msg)
+	case viewTheme:
+		return m.handleThemeKey(msg)
 	}
 	return m, nil
 }
@@ -779,6 +819,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
+	// Thème Ghostty : fond et texte par défaut du terminal pris au thème
+	// (bubbletea les rétablit en sortie). nil avec le thème par défaut.
+	v.BackgroundColor = activeScheme.Bg
+	v.ForegroundColor = activeScheme.Fg
 	// Capture the mouse only in the progress view while the operation runs
 	// (for wheel scrolling). Once it's done — and everywhere else — leave the
 	// mouse free so the terminal's native text selection / copy works, e.g.
@@ -827,6 +871,8 @@ func (m Model) viewContent() string {
 		body = renderActionMenu(m, bodyH)
 	case viewBackup:
 		body = renderBackupView(m, bodyH)
+	case viewTheme:
+		body = renderThemePicker(m, bodyH)
 	default:
 		if m.loading {
 			body = styleDim.Render("\n  Chargement...")
@@ -910,7 +956,7 @@ func renderError(err error) string {
 	if strings.Contains(msg, "docker.sock") || (strings.Contains(msg, "permission denied") && strings.Contains(msg, "docker")) {
 		box := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("1")).
+			BorderForeground(activeScheme.Danger).
 			Padding(0, 2).
 			MarginLeft(2)
 
@@ -1014,8 +1060,7 @@ func (m Model) renderFooter() string {
 		return styleGreen.PaddingLeft(2).Render("✓ " + msg)
 	}
 	if m.spinning {
-		bar := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("6")).
+		bar := styleCyan.
 			Bold(true).
 			PaddingLeft(2).
 			Render("▶ " + m.opLabel + "  " + m.spinner.View())
@@ -1049,6 +1094,9 @@ func (m Model) renderFooter() string {
 		}
 		return renderBar([]footerKey{{"␣", "cocher"}, {"ctrl+a", "tout"}, {"↩", fmt.Sprintf("relancer %d stack%s", n, plural(n))}},
 			back, m.width, "")
+	case viewTheme:
+		left, right, info := m.themeFooter()
+		return renderBar(left, right, m.width, info)
 	case viewHelp:
 		var left []footerKey
 		if m.helpMaxScroll() > 0 {
@@ -1185,7 +1233,8 @@ func quitWarning() string {
 // des services, nom de capture) : les raccourcis globaux (R, Q) y sont des
 // lettres ordinaires.
 func (m Model) typing() bool {
-	return m.filtering || (m.svcFocus && m.svcFiltering) || m.captureLabeling
+	return m.filtering || (m.svcFocus && m.svcFiltering) || m.captureLabeling ||
+		(m.view == viewTheme && m.themeFiltering)
 }
 
 // bodyHeight : hauteur du corps des vues sous l'en-tête (footer d'une ligne).

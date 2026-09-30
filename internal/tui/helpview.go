@@ -77,7 +77,7 @@ func helpBox(m Model) string {
 		"  " + k("v") + "  fichier compose en plein écran" + d("  (") + k("tab") + d(" : dans le volet)"),
 		"  " + k("a") + "  afficher/masquer les stacks arrêtées" + d("  (et non déployées)"),
 		"  " + k("x") + "  exclure du scan" + d("  (réversible dans ~/.dockstack/config.json)"),
-		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  changer de répertoire",
+		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  changer de répertoire   " + k("t") + "  thème",
 	}
 	captures := []string{
 		title("Captures d'état", ""),
@@ -111,7 +111,7 @@ func helpBox(m Model) string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("6")).
+		BorderForeground(activeScheme.Border).
 		Padding(0, 2).
 		MarginLeft(2)
 

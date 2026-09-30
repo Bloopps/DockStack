@@ -11,15 +11,6 @@ import (
 
 const panelWidth = 34
 
-var (
-	stylePanel = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("6")).
-			Padding(0, 1)
-
-	stylePanelTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-)
-
 func renderActionMenu(m Model, height int) string {
 	sel := m.selectedStacks()
 	stack, okStack := m.cursorStack()
@@ -45,7 +36,7 @@ func renderActionMenu(m Model, height int) string {
 func menuLines(actions []menuAction, cursor, inner int) []string {
 	lines := make([]string, len(actions))
 	for i, st := range actions {
-		col := lipgloss.NewStyle().Foreground(lipgloss.Color(st.color))
+		col := slotStyle(st.color)
 		var line string
 		if i == cursor {
 			line = col.Bold(true).Render("▌") + " " + col.Bold(true).Render(fmt.Sprintf("%s  %s", st.icon, st.label))

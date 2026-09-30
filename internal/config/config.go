@@ -24,6 +24,9 @@ type Config struct {
 	// Exclude liste des chemins relatifs au dossier des stacks à ignorer
 	// (le chemin lui-même et tout ce qui est en dessous).
 	Exclude []string `json:"exclude,omitempty"`
+	// Theme : nom du thème de couleurs (catalogue Ghostty embarqué ou thème
+	// personnel, cf. package theme). Vide = thème par défaut de dockstack.
+	Theme string `json:"theme,omitempty"`
 }
 
 // IsExcluded dit si la stack de chemin relatif name tombe sous une exclusion.

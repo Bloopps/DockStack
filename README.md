@@ -55,6 +55,11 @@ de l'utiliser sur des stacks importantes.
   `*` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
   au lancement, les stacks de la dernière capture qui ne tournent plus
 - Filtrage / recherche dans la liste des stacks
+- Thèmes de couleurs (`t`) : les 650+ thèmes livrés avec
+  [Ghostty](https://ghostty.org) (Dracula, Nord, Gruvbox, Catppuccin,
+  TokyoNight, Solarized…), clairs comme sombres, avec aperçu en direct sur
+  toute l'interface. Les couleurs trop peu contrastées sont corrigées pour
+  rester lisibles
 
 ## Prérequis
 
@@ -106,6 +111,36 @@ lancement) :
 - `exclude` : chemins relatifs à `stack_dir` ignorés par le scan, avec tout
   ce qu'ils contiennent (ajout avec `x` ; retirer l'entrée pour annuler),
   par ex. `["dockerstack", "tests/fixtures"]`
+- `theme` : nom du thème de couleurs (choisi avec `t`). Absent = thème
+  d'origine, qui reprend les couleurs du terminal
+
+### Thèmes
+
+Le sélecteur (`t`) applique le thème sous le curseur à toute l'interface ;
+`↩` l'enregistre, `esc` revient au précédent. Il s'ouvre sur une sélection
+d'une soixantaine de classiques (« populaires ») ; `tab` passe à tout le
+catalogue, puis aux seuls sombres ou clairs, et `/` cherche un nom dans tout
+le catalogue. Un thème impose au terminal son fond et sa
+couleur de texte le temps de l'exécution (rétablis en sortie). Le rendu est
+fidèle en couleurs 24 bits ; par SSH, penser à transmettre `COLORTERM=truecolor`
+si le terminal le permet, sinon les couleurs sont approchées en 256.
+
+Thèmes personnels : un fichier par thème, au format Ghostty, dans
+`~/.dockstack/themes/` ou `~/.config/ghostty/themes/` (le nom du fichier est
+celui du thème ; il remplace un thème intégré de même nom) :
+
+```
+background = #1e1e2e
+foreground = #cdd6f4
+selection-background = #585b70
+selection-foreground = #cdd6f4
+palette = 0=#45475a
+palette = 1=#f38ba8
+…
+palette = 15=#a6adc8
+```
+
+Le catalogue intégré se met à jour avec `scripts/update-themes.sh`.
 
 ## Raccourcis principaux
 
@@ -126,6 +161,7 @@ lancement) :
 | `a`                   | Afficher / masquer les stacks arrêtées et non déployées (masquées par défaut) |
 | `x`                   | Exclure du scan la stack ou le dossier sous le curseur |
 | `o`                   | Changer de répertoire                                |
+| `t`                   | Thème de couleurs (aperçu en direct, `↩` enregistre) |
 | `?`                   | Aide (`↑↓` pour défiler si elle dépasse l'écran)     |
 | `q`                   | Quitter (deux frappes, depuis toutes les vues ; `esc` = retour) |
 

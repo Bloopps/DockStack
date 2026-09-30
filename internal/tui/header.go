@@ -12,25 +12,6 @@ import (
 	"github.com/Bloopps/dockstack/internal/monitor"
 )
 
-var (
-	styleGreen   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	styleYellow  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	styleRed     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleCyan    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	styleMagenta = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	styleOrange  = lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
-	styleBold    = lipgloss.NewStyle().Bold(true)
-	styleDim     = lipgloss.NewStyle().Faint(true)
-	// Sillon des barres (partie non remplie) : un gris discret peint en fond
-	// rend une gouttière nette et pleine (pas d'interstices entre glyphes).
-	// 238 et non 236 : sur un thème sombre, 236 se confondait avec le fond et
-	// la longueur totale des barres devenait invisible.
-	trackColor = lipgloss.Color("238")
-	styleTrack = lipgloss.NewStyle().Background(trackColor)
-)
-
-var styleSep = styleMagenta.Render(" │ ")
-
 const (
 	metricsHistoryLen = 60 // samples kept (≈2 min at the 2s tick)
 	avgSparkWidth     = 12 // trend width for CPU avg / RAM
@@ -170,7 +151,7 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 	sep := styleSep
 
 	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
-	title := styleBold.Foreground(lipgloss.Color("2")).Render("🐳 Docker Stack Manager")
+	title := styleGreen.Bold(true).Render("🐳 Docker Stack Manager")
 	// Le dossier scanné et la touche pour en changer, côte à côte : sans ce
 	// rappel, un nouvel utilisateur ne sait pas comment quitter un mauvais
 	// dossier (le raccourci o ne tient pas toujours dans le pied de page).
@@ -556,7 +537,7 @@ func barText(pct, width int, st lipgloss.Style, texts ...string) string {
 	}
 	fill := st.GetForeground()
 	if _, none := fill.(lipgloss.NoColor); none || fill == nil {
-		fill = lipgloss.Color("244") // styleDim n'a pas de couleur propre
+		fill = activeScheme.NeutralFill // styleDim n'a pas de couleur propre
 	}
 	cells := []rune(strings.Repeat(" ", width))
 	for _, t := range texts {
@@ -565,8 +546,8 @@ func barText(pct, width int, st lipgloss.Style, texts ...string) string {
 			break
 		}
 	}
-	return lipgloss.NewStyle().Background(fill).Foreground(lipgloss.Color("0")).Render(string(cells[:filled])) +
-		styleTrack.Foreground(lipgloss.Color("252")).Render(string(cells[filled:]))
+	return lipgloss.NewStyle().Background(fill).Foreground(activeScheme.OnFill(fill)).Render(string(cells[:filled])) +
+		styleTrack.Foreground(activeScheme.TrackText).Render(string(cells[filled:]))
 }
 
 // fmtBytes : taille lisible en Go (Mo en dessous de 1 Go).

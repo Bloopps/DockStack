@@ -24,33 +24,33 @@ type menuAction struct {
 	id    string // action canonique ("up", "compose", "back"…)
 	icon  string
 	label string
-	color string // index de couleur ANSI
+	color string // emplacement de couleur du thème (cf. slotStyle)
 	key   string // raccourci, le même que dans la liste ("" = aucun : Remove)
 }
 
 // Remove n'a volontairement pas de raccourci : détruire les volumes doit
 // passer par le panneau, jamais par une lettre tapée par erreur.
 var stackActions = []menuAction{
-	{"up", "▶", "Up", "2", "u"},
-	{"stop", "■", "Stop", "1", "s"},
-	{"down", "▪", "Down", "1", "d"},
-	{"restart", "↺", "Restart", "3", "r"},
-	{"recreate", "↻", "Recreate", "3", "c"},
-	{"pull", "↓", "Pull", "6", "p"},
-	{"logs", "≡", "Logs", "6", "l"},
-	{"compose", "▤", "Compose", "6", "v"},
-	{"remove", "✕", "Remove", "1", ""},
-	{"back", "←", "Retour", "8", "esc"},
+	{"up", "▶", "Up", "green", "u"},
+	{"stop", "■", "Stop", "red", "s"},
+	{"down", "▪", "Down", "red", "d"},
+	{"restart", "↺", "Restart", "yellow", "r"},
+	{"recreate", "↻", "Recreate", "yellow", "c"},
+	{"pull", "↓", "Pull", "cyan", "p"},
+	{"logs", "≡", "Logs", "cyan", "l"},
+	{"compose", "▤", "Compose", "cyan", "v"},
+	{"remove", "✕", "Remove", "red", ""},
+	{"back", "←", "Retour", "muted", "esc"},
 }
 
 var groupActions = []menuAction{
-	{"up", "▶", "Up", "2", "u"},
-	{"stop", "■", "Stop", "1", "s"},
-	{"down", "▪", "Down", "1", "d"},
-	{"restart", "↺", "Restart", "3", "r"},
-	{"recreate", "↻", "Recreate", "3", "c"},
-	{"pull", "↓", "Pull", "6", "p"},
-	{"back", "←", "Retour", "8", "esc"},
+	{"up", "▶", "Up", "green", "u"},
+	{"stop", "■", "Stop", "red", "s"},
+	{"down", "▪", "Down", "red", "d"},
+	{"restart", "↺", "Restart", "yellow", "r"},
+	{"recreate", "↻", "Recreate", "yellow", "c"},
+	{"pull", "↓", "Pull", "cyan", "p"},
+	{"back", "←", "Retour", "muted", "esc"},
 }
 
 // ---- list ----

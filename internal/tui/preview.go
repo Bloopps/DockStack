@@ -257,18 +257,6 @@ func groupRollup(members []compose.Stack) string {
 	return strings.Join(segs, "  ")
 }
 
-// Styles de coloration YAML de l'aperçu. Réutilise la palette du header pour
-// rester cohérent avec le reste de la TUI.
-var (
-	styleYamlKey    = styleCyan            // clé indentée
-	styleYamlTopKey = styleCyan.Bold(true) // clé de premier niveau (section)
-	styleYamlPunct  = styleDim             // « : », « - », commentaires
-	styleYamlString = styleGreen           // valeur entre guillemets / scalaire libre
-	styleYamlNumber = styleYellow          // entier / flottant / port
-	styleYamlBool   = styleMagenta         // true/false/null/yes/no
-	styleYamlEnvVar = styleOrange          // interpolation ${VAR}
-)
-
 // highlightComposeLine colore une ligne de YAML compose : indentation
 // préservée, clés mises en valeur (gras au premier niveau), valeurs colorées
 // par type, commentaires grisés. Tronque d'abord à inner colonnes pour que les

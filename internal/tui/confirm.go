@@ -211,7 +211,7 @@ func renderConfirmView(m Model, height int) string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("3")).
+		BorderForeground(activeScheme.Warn).
 		Padding(0, 2).
 		MarginLeft(2).
 		MarginTop(1)
