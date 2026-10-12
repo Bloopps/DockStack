@@ -45,7 +45,6 @@ const (
 
 // ---- message types ----
 
-type tickMsg time.Time
 type metricsMsg monitor.Metrics
 type clientReadyMsg struct{ client dockerService }
 
@@ -259,6 +258,8 @@ type Model struct {
 	confirmNames   []string
 	confirmExec    func(Model) (tea.Model, tea.Cmd)
 	confirmReturn  view // vue de retour si l'utilisateur annule
+	// confirmDanger : l'action efface des données, seul y la confirme.
+	confirmDanger bool
 
 	// Metrics
 	metrics monitor.Metrics
@@ -1272,7 +1273,7 @@ func (m Model) renderFooter() string {
 	back := []footerKey{{"esc", "retour"}}
 	switch m.view {
 	case viewConfirm:
-		return renderBar([]footerKey{{"y / ↩", "confirmer"}}, []footerKey{{"n / esc", "annuler"}}, m.width, "")
+		return renderBar([]footerKey{{m.confirmKeys(), "confirmer"}}, []footerKey{{"n / esc", "annuler"}}, m.width, "")
 	case viewBackup:
 		if m.captureLabeling {
 			return renderBar([]footerKey{{"↩", "valider"}}, []footerKey{{"esc", "annuler"}}, m.width, "")
@@ -1333,12 +1334,14 @@ func truncate(s string, max int) string {
 	return ansi.Truncate(s, max, "…")
 }
 
-// ansiCSI repère les séquences ANSI/CSI (couleurs, déplacement du curseur,
-// effacement de ligne/écran…) qu'émettent les programmes pensés pour un
-// terminal interactif. On les retire en bloc : ne garder que le filtrage
-// caractère par caractère ci-dessous laisserait leur résidu textuel
-// (« [2K », « [1;1H »…) visible dans les logs.
-var ansiCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+// ansiSeq repère les séquences d'échappement qu'émettent les programmes
+// pensés pour un terminal interactif : CSI (couleurs, déplacement du
+// curseur, effacement…), OSC (titre de fenêtre, lien, presse-papiers via
+// OSC 52), terminée par BEL ou ST, et les séquences à deux caractères. On
+// les retire en bloc : ne garder que le filtrage caractère par caractère
+// ci-dessous laisserait leur résidu textuel (« [2K », « ]0;titre »…)
+// visible dans les logs.
+var ansiSeq = regexp.MustCompile("\x1b(?:\\[[0-?]*[ -/]*[@-~]|\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?|[@-Z\\\\-_])")
 
 // sanitizeLogLine retire les séquences ANSI/escape et les caractères de
 // contrôle qu'un conteneur peut écrire dans ses logs, et convertit les
@@ -1359,19 +1362,44 @@ func sanitizeLogLine(s string) string {
 	// L'expression régulière ne sert que s'il y a une séquence d'échappement :
 	// c'est rare, et elle coûtait autant que tout le reste pour chaque ligne.
 	if strings.IndexByte(s, 0x1b) >= 0 {
-		s = ansiCSI.ReplaceAllString(s, "")
+		s = ansiSeq.ReplaceAllString(s, "")
 	}
+	// unicode.IsControl couvre aussi les contrôles C1 (U+0080 à U+009F) :
+	// certains terminaux lisent U+009B comme un CSI, une séquence pouvait
+	// donc passer sans caractère d'échappement.
 	s = strings.Map(func(r rune) rune {
 		if r == '\t' {
 			return r
 		}
-		if r < 0x20 || r == 0x7f {
+		if unicode.IsControl(r) {
 			return -1
 		}
 		return r
 	}, s)
 	return expandTabs(s)
 }
+
+// sanitizeText rend affichable sur une ligne un texte venu de l'extérieur
+// (message d'erreur du démon ou d'un registre, étiquette d'image, nom de
+// dossier) : fins de ligne remplacées par des espaces, séquences
+// d'échappement et caractères de contrôle retirés. Un texte en ASCII
+// imprimable, le cas courant, est rendu tel quel sans allocation.
+func sanitizeText(s string) string {
+	clean := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c >= 0x7f {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	return sanitizeLogLine(lineBreaks.Replace(s))
+}
+
+// lineBreaks : fins de ligne d'un texte rendu sur une seule ligne.
+var lineBreaks = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 
 // expandTabs remplace les tabulations par des espaces jusqu'au taquet suivant
 // (tous les 8 caractères) : le moteur de rendu ignore '\t', ce qui collait les

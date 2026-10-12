@@ -168,7 +168,11 @@ func (m Model) confirmCleanup() (tea.Model, tea.Cmd) {
 	}
 	label := "Nettoyage — " + fmtCleanupSize(planned, approx)
 	before := *m.cleanupRep
-	return m.askConfirm(label, strings.Join(warn, " "), names, func(m Model) (tea.Model, tea.Cmd) {
+	ask := m.askConfirm
+	if len(volumes) > 0 {
+		ask = m.askConfirmDanger // des données seront effacées
+	}
+	return ask(label, strings.Join(warn, " "), names, func(m Model) (tea.Model, tea.Cmd) {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.cleanupBefore, m.cleanupPlanned, m.cleanupApprox, m.cleanupResult = &before, planned, approx, ""
 		next, cmd := m.startProgressOp(label, cancel, m.client.CleanupLive(ctx, items))
@@ -401,7 +405,11 @@ func (m Model) confirmPrune(p compose.PruneCommand) (tea.Model, tea.Cmd) {
 	}
 	names := append([]string{}, s.lines...)
 	before := *m.cleanupRep
-	return m.askConfirm(label, strings.Join(s.warn, " "), names, func(m Model) (tea.Model, tea.Cmd) {
+	ask := m.askConfirm
+	if p.Erases() {
+		ask = m.askConfirmDanger
+	}
+	return ask(label, strings.Join(s.warn, " "), names, func(m Model) (tea.Model, tea.Cmd) {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.cleanupBefore, m.cleanupPlanned, m.cleanupApprox, m.cleanupResult = &before, s.size, s.approx || s.unknown, ""
 		next, cmd := m.startProgressOp(label, cancel, m.client.PruneLive(ctx, p))
@@ -502,8 +510,9 @@ func (m Model) handleCleanupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r, ok := m.cleanupCurrent(); ok && !r.isPrune && m.cleanupOpen[r.kind] {
 			m.cleanupOpen[r.kind] = false
 			// Le curseur remonte sur la catégorie repliée.
+			rows := m.cleanupRows()
 			for i, ri := range m.cleanupNav() {
-				if rr := m.cleanupRows()[ri]; rr.kind == r.kind && rr.item < 0 {
+				if rr := rows[ri]; rr.kind == r.kind && rr.item < 0 {
 					m.cleanupCursor = i
 				}
 			}
@@ -765,7 +774,7 @@ func (m Model) cleanupBilan(w int) []string {
 	rep := m.cleanupRep
 	var out []string
 	if mt := m.metrics; mt.DiskTotalGB > 0 {
-		free := mt.DiskTotalGB - mt.DiskUsedGB
+		free := mt.DiskFreeGB
 		out = append(out, "  "+styleCyan.Render("Disque ")+styleDim.Render(truncate(mt.DiskMount, 12))+" "+
 			bar(mt.DiskPercent, 12)+fmt.Sprintf(" %d / %d Go (%d %%)", mt.DiskUsedGB, mt.DiskTotalGB, mt.DiskPercent)+
 			styleDim.Render(fmt.Sprintf(" · %d Go libres", free)))

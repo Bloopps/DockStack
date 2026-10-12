@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -233,5 +235,48 @@ func TestServiceModeRenderAndEscape(t *testing.T) {
 	m = press(m, "esc") // 2e esc : quitte
 	if m.svcFocus {
 		t.Fatal("2e esc : quitter le mode services")
+	}
+}
+
+// Le libellé du bloc d'actions annonce exactement ce que visent les lettres :
+// les cochés visibles, ou le service du curseur quand le filtre masque tous
+// les cochés. Il comptait tous les cochés, masqués compris.
+func TestServiceActionLabelMatchesTargets(t *testing.T) {
+	fake := &fakeClient{}
+	m := press(svcTestModel(fake), "right", "e") // coche db et worker
+	m = press(m, "/", "d", "b", "enter")         // filtre « db » : worker masqué
+	out := ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "Actions sur 1 coché visible (1 masqué)") {
+		t.Errorf("libellé attendu pour db seul :\n%s", out)
+	}
+	m = press(m, "esc", "/", "c", "a", "enter") // filtre « ca » : aucun coché visible
+	out = ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "Actions sur cache") {
+		t.Errorf("sans coché visible, le libellé doit nommer le service du curseur :\n%s", out)
+	}
+	press(m, "p")
+	if got := onlyOf(fake, "pull"); got != "cache" {
+		t.Errorf("pull : Only = %s, want cache (le libellé l'annonçait)", got)
+	}
+}
+
+// Le cache des services déclarés suit aussi le .env : y activer un profil
+// (COMPOSE_PROFILES) fait apparaître ses services sans relancer dockstack.
+func TestDeclaredServicesFollowDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(file, []byte("services:\n  app:\n    image: nginx\n  debug:\n    image: busybox\n    profiles: [debug]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := compose.Stack{Name: "p", Dir: dir, ComposeFile: file}
+	c := &svcCacheBox{}
+	if n := len(c.declared(s)); n != 1 {
+		t.Fatalf("sans profil : %d service(s), want 1", n)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("COMPOSE_PROFILES=debug\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(c.declared(s)); n != 2 {
+		t.Errorf("profil activé dans le .env : %d service(s), want 2", n)
 	}
 }

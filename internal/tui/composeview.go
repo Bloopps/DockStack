@@ -66,8 +66,8 @@ func renderComposeView(m Model) string {
 	if m.composeResolved {
 		mode = "résolu"
 	}
-	title := styleTitle.Render("📄 "+m.composeStack.Name) +
-		styleDim.Render("  ("+mode+")")
+	title := truncate(styleTitle.Render("📄 "+m.composeStack.Name)+
+		styleDim.Render("  ("+mode+")"), max(m.width, 1))
 	// Hint dépendant du mode souris, tronqué à la largeur : un hint qui wrappe
 	// ajouterait une ligne et décalerait le calcul de hauteur du corps.
 	mouse := footerKey{"m", "sélectionner du texte"}
@@ -86,7 +86,13 @@ func renderComposeView(m Model) string {
 	var body string
 	switch {
 	case m.composeErr != nil:
-		body = styleRed.Render(truncate("  Erreur : "+m.composeErr.Error(), m.width))
+		// Replié : un message du loader (YAML invalide, .env) dépasse souvent
+		// la largeur, et la fin, qui situe l'erreur, était coupée.
+		var lines []string
+		for _, l := range wordWrap("Erreur : "+sanitizeText(m.composeErr.Error()), max(m.width-4, 20)) {
+			lines = append(lines, styleRed.Render("  "+l))
+		}
+		body = strings.Join(lines, "\n")
 	case m.composeStack.ComposeFile == "":
 		body = styleDim.Render("  (aucun fichier compose détecté pour cette stack)")
 	case len(m.composeLines) == 0:
@@ -111,5 +117,5 @@ func renderComposeView(m Model) string {
 		body = strings.Join(lines, "\n")
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, sep, body, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, title, sep, fitHeight(body, bodyH), hint)
 }

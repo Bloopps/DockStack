@@ -81,8 +81,10 @@ func (ps *progressState) apply(ev compose.ProgressEvent) {
 			st.roots = append(st.roots, r)
 		}
 	}
-	r.status = ev.Status
-	r.details = ev.Details
+	// Textes du démon, parfois relayés d'un registre (message d'erreur d'un
+	// pull) : assainis une fois ici plutôt qu'à chaque image.
+	r.status = sanitizeText(ev.Status)
+	r.details = sanitizeText(ev.Details)
 	r.percent = ev.Percent
 	r.state = ev.State
 	if ev.State != "working" && r.doneAt.IsZero() {
@@ -210,7 +212,7 @@ func (m Model) progressLines(start, end int) (visible []string, total int) {
 			if maxErrW < 20 {
 				maxErrW = 20
 			}
-			for _, l := range wordWrap(err.Error(), maxErrW) {
+			for _, l := range wordWrap(sanitizeText(err.Error()), maxErrW) {
 				add(func() string { return "      " + styleRed.Render(l) })
 			}
 		}
@@ -395,7 +397,7 @@ func wordWrap(text string, width int) []string {
 // failureReason renvoie la cause d'échec d'une stack en une ligne : erreur de
 // la stack, sinon message de la première ressource en erreur. Vide si tout va bien.
 func failureReason(st *stackProgress) string {
-	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	oneLine := func(s string) string { return strings.Join(strings.Fields(sanitizeText(s)), " ") }
 	if st.err != nil {
 		return oneLine(st.err.Error())
 	}

@@ -4,7 +4,7 @@ package tui
 
 import (
 	"context"
-	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -59,14 +59,22 @@ func (j journeyClient) CleanupLive(ctx context.Context, items []compose.CleanupI
 }
 
 // TestLiveJourney rejoue les parcours principaux sur les vraies stacks de
-// /home/ubuntu, HOME isolé (TestMain), actions simulées.
+// /home/ubuntu (ou de DOCKSTACK_JOURNEY_DIR, par ex. demo-stacks), HOME isolé
+// (TestMain), actions simulées.
 func TestLiveJourney(t *testing.T) {
 	c, err := compose.New()
 	if err != nil {
 		t.Skip(err)
 	}
+	dir := os.Getenv("DOCKSTACK_JOURNEY_DIR")
+	if dir == "" {
+		dir = "/home/ubuntu"
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Skipf("dossier de stacks %s absent (DOCKSTACK_JOURNEY_DIR pour en choisir un)", dir)
+	}
 	fake := &fakeClient{autoDone: true}
-	cfg := &config.Config{StackDir: "/home/ubuntu", MaxParallel: 4}
+	cfg := &config.Config{StackDir: dir, MaxParallel: 4}
 	m := New(cfg)
 	m.width, m.height = 190, 50
 	m = drive(t, m, clientReadyMsg{client: journeyClient{Client: c, fake: fake}}, 0)
@@ -159,15 +167,19 @@ func TestLiveJourney(t *testing.T) {
 
 	// Stack en marche : up confirmé seulement si la prévision réelle annonce
 	// des recréations (PlanUp lit le démon, sans rien changer).
+	// Étape sautée si rien ne tourne (dossier de démonstration).
+	running := false
 	for i, r := range m.listRows() {
 		if r.isStack() && r.stack.State() == compose.StateRunning {
-			m.cursor = i
+			m.cursor, running = i, true
 			break
 		}
 	}
-	key("u")
-	if m.view == viewConfirm {
-		key("n")
+	if running {
+		key("u")
+		if m.view == viewConfirm {
+			key("n")
+		}
 	}
 
 	// b : captures ; c : capturer (HOME isolé) ; ↩ : relance ; esc.
@@ -206,5 +218,5 @@ func TestLiveJourney(t *testing.T) {
 	if rows := m.visibleStacks(); len(rows) == 0 || !strings.Contains(strings.ToLower(rows[0].Name), strings.ToLower(name)) {
 		t.Fatalf("filtre %q : %v", name, rows)
 	}
-	t.Log(fmt.Sprintf("parcours complet sur %d stacks, cible %s", len(m.stacks), name))
+	t.Logf("parcours complet sur %d stacks, cible %s", len(m.stacks), name)
 }

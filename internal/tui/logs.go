@@ -40,6 +40,11 @@ func renderLogsView(m Model) string {
 		lines = append(lines, truncate("  "+l, m.width))
 	}
 
-	body := strings.Join(lines, "\n")
+	if len(m.logLines) == 0 {
+		lines = append(lines, styleDim.Render("  Aucune ligne pour l'instant…"))
+	}
+	// Hauteur fixe : un flux encore court remontait le pied de page au
+	// milieu de l'écran.
+	body := fitHeight(strings.Join(lines, "\n"), bodyH)
 	return lipgloss.JoinVertical(lipgloss.Left, title, sep, body, hint)
 }

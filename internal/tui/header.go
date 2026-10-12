@@ -542,7 +542,7 @@ func barText(pct, width int, st lipgloss.Style, texts ...string) string {
 		filled = 1
 	}
 	fill := st.GetForeground()
-	if _, none := fill.(lipgloss.NoColor); none || fill == nil {
+	if _, none := fill.(lipgloss.NoColor); none {
 		fill = activeScheme.NeutralFill // styleDim n'a pas de couleur propre
 	}
 	cells := []rune(strings.Repeat(" ", width))

@@ -15,7 +15,9 @@ type dirLoadedMsg struct {
 
 func renderDirPicker(m Model) string {
 	title := styleTitle.Render("📂 Choisir le répertoire des stacks")
-	sub := styleDim.Render(truncate(fmt.Sprintf("  Répertoire actuel : %s", m.dirPath), max(m.width, 1)))
+	// Noms de dossiers assainis à l'affichage : n'importe qui peut créer dans
+	// /tmp un dossier dont le nom contient une séquence d'échappement.
+	sub := styleDim.Render(truncate(fmt.Sprintf("  Répertoire actuel : %s", sanitizeText(m.dirPath)), max(m.width, 1)))
 
 	// Fenêtre qui suit le curseur : un dossier aux centaines de
 	// sous-dossiers (/usr/lib, un home chargé) poussait le curseur et le pied
@@ -32,7 +34,7 @@ func renderDirPicker(m Model) string {
 	}
 	var lines []string
 	for i := off; i < len(m.dirEntries) && i < off+rowsH; i++ {
-		line := "  " + truncate(m.dirEntries[i], max(m.width-2, 1))
+		line := "  " + truncate(sanitizeText(m.dirEntries[i]), max(m.width-2, 1))
 		if i == m.dirCursor {
 			pad := m.width - lipgloss.Width(line)
 			if pad < 0 {
@@ -49,7 +51,7 @@ func renderDirPicker(m Model) string {
 	body := strings.Join(lines, "\n")
 	// Répertoire illisible : le dire plutôt que de l'afficher comme vide.
 	if m.dirErr != nil {
-		body += "\n\n  " + styleRed.Render("⚠ "+truncate(m.dirErr.Error(), max(m.width-6, 10)))
+		body += "\n\n  " + styleRed.Render("⚠ "+truncate(sanitizeText(m.dirErr.Error()), max(m.width-6, 10)))
 	}
 	exit := footerKey{"esc", "annuler"}
 	if m.cfg.StackDir == "" {

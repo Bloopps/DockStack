@@ -59,7 +59,10 @@ func TestLiveCleanupEndToEnd(t *testing.T) {
 		t.Skip(err)
 	}
 	fakedocker.LiveLock(t)
-	dockerRun(t, "pull", "-q", "busybox:latest")
+	// Pull seulement si l'image manque : Docker Hub limite le débit.
+	if exec.Command("docker", "image", "inspect", "busybox:latest").Run() != nil {
+		dockerRun(t, "pull", "-q", "busybox:latest")
+	}
 	dockerRun(t, "run", "--name", "zzdsprobee2e", "busybox:latest", "sh", "-c", "head -c 3000000 /dev/urandom > /f")
 	img := dockerRun(t, "commit", "zzdsprobee2e")
 	dockerRun(t, "rm", "zzdsprobee2e")

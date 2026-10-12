@@ -99,10 +99,12 @@ func fitPanel(head, sep, actions []string, cursor int, extraSep string, extra []
 func buildActionPanel(stack compose.Stack, cursor, height int) string {
 	dot, dotStyle := stateStyle(stack.State())
 
-	title := stylePanelTitle.Render(stack.Name)
+	inner := panelWidth - 4
+	// Tronqué : un nom plus large que le cadre y était replié sur plusieurs
+	// lignes, que fitPanel ne comptait pas (cadre plus haut que l'écran).
+	title := stylePanelTitle.Render(truncate(stack.Name, inner))
 	state := dotStyle.Render(dot) + " " + styleDim.Render(stateLabel(stack))
 
-	inner := panelWidth - 4
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
 	// Services plafonnés à la place restante : sans plafond, une stack de
@@ -146,7 +148,7 @@ func buildGroupPanel(selected []compose.Stack, cursor, height int) string {
 	names := make([]string, len(selected))
 	for i, s := range selected {
 		dot, dotStyle := stateStyle(s.State())
-		names[i] = "  " + dotStyle.Render(dot) + " " + styleDim.Render(s.Name)
+		names[i] = "  " + dotStyle.Render(dot) + " " + styleDim.Render(truncate(s.Name, inner-4))
 	}
 	rows := fitPanel([]string{title}, []string{divider, ""}, menuLines(groupActions, cursor, inner), cursor,
 		divider, names, func(n int) string { return styleDim.Render(fmt.Sprintf("  … et %d autres", n)) }, false, height)

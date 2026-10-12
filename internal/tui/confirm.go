@@ -31,6 +31,7 @@ func (m Model) askConfirm(label, warning string, names []string, exec func(Model
 	m.confirmWarning = warning
 	m.confirmNames = names
 	m.confirmExec = exec
+	m.confirmDanger = false
 	// Annuler ramène d'où l'on vient quand ça a du sens (vue backup),
 	// sinon à la liste.
 	m.confirmReturn = viewList
@@ -39,6 +40,17 @@ func (m Model) askConfirm(label, warning string, names []string, exec func(Model
 	}
 	m.view = viewConfirm
 	return m, nil
+}
+
+// askConfirmDanger : askConfirm pour une action qui efface des données
+// (volumes, conteneurs arrêtés). Seul y confirme : ↩ est la touche qui ouvre
+// le panneau d'actions et lance l'entrée choisie, un double appui sur ↩
+// suffisait à supprimer les volumes d'une stack.
+func (m Model) askConfirmDanger(label, warning string, names []string, exec func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
+	next, cmd := m.askConfirm(label, warning, names, exec)
+	nm := next.(Model)
+	nm.confirmDanger = true
+	return nm, cmd
 }
 
 // confirmGroupAction demande confirmation avant une action groupée
@@ -177,20 +189,32 @@ func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
+		if m.confirmDanger && msg.String() == "enter" {
+			m.setStatus("Action destructrice : y pour confirmer, esc pour annuler", true)
+			return m, clearStatusIn(4 * time.Second)
+		}
 		exec := m.confirmExec
 		m.confirmExec = nil
+		m.confirmDanger = false
 		m.view = viewList
 		if exec != nil {
 			return exec(m)
 		}
 	case "n", "esc":
 		m.confirmExec = nil
+		m.confirmDanger = false
 		m.view = m.confirmReturn
 	}
 	return m, nil
 }
 
-const confirmMaxNames = 8
+// confirmKeys : touches qui confirment (↩ exclue pour une action destructrice).
+func (m Model) confirmKeys() string {
+	if m.confirmDanger {
+		return "y"
+	}
+	return "y / ↩"
+}
 
 func renderConfirmView(m Model, height int) string {
 	inner := panelWidth + 4
@@ -211,8 +235,11 @@ func renderConfirmView(m Model, height int) string {
 	rows = append(rows, divider)
 
 	// Plafond adapté à la hauteur : un alignement ou une restauration liste
-	// facilement des dizaines de lignes qu'il faut pouvoir relire avant de valider.
-	maxNames := max(confirmMaxNames, height-9)
+	// facilement des dizaines de lignes qu'il faut pouvoir relire avant de
+	// valider. Le cadre doit tenir à l'écran (marge et bordures, « … et N
+	// autres », blanc et touches : 6 lignes) : sur un terminal bas, un minimum
+	// fixe de 8 noms poussait la ligne des touches hors de l'écran.
+	maxNames := max(height-6-len(rows), 1)
 	names := m.confirmNames
 	extra := 0
 	if len(names) > maxNames {
@@ -225,7 +252,7 @@ func renderConfirmView(m Model, height int) string {
 	if extra > 0 {
 		rows = append(rows, "  "+styleDim.Render(fmt.Sprintf("… et %d autres", extra)))
 	}
-	rows = append(rows, "", styleGreen.Render("y / ↩  confirmer")+"   "+styleRed.Render("n / esc  annuler"))
+	rows = append(rows, "", styleGreen.Render(m.confirmKeys()+"  confirmer")+"   "+styleRed.Render("n / esc  annuler"))
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

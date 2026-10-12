@@ -401,7 +401,7 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 	case "remove":
 		// Destructif : confirmation obligatoire, et Remove supprime aussi
 		// les volumes (down --volumes --remove-orphans).
-		return m.askConfirm("Remove — "+stack.Name,
+		return m.askConfirmDanger("Remove — "+stack.Name,
 			"Supprime conteneurs, réseaux ET volumes (données incluses)",
 			[]string{stack.Name},
 			func(m Model) (tea.Model, tea.Cmd) { return m.startStackAction("remove", stack) })

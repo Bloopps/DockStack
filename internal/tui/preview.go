@@ -69,7 +69,9 @@ func (c *previewCacheBox) readFile(path string) ([]string, error) {
 		c.lines, c.err = nil, err
 		return nil, err
 	}
-	if path == c.path && st.ModTime().Unix() == c.modUnix && st.Size() == c.size && c.err == nil {
+	// Nanosecondes : deux enregistrements dans la même seconde, à taille
+	// égale (une valeur changée), laissaient l'ancienne version affichée.
+	if path == c.path && st.ModTime().UnixNano() == c.modUnix && st.Size() == c.size && c.err == nil {
 		return c.lines, nil
 	}
 	data, err := os.ReadFile(path)
@@ -83,7 +85,7 @@ func (c *previewCacheBox) readFile(path string) ([]string, error) {
 		lines[i] = sanitizeLogLine(l) // retire \r de CRLF et caractères de contrôle
 	}
 	c.path = path
-	c.modUnix = st.ModTime().Unix()
+	c.modUnix = st.ModTime().UnixNano()
 	c.size = st.Size()
 	c.lines, c.err = lines, nil
 	return lines, nil

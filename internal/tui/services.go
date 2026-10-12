@@ -19,12 +19,12 @@ import (
 // sans toucher aux autres services de la stack (compose restreint au modèle
 // réduit, sans dépendances : cf. compose.Stack.Only).
 
-// svcCacheEntry mémorise les services déclarés d'un compose, invalidés par
-// (mtime, taille) du fichier.
+// svcCacheEntry mémorise les services déclarés d'un compose, invalidés par la
+// signature de ses fichiers : compose, override et .env (qui peut activer
+// des profils, COMPOSE_PROFILES), pas seulement le compose.
 type svcCacheEntry struct {
-	mtime time.Time
-	size  int64
-	svcs  []compose.DeclaredService
+	sig  string
+	svcs []compose.DeclaredService
 }
 
 // svcCacheBox : cache par chemin de compose, pointeur partagé entre les copies
@@ -36,11 +36,11 @@ func (c *svcCacheBox) declared(s compose.Stack) []compose.DeclaredService {
 	if s.ComposeFile == "" {
 		return nil
 	}
-	fi, err := os.Stat(s.ComposeFile)
-	if err != nil {
+	if _, err := os.Stat(s.ComposeFile); err != nil {
 		return nil
 	}
-	if e, ok := c.m[s.ComposeFile]; ok && e.mtime.Equal(fi.ModTime()) && e.size == fi.Size() {
+	sig := compose.FilesSignature(s)
+	if e, ok := c.m[s.ComposeFile]; ok && e.sig == sig {
 		return e.svcs
 	}
 	svcs, err := compose.DeclaredServices(s)
@@ -50,7 +50,7 @@ func (c *svcCacheBox) declared(s compose.Stack) []compose.DeclaredService {
 	if c.m == nil {
 		c.m = make(map[string]svcCacheEntry)
 	}
-	c.m[s.ComposeFile] = svcCacheEntry{mtime: fi.ModTime(), size: fi.Size(), svcs: svcs}
+	c.m[s.ComposeFile] = svcCacheEntry{sig: sig, svcs: svcs}
 	return svcs
 }
 
@@ -416,11 +416,17 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	var detail []string
 	if m.svcCursor < len(svcs) {
 		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner, m.previewExtraFor(s))
-		// Actions : sur les services cochés, sinon sur celui du curseur. Le pied
-		// de page ne les répète pas (il garde cocher, filtrer, retour).
+		// Actions : sur les services cochés ET visibles, sinon sur celui du
+		// curseur — exactement ce que vise targetServices. Compter tous les
+		// cochés annonçait « 3 services cochés » quand le filtre en masquait,
+		// et l'action partait sur un seul (voire sur celui du curseur).
+		targets := m.targetServices(svcs)
 		target := "Actions sur " + svcs[m.svcCursor].Name
-		if n := len(m.svcSel); n > 0 {
+		if n := len(targets); n > 0 && m.svcSel[targets[0].Name] {
 			target = fmt.Sprintf("Actions sur %d service%s coché%s", n, plural(n), plural(n))
+			if hidden := len(m.svcSel) - n; hidden > 0 {
+				target = fmt.Sprintf("Actions sur %d coché%s visible%s (%d masqué%s)", n, plural(n), plural(n), hidden, plural(hidden))
+			}
 		}
 		detail = append(detail, "", styleDim.Render(truncate(target, inner)))
 		detail = append(detail, keyGrid([]footerKey{
