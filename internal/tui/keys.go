@@ -822,7 +822,7 @@ func (m Model) confirmAlign(snap backup.Snapshot) (tea.Model, tea.Cmd) {
 	}
 	warning := ""
 	if nStop := len(plan.stopStacks) + len(plan.stopServices); nStop > 0 {
-		warning = fmt.Sprintf("%d arrêt(s) : ce qui tourne mais n'est pas dans la capture sera arrêté (conteneurs conservés).", nStop)
+		warning = fmt.Sprintf("%d arrêt%s : ce qui tourne mais n'est pas dans la capture sera arrêté (conteneurs conservés).", nStop, plural(nStop))
 	}
 
 	ups, _ := resolveRestoreStacks(entriesOf(plan.relaunch, snap), m.cfg.StackDir)
@@ -961,13 +961,13 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// sur ctx.Background().
 		stacks, missing := resolveRestoreStacks(items, m.cfg.StackDir)
 		if len(stacks) == 0 {
-			m.setStatus(fmt.Sprintf("Aucune stack relançable (%d introuvable(s) sur le disque)", len(missing)), true)
+			m.setStatus(fmt.Sprintf("Aucune stack relançable (%d introuvable%s sur le disque)", len(missing), plural(len(missing))), true)
 			return m, m.clearStatusIn(5 * time.Second)
 		}
-		title := fmt.Sprintf("Relance — %d stack(s)", len(stacks))
+		title := fmt.Sprintf("Relance — %d stack%s", len(stacks), plural(len(stacks)))
 		if len(missing) > 0 {
 			// Signaler les introuvables au lieu de les ignorer en silence.
-			title += fmt.Sprintf(" (%d introuvable(s) ignorée(s))", len(missing))
+			title += fmt.Sprintf(" (%d introuvable%s ignorée%s)", len(missing), plural(len(missing)), plural(len(missing)))
 		}
 		parallel := m.cfg.MaxParallel
 		run := func(m Model) (tea.Model, tea.Cmd) {
@@ -1015,7 +1015,7 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "right":
 		// Ouvre le sous-dossier sous le curseur (jamais de choix : ↩ seul
-		// choisit, sur « Choisir ce dossier »).
+		// choisit, sur « Choisir ce répertoire »).
 		if m.dirCursor < len(m.dirEntries) {
 			switch entry := m.dirEntries[m.dirCursor]; entry {
 			case dirChooseEntry:
@@ -1082,8 +1082,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ---- helpers ----
 
-// dirChooseEntry : première ligne du sélecteur, qui choisit le dossier affiché.
-const dirChooseEntry = "[*] Choisir ce dossier"
+// dirChooseEntry : première ligne du sélecteur, qui choisit le répertoire
+// affiché. « répertoire » comme le titre du sélecteur : « dossier » désigne
+// les groupes 📁 de la liste.
+const dirChooseEntry = "[*] Choisir ce répertoire"
 
 func loadDirCmd(path string) tea.Cmd { return loadDirFocus(path, "") }
 

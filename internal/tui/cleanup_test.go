@@ -273,26 +273,29 @@ func TestCleanupPruneLabelWithoutSize(t *testing.T) {
 }
 
 // Fenêtre : jamais plus de h lignes, la ligne du curseur visible, et les
-// indicateurs comptent exactement ce qui est caché.
+// indicateurs comptent exactement ce qui est caché. Sous 3 lignes, pas de
+// repère et pas de plancher : 3 lignes rendues là où 2 tenaient, le bas de
+// l'écran coupait justement « ··· N en dessous ».
 func TestWindowWithMarks(t *testing.T) {
 	for n := 1; n <= 30; n++ {
 		lines := make([]string, n)
 		for i := range lines {
 			lines[i] = fmt.Sprint("L", i)
 		}
-		for h := 3; h <= 12; h++ {
+		for h := 1; h <= 12; h++ {
 			for cur := 0; cur < n; cur++ {
 				out := windowWithMarks(lines, cur, h)
-				if len(out) > max(h, 3) {
+				if len(out) > h {
 					t.Fatalf("n=%d h=%d cur=%d : %d lignes", n, h, cur, len(out))
 				}
-				shown, hidden := 0, 0
+				shown, hidden, marks := 0, 0, 0
 				found := false
 				for _, l := range out {
 					l = ansi.Strip(l)
 					var k int
 					if _, err := fmt.Sscanf(strings.TrimSpace(l), "··· %d", &k); err == nil {
 						hidden += k
+						marks++
 						continue
 					}
 					shown++
@@ -300,11 +303,210 @@ func TestWindowWithMarks(t *testing.T) {
 						found = true
 					}
 				}
+				if h < 3 {
+					if !found || marks > 0 || shown != min(h, n) {
+						t.Fatalf("n=%d h=%d cur=%d : curseur visible=%v, %d repères, %d lignes\n%v", n, h, cur, found, marks, shown, out)
+					}
+					continue
+				}
 				if !found || shown+hidden != n {
 					t.Fatalf("n=%d h=%d cur=%d : curseur visible=%v, %d affichées + %d cachées\n%v", n, h, cur, found, shown, hidden, out)
 				}
 			}
 		}
+	}
+}
+
+// cleanupBand : lignes de la bande de détail (après le dernier séparateur,
+// avant le pied de page) d'un écran de la page en disposition étroite.
+func cleanupBand(screen string) []string {
+	lines := strings.Split(screen, "\n")
+	last := -1
+	for i, l := range lines {
+		if strings.HasPrefix(l, "────") {
+			last = i
+		}
+	}
+	if last < 0 {
+		return nil
+	}
+	var out []string
+	for _, l := range lines[last+1 : len(lines)-1] {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, strings.TrimSpace(l))
+		}
+	}
+	return out
+}
+
+// Sous 140 colonnes, une bande sous la sélection détaille la ligne du
+// curseur : sans elle, « ! docker network prune » ne disait qu'à la
+// confirmation que le réseau externe d'une stack serait supprimé. Les
+// avertissements passent avant le reste, coupés s'il le faut.
+func TestCleanupNarrowBand(t *testing.T) {
+	m, _ := cleanupModel(t)
+	for _, size := range [][2]int{{80, 24}, {120, 36}} {
+		m.width, m.height = size[0], size[1]
+		m = focusPrune(t, m, compose.PruneNetworks)
+		screen := ansi.Strip(m.viewContent())
+		band := cleanupBand(screen)
+		if len(band) < 2 || len(band) > cleanupBandLines ||
+			band[0] != "docker network prune · demo_default, traefik_lan (externe de traefik)" ||
+			!strings.HasPrefix(band[1], "! Supprime aussi le réseau externe traefik_lan de traefik") {
+			t.Errorf("%dx%d : bande %q\n%s", size[0], size[1], band, screen)
+		}
+		for i, l := range strings.Split(m.viewContent(), "\n") {
+			if w := ansi.StringWidth(l); w > m.width {
+				t.Errorf("%dx%d : ligne %d de %d colonnes", size[0], size[1], i, w)
+			}
+		}
+	}
+
+	// Deux avertissements en 80 colonnes : un par ligne, coupés.
+	m.width, m.height = 80, 24
+	m = focusPrune(t, m, compose.PruneSystem)
+	band := cleanupBand(ansi.Strip(m.viewContent()))
+	if len(band) != 3 || !strings.Contains(band[0], "2 conteneurs + 2 réseaux + 2 images + cache pendant") ||
+		!strings.HasPrefix(band[1], "! Supprime les conteneurs arrêtés de immich") || !strings.HasPrefix(band[2], "! Supprime aussi le réseau externe") {
+		t.Errorf("system prune : bande %q", band)
+	}
+
+	// Catégorie repliée : ses éléments et leur taille ; élément : ses
+	// propriétés.
+	m.width, m.height = 100, 30
+	m.cleanupCursor = 4 // Images de stacks arrêtées
+	band = cleanupBand(ansi.Strip(m.viewContent()))
+	if len(band) < 2 || !strings.HasPrefix(band[0], "Images de stacks arrêtées · ≈ 23.0 Go") || !strings.Contains(band[1], "immich-machine-learning") {
+		t.Errorf("catégorie : bande %q", band)
+	}
+	m = drive(t, m, keyMsg("right"), 0)
+	m = drive(t, m, keyMsg("down"), 0)
+	band = cleanupBand(ansi.Strip(m.viewContent()))
+	if len(band) < 2 || !strings.Contains(band[1], "Libéré seul 23.0 Go") || !strings.Contains(band[1], "Stack immich") {
+		t.Errorf("élément : bande %q", band)
+	}
+
+	// Écran large : le détail est à droite, pas de bande.
+	m.width, m.height = 160, 40
+	if strings.Contains(ansi.Strip(m.viewContent()), "Libéré seul 23.0 Go · ") {
+		t.Error("large : bande affichée en plus du panneau de droite")
+	}
+}
+
+// Trop d'avertissements pour la bande : la dernière ligne renvoie à la
+// confirmation plutôt que d'en taire.
+func TestBriefWarningsOverflow(t *testing.T) {
+	got := briefWarnings([]string{"un", "deux", "trois"}, 60, 2)
+	if len(got) != 2 || got[0] != "! un" || got[1] != "! +2 autres avertissements (↩ pour les lire)" {
+		t.Errorf("trop d'avertissements : %q", got)
+	}
+	long := strings.Repeat("mot ", 20)
+	if got := briefWarnings([]string{long}, 40, 3); len(got) != 3 || !strings.HasPrefix(got[0], "! mot") {
+		t.Errorf("un long avertissement replié : %q", got)
+	}
+	if got := briefWarnings([]string{long, "court"}, 40, 2); len(got) != 2 || !strings.HasSuffix(got[0], "…") || got[1] != "! court" {
+		t.Errorf("replié trop long : un par ligne, coupés : %q", got)
+	}
+}
+
+// En 80x24, le bilan complet (8 lignes) ne laissait que quelques lignes à
+// la sélection : il passe sur 2 lignes (disque, puis Libérable par type, du
+// plus gros au plus petit) quand la sélection en aurait moins de 8, et
+// reste complet, parité avec docker system df, quand la place le permet.
+func TestCleanupCompactBilan(t *testing.T) {
+	m, _ := cleanupModel(t)
+	m.metrics = narrowMetrics(8)
+	m.width, m.height = 80, 24
+	s := ansi.Strip(m.viewContent())
+	if !strings.Contains(s, "Libérable ≈ 39.0 Go : images ≈ 22.0 Go · cache 16.0 Go · volumes 1.0 Go") ||
+		!strings.Contains(s, "162 / 194 Go (88 %)") || strings.Contains(s, "Nombre") || strings.Contains(s, "* volumes") {
+		t.Errorf("80x24 : bilan compact attendu\n%s", s)
+	}
+	if l := m.cleanupNarrowLayout(m.bodyHeight()); !l.compact || l.listH < 8 {
+		t.Errorf("80x24 : %+v, want compact et au moins 8 lignes de sélection", l)
+	}
+	m.width, m.height = 120, 36
+	s = ansi.Strip(m.viewContent())
+	if !strings.Contains(s, "Nombre") || !strings.Contains(s, "* volumes des stacks arrêtées inclus") {
+		t.Errorf("120x36 : bilan complet attendu\n%s", s)
+	}
+}
+
+// Sur un écran bas, la page ne dépasse jamais sa hauteur : sous 3 lignes de
+// sélection, le séparateur puis la bande cèdent leur place. Le repère
+// « ··· N en dessous » reste visible dès que la sélection a 3 lignes, et
+// pgup/pgdown (cleanupListH) suivent la même mise en page.
+func TestCleanupNarrowFitsHeight(t *testing.T) {
+	m, _ := cleanupModel(t)
+	m.metrics = narrowMetrics(8)
+	m.width = 80
+	rows := len(m.cleanupRows())
+	for body := 5; body <= 40; body++ {
+		m.height = body + m.headerLines() + 1
+		if m.bodyHeight() != body {
+			t.Fatalf("hauteur utile %d, want %d", m.bodyHeight(), body)
+		}
+		out := ansi.Strip(renderCleanup(m, body))
+		l := m.cleanupNarrowLayout(body)
+		if n := strings.Count(out, "\n") + 1; n > body {
+			t.Errorf("hauteur %d : %d lignes rendues (%+v)\n%s", body, n, l, out)
+		}
+		if got := m.cleanupListH(); got != l.listH {
+			t.Errorf("hauteur %d : cleanupListH %d, want %d", body, got, l.listH)
+		}
+		if l.listH >= 3 && l.listH < rows && !strings.Contains(out, "en dessous") {
+			t.Errorf("hauteur %d : repère du bas absent\n%s", body, out)
+		}
+		if l.sep && !l.band {
+			t.Errorf("hauteur %d : la bande a cédé avant le séparateur", body)
+		}
+	}
+}
+
+// Le titre de section de la ligne du curseur reste en tête quand la
+// fenêtre l'a fait sortir par le haut : la page est classée par risque, et
+// un volume orphelin sans « Données » au-dessus ne disait plus qu'il efface
+// des données. Le titre n'apparaît jamais deux fois et la liste ne
+// s'allonge pas.
+func TestCleanupSectionTitlePinned(t *testing.T) {
+	m, _ := cleanupModel(t)
+	rep := sampleCleanup()
+	for i := range 20 {
+		rep.Items = append(rep.Items, compose.CleanupItem{Kind: compose.CleanOrphanVolume, ID: fmt.Sprintf("vol%02d", i),
+			Name: fmt.Sprintf("ancien_%02d_data", i), Size: 1 << 20, Count: 1, Stacks: []string{"ancien"}})
+	}
+	m = drive(t, m, cleanupLoadedMsg{seq: m.cleanupSeq, rep: rep}, 0)
+	m.cleanupOpen[compose.CleanOrphanVolume] = true
+	rows, nav := m.cleanupRows(), m.cleanupNav()
+	for c := range nav {
+		m.cleanupCursor = c
+		section := ""
+		for _, r := range rows[:nav[c]] {
+			if r.section != "" {
+				section = r.section
+			}
+		}
+		for _, h := range []int{4, 6, 9, 14} {
+			out := m.cleanupList(80, h, true)
+			if len(out) > h {
+				t.Fatalf("curseur %d, h=%d : %d lignes", c, h, len(out))
+			}
+			n := 0
+			for _, l := range out {
+				if strings.TrimSpace(ansi.Strip(l)) == section {
+					n++
+				}
+			}
+			if n != 1 {
+				t.Fatalf("curseur %d, h=%d : titre %q affiché %d fois\n%s", c, h, section, n, ansi.Strip(strings.Join(out, "\n")))
+			}
+		}
+	}
+	// Au milieu des volumes : le titre, puis le repère du haut.
+	m.cleanupCursor = 15
+	out := m.cleanupList(80, 8, true)
+	if got := ansi.Strip(out[0]); strings.TrimSpace(got) != "Données" || !strings.Contains(ansi.Strip(out[1]), "au-dessus") {
+		t.Errorf("titre épinglé absent :\n%s", ansi.Strip(strings.Join(out, "\n")))
 	}
 }
 

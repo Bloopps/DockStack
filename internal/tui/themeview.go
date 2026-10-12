@@ -325,7 +325,7 @@ func themePickerColumn(m Model, w, height int) []string {
 		out = append(out, "  "+styleDim.Render("/ chercher dans les "+fmt.Sprint(len(m.themes)+1)+" thèmes"))
 	}
 	if len(m.themeErrs) > 0 {
-		out = append(out, "  "+styleRed.Render(truncate(fmt.Sprintf("%d thème(s) perso illisible(s) : %v", len(m.themeErrs), m.themeErrs[0]), inner)))
+		out = append(out, "  "+styleRed.Render(truncate(fmt.Sprintf("%d thème%s perso illisible%s : %v", len(m.themeErrs), plural(len(m.themeErrs)), plural(len(m.themeErrs)), m.themeErrs[0]), inner)))
 	}
 	out = append(out, "")
 

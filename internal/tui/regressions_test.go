@@ -248,8 +248,8 @@ func TestChangeDirDiscoverable(t *testing.T) {
 			t.Errorf("w=%d : en-tête sans rappel de o : %q", w, lines[0])
 		}
 		foot := lines[len(lines)-1]
-		if strings.Contains(foot, "o  dossier") {
-			t.Errorf("w=%d : « o dossier » répété dans le pied de page : %q", w, foot)
+		if strings.Contains(foot, "o  répertoire") || strings.Contains(foot, "o  dossier") {
+			t.Errorf("w=%d : o répété dans le pied de page : %q", w, foot)
 		}
 		if w >= 120 && !strings.Contains(foot, "n  nettoyage") {
 			t.Errorf("w=%d : « n nettoyage » absent du pied de page : %q", w, foot)
@@ -275,7 +275,7 @@ func TestOnlyRunningByDefault(t *testing.T) {
 	}
 	rows := m.listRows()
 	last := rows[len(rows)-1]
-	if !last.more || !strings.Contains(last.note, "1 arrêtée et 1 non déployée masquées") {
+	if !last.more || !strings.Contains(last.note, "■ 1 arrêtée et ○ 1 non déployée masquées") {
 		t.Fatalf("ligne récapitulative = %+v", last)
 	}
 
@@ -433,7 +433,7 @@ func TestDirChangeClearsSelection(t *testing.T) {
 	m.client = &fakeClient{}
 	m.selected["media/app"] = true
 	m.view, m.dirPath = viewDirPicker, "/autre"
-	m.dirEntries = []string{"[*] Choisir ce dossier"}
+	m.dirEntries = []string{dirChooseEntry}
 	t.Setenv("HOME", t.TempDir()) // cfg.Save
 	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got := out.(Model)

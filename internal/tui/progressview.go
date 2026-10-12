@@ -404,7 +404,7 @@ func renderProgressView(m Model) string {
 	hiddenBelow := total - end
 	var belowHint string
 	if hiddenBelow > 0 {
-		belowHint = "\n" + styleDim.Render(fmt.Sprintf("  ↓ %d ligne(s) cachée(s)", hiddenBelow))
+		belowHint = "\n" + styleDim.Render(fmt.Sprintf("  ↓ %d ligne%s cachée%s", hiddenBelow, plural(hiddenBelow), plural(hiddenBelow)))
 	}
 
 	title := m.progressTitleLine()
@@ -651,7 +651,7 @@ func (m Model) stackNamed(name string) (compose.Stack, bool) {
 }
 
 // opName : nom court de l'opération, tiré de son titre (« Pull — 3 stacks »,
-// « Up: immich », « Relance — 2 stack(s) »).
+// « Up: immich », « Relance — 2 stacks »).
 func opName(title string) string {
 	if i := strings.Index(title, ": "); i > 0 {
 		title = title[:i]

@@ -162,7 +162,7 @@ func (c *Client) removeCleanupItem(ctx context.Context, it CleanupItem) (detail 
 			return "", err
 		}
 		if n := len(used.Items); n > 0 {
-			return "", fmt.Errorf("utilisée depuis l'analyse par %d conteneur(s), conservée", n)
+			return "", fmt.Errorf("utilisée depuis l'analyse par %d conteneur%s, conservée", n, plural(n))
 		}
 		for _, r := range refs {
 			if _, err := api.ImageRemove(ctx, r, mobyclient.ImageRemoveOptions{PruneChildren: true}); err != nil {

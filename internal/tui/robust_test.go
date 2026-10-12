@@ -88,10 +88,10 @@ func viewStates(t *testing.T) map[string]Model {
 	m.progressDone = true
 	out["progression finie"] = m
 	m = base()
-	m.view, m.dirPath, m.dirEntries = viewDirPicker, "/", []string{"[*] Choisir ce dossier", "etc/", strings.Repeat("x", 300) + "/"}
+	m.view, m.dirPath, m.dirEntries = viewDirPicker, "/", []string{dirChooseEntry, "etc/", strings.Repeat("x", 300) + "/"}
 	out["dossiers"] = m
 	m = base()
-	m.view, m.dirPath, m.dirEntries = viewDirPicker, "/home", []string{"[*] Choisir ce dossier", "../"}
+	m.view, m.dirPath, m.dirEntries = viewDirPicker, "/home", []string{dirChooseEntry, "../"}
 	for i := range 200 {
 		m.dirEntries = append(m.dirEntries, fmt.Sprintf("dossier-%03d/", i))
 	}

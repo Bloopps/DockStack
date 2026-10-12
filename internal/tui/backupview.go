@@ -11,7 +11,22 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
-const captureListWidth = 38 // largeur hors-tout du volet des captures
+// captureListMinW : largeur hors-tout minimale du volet des captures (date,
+// nombre de stacks et ancienneté).
+const captureListMinW = 38
+
+// captureListW : largeur hors-tout du volet des captures. Elle s'élargit pour
+// montrer le plus long libellé en entier (bordure et marges 4, date et nombre
+// 19, une espace), sans prendre plus des 2/5 de l'écran : à largeur fixe, il
+// ne restait que 15 colonnes au libellé choisi par l'utilisateur, « avant
+// mise à … » même en 180 colonnes.
+func (m Model) captureListW() int {
+	longest := 0
+	for _, s := range m.backups {
+		longest = max(longest, lipgloss.Width(s.Label))
+	}
+	return max(captureListMinW, min(4+19+1+longest, m.width*2/5))
+}
 
 // Statut d'une stack de la capture, comparée à l'état actuel.
 type captureEntryKind int
@@ -171,9 +186,10 @@ func renderBackupView(m Model, height int) string {
 	}
 
 	panelH := max(height-2, 5)
-	left := renderCaptureList(m, panelH)
+	listW := m.captureListW()
+	left := renderCaptureList(m, listW, panelH)
 	body := left
-	if rightW := m.width - 2 - captureListWidth - 1; rightW >= 30 {
+	if rightW := m.width - 2 - listW - 1; rightW >= 30 {
 		snap := m.backups[min(m.actionCursor, len(m.backups)-1)]
 		right := renderCaptureDetail(snap, m.stacks, m.cfg.StackDir, rightW, panelH)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
@@ -181,9 +197,10 @@ func renderBackupView(m Model, height int) string {
 	return title + "\n\n" + lipgloss.NewStyle().PaddingLeft(2).Render(body)
 }
 
-// renderCaptureList : une ligne par capture, curseur en vidéo inversée.
-func renderCaptureList(m Model, h int) string {
-	inner := captureListWidth - 4
+// renderCaptureList : une ligne par capture, curseur en vidéo inversée, dans
+// un volet de w colonnes hors-tout.
+func renderCaptureList(m Model, w, h int) string {
+	inner := w - 4
 	rowsH := h - 2
 	// Fenêtre glissante qui garde le curseur visible.
 	off := max(0, m.actionCursor-rowsH+1)
@@ -228,7 +245,7 @@ func renderCaptureList(m Model, h int) string {
 	for len(rows) < rowsH {
 		rows = append(rows, "")
 	}
-	return styleCapturePanel.Width(captureListWidth).Render(strings.Join(rows, "\n"))
+	return styleCapturePanel.Width(w).Render(strings.Join(rows, "\n"))
 }
 
 // renderCaptureDetail : contenu complet de la capture, comparé à l'état actuel.
@@ -262,7 +279,7 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 		parts = append(parts, styleYellow.Render(fmt.Sprintf("%d à relancer", nRelaunch)))
 	}
 	if nMissing > 0 {
-		parts = append(parts, styleRed.Render(fmt.Sprintf("%d introuvable(s)", nMissing)))
+		parts = append(parts, styleRed.Render(fmt.Sprintf("%d introuvable%s", nMissing, plural(nMissing))))
 	}
 	if nRunning > 0 {
 		parts = append(parts, styleGreen.Render(fmt.Sprintf("%d en marche", nRunning)))
@@ -276,7 +293,10 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 	case nRelaunch == 0 && nMissing == 0 && nExtra == 0:
 		rows = append(rows, styleGreen.Render("✓ tout est déjà en marche"))
 	default:
-		rows = append(rows, strings.Join(parts, styleDim.Render(" · ")))
+		// Replié ici, entre deux comptes, et non par le cadre : replié par
+		// lipgloss, le bilan prenait une ligne que avail ignorait, et le cadre
+		// trop haut perdait sa bordure basse en 80 colonnes.
+		rows = append(rows, joinWrap(parts, styleDim.Render(" · "), inner)...)
 	}
 	// Capture prise depuis un autre répertoire : ses noms peuvent ne plus
 	// correspondre aux stacks actuelles.
@@ -284,6 +304,28 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 		rows = append(rows, styleYellow.Render(truncate("⚠ capturée depuis "+snap.StackDir, inner)))
 	}
 	rows = append(rows, styleDim.Render(strings.Repeat("─", inner)))
+
+	// Statut juste après le plus long nom (+2), et non au bord droit : en
+	// 180 colonnes, il finissait à 120 colonnes du nom qu'il qualifie. La
+	// colonne des noms cède ce qu'il faut au plus long statut.
+	labels := make([]string, len(entries))
+	nameW, labelW := 0, 0
+	for i, e := range entries {
+		switch e.kind {
+		case entryMissing:
+			labels[i] = "introuvable"
+		case entryRunning:
+			labels[i] = "en marche"
+		default:
+			labels[i] = "à relancer"
+			if len(e.down) > 0 {
+				labels[i] += " · " + truncate(strings.Join(e.down, ", "), max(inner/2-12, 6))
+			}
+		}
+		nameW = max(nameW, lipgloss.Width(e.name))
+		labelW = max(labelW, lipgloss.Width(labels[i]))
+	}
+	nameCol := max(min(nameW+2, inner-2-labelW), 3)
 
 	avail := rowsH - len(rows)
 	for i, e := range entries {
@@ -294,29 +336,41 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 			rows = append(rows, styleDim.Render(fmt.Sprintf("… +%d autres", len(entries)-i)))
 			break
 		}
-		var dot, label string
-		var st lipgloss.Style
-		switch e.kind {
-		case entryMissing:
-			dot, st, label = "✕", styleRed, "introuvable"
-		case entryRunning:
-			dot, st = stateStyle(e.stack.State())
-			label = "en marche"
-		default:
-			dot, st = stateStyle(e.stack.State())
-			label = "à relancer"
-			if len(e.down) > 0 {
-				label += " · " + truncate(strings.Join(e.down, ", "), max(inner/2-12, 6))
-			}
+		dot, st := stateStyle(e.stack.State())
+		if e.kind == entryMissing {
+			dot, st = "✕", styleRed
 		}
-		name := truncate(e.name, max(1, inner-lipgloss.Width(label)-4))
-		pad := max(1, inner-2-lipgloss.Width(name)-lipgloss.Width(label))
-		rows = append(rows, st.Render(dot)+" "+name+strings.Repeat(" ", pad)+styleDim.Render(label))
+		name := truncate(e.name, nameCol-1)
+		pad := strings.Repeat(" ", max(nameCol-lipgloss.Width(name), 1))
+		rows = append(rows, st.Render(dot)+" "+name+pad+styleDim.Render(truncate(labels[i], max(inner-2-nameCol, 1))))
 	}
 	for len(rows) < rowsH {
 		rows = append(rows, "")
 	}
 	return styleDetailPanel.Width(w).Render(strings.Join(rows, "\n"))
+}
+
+// joinWrap assemble des morceaux déjà stylés, séparés par sep, en lignes
+// d'au plus w colonnes : on ne passe à la ligne qu'entre deux morceaux, et un
+// morceau trop long à lui seul est coupé.
+func joinWrap(parts []string, sep string, w int) []string {
+	var lines []string
+	cur := ""
+	for _, p := range parts {
+		switch {
+		case cur == "":
+			cur = p
+		case lipgloss.Width(cur)+lipgloss.Width(sep)+lipgloss.Width(p) <= w:
+			cur += sep + p
+		default:
+			lines = append(lines, ansiTruncate(cur, w))
+			cur = p
+		}
+	}
+	if cur != "" {
+		lines = append(lines, ansiTruncate(cur, w))
+	}
+	return lines
 }
 
 func relativeTime(t, now time.Time) string {

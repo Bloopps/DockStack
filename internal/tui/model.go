@@ -380,7 +380,7 @@ func New(cfg *config.Config) Model {
 
 	ti := textinput.New()
 	ti.Prompt = "/ "
-	ti.Placeholder = "filtrer..."
+	ti.Placeholder = "filtrer…"
 	ti.CharLimit = 64
 
 	m := Model{
@@ -601,9 +601,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.clearStatusIn(6*time.Second), m.loadStacksCmd())
 		}
 		// Le footer préfixe déjà « ✓ ».
-		status := fmt.Sprintf("Capture enregistrée — %d stack(s) en marche", msg.n)
+		status := fmt.Sprintf("Capture enregistrée — %d stack%s en marche", msg.n, plural(msg.n))
 		if msg.pruned > 0 {
-			status += fmt.Sprintf(" · %d ancienne(s) supprimée(s) (rotation, épingler pour garder)", msg.pruned)
+			status += fmt.Sprintf(" · %d ancienne%s supprimée%s (rotation, épingler pour garder)", msg.pruned, plural(msg.pruned), plural(msg.pruned))
 		}
 		m.setStatus(status, false)
 		// Recharge la liste des captures : la nouvelle arrive en tête, le
@@ -1231,7 +1231,7 @@ func renderError(err error, width int, retry string) string {
 			// Pas de « sudo dockstack » : lancé en root, l'outil crée ~/.dockstack
 			// en root et l'utilisateur ne peut plus y écrire ses captures ensuite.
 			styleDim.Render("Rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
-			styleDim.Render("Ou démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
+			styleDim.Render("Ou démarrer le démon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}
 		if retry != "" {
 			rows = append(append(rows, ""), retryRows()...)
@@ -1246,7 +1246,7 @@ func renderError(err error, width int, retry string) string {
 		rows := []string{
 			styleRed.Bold(true).Render("Démon Docker injoignable"),
 			"",
-			styleDim.Render("Démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
+			styleDim.Render("Démarrer le démon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}
 		if retry != "" {
 			rows = append(rows, retryRows()...)
@@ -1259,7 +1259,7 @@ func renderError(err error, width int, retry string) string {
 		}
 		return "\n" + box.Render(strings.Join(rows, "\n"))
 	}
-	lines := wordWrap("Erreur: "+msg, max(width-4, 20))
+	lines := wordWrap("Erreur : "+msg, max(width-4, 20))
 	out := styleRed.Render("\n  " + strings.Join(lines, "\n  "))
 	if retry != "" {
 		out += "\n\n  " + styleDim.Render(strings.Join(wordWrap(retry, max(width-4, 20)), "\n  "))
@@ -1604,7 +1604,7 @@ func (m Model) renderFooter() string {
 		return renderBar(nil, []footerKey{{"q", "quitter"}}, m.width, "")
 	}
 	if m.err != nil {
-		return renderBar([]footerKey{{"R", "réessayer"}, {"o", "dossier"}}, []footerKey{{"q", "quitter"}}, m.width, "")
+		return renderBar([]footerKey{{"R", "réessayer"}, {"o", "répertoire"}}, []footerKey{{"q", "quitter"}}, m.width, "")
 	}
 	back := []footerKey{{"esc", "retour"}}
 	switch m.view {

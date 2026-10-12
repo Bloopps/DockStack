@@ -23,10 +23,10 @@ func renderHelpView(m Model, height int) string {
 	out := append([]string(nil), lines[start:start+win]...)
 	var hint []string
 	if start > 0 {
-		hint = append(hint, fmt.Sprintf("↑ %d ligne(s) au-dessus", start))
+		hint = append(hint, fmt.Sprintf("↑ %d ligne%s au-dessus", start, plural(start)))
 	}
 	if below := len(lines) - start - win; below > 0 {
-		hint = append(hint, fmt.Sprintf("↓ %d ligne(s) en dessous", below))
+		hint = append(hint, fmt.Sprintf("↓ %d ligne%s en dessous", below, plural(below)))
 	}
 	return strings.Join(append(out, styleDim.Render("    "+strings.Join(hint, " · "))), "\n")
 }
@@ -90,7 +90,7 @@ func helpBox(m Model) string {
 		"  " + k("v") + "  fichier compose en plein écran" + d("  (") + k("tab") + d(" : dans le volet)"),
 		"  " + k("a") + "  afficher/masquer les stacks arrêtées" + d("  (et non déployées)"),
 		"  " + k("x") + "  exclure du scan" + d("  (réversible dans ~/.dockstack/config.json)"),
-		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  dossier   " + k("t") + "  thème   " + k("n") + "  nettoyage",
+		"  " + k("R") + "  rafraîchir" + d("  (auto)") + "   " + k("o") + "  répertoire   " + k("t") + "  thème   " + k("n") + "  nettoyage",
 	}
 	captures := []string{
 		title("Captures d'état", ""),

@@ -198,7 +198,7 @@ func TestStackListMarksOnlyWhenUseful(t *testing.T) {
 	lines := strings.Split(ansi.Strip(renderStackList(m, h+1, 80)), "\n") // +1 : en-tête des colonnes
 	lines = lines[1:]
 	if len(lines) != h || strings.Contains(lines[0], "au-dessus") || strings.TrimSpace(lines[h-2]) == "" ||
-		!strings.Contains(lines[h-1], "en-dessous") {
+		!strings.Contains(lines[h-1], "en dessous") {
 		t.Fatalf("en tête : %d lignes, want %d stacks puis le repère du bas :\n%s", len(lines), h-1, strings.Join(lines, "\n"))
 	}
 	m.cursor = len(stacks) - 1

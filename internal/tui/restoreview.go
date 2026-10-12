@@ -35,7 +35,7 @@ func renderRestorePick(m Model, height int) string {
 		parts = append(parts, styleGreen.Render(fmt.Sprintf("%d déjà en marche", nRunning)))
 	}
 	if nMissing > 0 {
-		parts = append(parts, styleRed.Render(fmt.Sprintf("%d introuvable(s)", nMissing)))
+		parts = append(parts, styleRed.Render(fmt.Sprintf("%d introuvable%s", nMissing, plural(nMissing))))
 	}
 
 	header := []string{
@@ -49,7 +49,7 @@ func renderRestorePick(m Model, height int) string {
 	// Fenêtrage centré sur le curseur : une capture peut contenir des
 	// centaines de stacks.
 	n := len(m.restoreEntries)
-	listH := max(height-len(header)-2, 3) // 2 = lignes « ··· au-dessus/en-dessous »
+	listH := max(height-len(header)-2, 3) // 2 = lignes « ··· au-dessus/en dessous »
 	start, end := 0, n
 	if n > listH {
 		start = min(max(m.restoreCursor-listH/2, 0), n-listH)
@@ -100,7 +100,7 @@ func renderRestorePick(m Model, height int) string {
 		lines = append(lines, "    "+check+" "+name+"  "+status)
 	}
 	if end < n {
-		lines = append(lines, styleDim.Render(fmt.Sprintf("    ··· %d en-dessous", n-end)))
+		lines = append(lines, styleDim.Render(fmt.Sprintf("    ··· %d en dessous", n-end)))
 	}
 
 	return strings.Join(lines, "\n")

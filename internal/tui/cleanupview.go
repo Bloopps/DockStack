@@ -6,6 +6,7 @@ package tui
 // l'est jamais. Voir docs/PLAN-NETTOYAGE.md.
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -694,7 +695,7 @@ func renderCleanup(m Model, height int) string {
 	// à droite. Sinon, le bilan au-dessus de la sélection.
 	if w >= cleanupWideMin {
 		leftW := w - cleanupRightW - 3
-		left := append([]string{titleLine, selLine}, m.cleanupList(leftW, max(height-2, 3), false)...)
+		left := append([]string{titleLine, selLine}, m.cleanupList(leftW, max(height-2, 1), false)...)
 		right := append([]string{""}, m.cleanupBilan(cleanupRightW)...)
 		right = append(right, "", "  "+styleDim.Render(strings.Repeat("─", cleanupRightW-4)))
 		right = append(right, m.cleanupDetail(cleanupRightW)...)
@@ -727,24 +728,89 @@ func renderCleanup(m Model, height int) string {
 		return strings.Join(out, "\n")
 	}
 
-	head := append([]string{titleLine}, m.cleanupBilan(w)...)
-	head = append(head, styleDim.Render(strings.Repeat("─", max(min(w-4, 72), 1))), selLine)
-	return strings.Join(append(head, m.cleanupList(w, max(height-len(head), 3), true)...), "\n")
+	// Écran étroit : le bilan, la sélection, puis une bande qui détaille la
+	// ligne sous le curseur. Sans elle, sous 140 colonnes, « ! docker
+	// network prune » ne disait qu'à la confirmation qu'un réseau externe
+	// serait supprimé.
+	l := m.cleanupNarrowLayout(height)
+	rule := styleDim.Render(strings.Repeat("─", max(min(w-4, 72), 1)))
+	head := []string{titleLine}
+	if l.compact {
+		head = append(head, m.cleanupBilanCompact(w)...)
+	} else {
+		head = append(head, m.cleanupBilan(w)...)
+	}
+	if l.sep {
+		head = append(head, rule)
+	}
+	out := append(append(head, selLine), m.cleanupList(w, l.listH, true)...)
+	if l.band {
+		out = append(append(out, rule), m.cleanupBrief(w, cleanupBandLines)...)
+	}
+	return strings.Join(out, "\n")
 }
 
-// cleanupListH : hauteur de la sélection dans renderCleanup (à suivre si
-// la mise en page change), pour le pas de pgup/pgdown. Le pas compte des
-// lignes navigables : les notes et titres de section le rallongent un peu
-// à l'écran, la fenêtre suit le curseur.
+// cleanupNarrow : disposition étroite de la page (sous cleanupWideMin
+// colonnes).
+type cleanupNarrow struct {
+	compact bool // bilan en 2 lignes (cleanupBilanCompact)
+	sep     bool // séparateur entre le bilan et la ligne Sélection
+	band    bool // bande de détail (séparateur et cleanupBandLines lignes)
+	listH   int  // lignes de la sélection
+}
+
+// cleanupBandLines : lignes de la bande de détail, séparateur non compris.
+// Hauteur fixe : la liste ne change pas de taille en suivant le curseur.
+const cleanupBandLines = 3
+
+// cleanupNarrowLayout répartit height lignes entre le titre, le bilan, la
+// sélection et la bande de détail, pour renderCleanup comme pour
+// cleanupListH. Le bilan complet garde la parité avec « docker system df »
+// tant que la sélection garde 8 lignes ; sinon (80x24), il passe sur 2
+// lignes. Sous 3 lignes, le séparateur puis la bande cèdent leur place :
+// rendre 3 lignes là où 2 tenaient faisait couper le repère « ··· N en
+// dessous » par le bas de l'écran.
+func (m Model) cleanupNarrowLayout(height int) cleanupNarrow {
+	l := cleanupNarrow{sep: true, band: true}
+	full, compact := len(m.cleanupBilan(m.width)), len(m.cleanupBilanCompact(m.width))
+	rest := func() int {
+		n := height - 2 // titre et ligne Sélection
+		if l.compact {
+			n -= compact
+		} else {
+			n -= full
+		}
+		if l.sep {
+			n--
+		}
+		if l.band {
+			n -= 1 + cleanupBandLines
+		}
+		return n
+	}
+	l.compact = rest() < 8
+	if rest() < 3 {
+		l.sep = false
+	}
+	if rest() < 3 {
+		l.band = false
+	}
+	l.listH = max(rest(), 1)
+	return l
+}
+
+// cleanupListH : hauteur de la sélection dans renderCleanup, pour le pas de
+// pgup/pgdown. Le pas compte des lignes navigables : les notes et titres de
+// section le rallongent un peu à l'écran, la fenêtre suit le curseur.
 func (m Model) cleanupListH() int {
 	h := m.bodyHeight()
 	switch {
 	case m.cleanupRep == nil:
 		return h
 	case m.width >= cleanupWideMin:
-		return max(h-2, 3) // titre et ligne Sélection
+		return max(h-2, 1) // titre et ligne Sélection
 	}
-	return max(h-3-len(m.cleanupBilan(m.width)), 3) // titre, bilan, séparateur et Sélection
+	return m.cleanupNarrowLayout(h).listH
 }
 
 // Disposition large : à partir de cleanupWideMin colonnes, le bilan
@@ -791,23 +857,8 @@ func (m Model) cleanupDetail(w int) []string {
 		for _, l := range s.lines {
 			out = append(out, "  "+truncate(l, inner))
 		}
-		switch r.prune {
-		case compose.PruneContainers, compose.PruneSystem:
-			for _, c := range rep.StoppedContainers {
-				stack := ""
-				if c.Project != "" {
-					stack = "stack " + c.Project
-				}
-				out = append(out, dim("    "+truncate(fmt.Sprintf("%-28s %s", c.Name, stack), inner-2)))
-			}
-		}
-		if r.prune == compose.PruneNetworks || r.prune == compose.PruneSystem {
-			for _, i := range m.cleanupItems(compose.CleanUnusedNetwork) {
-				out = append(out, dim("    "+truncate(rep.Items[i].Name, inner-2)))
-			}
-			for _, kn := range rep.KeptExternalNetworks {
-				out = append(out, dim("    "+truncate(kn.Name+" (externe de "+strings.Join(kn.Stacks, ", ")+")", inner-2)))
-			}
+		for _, t := range m.pruneTargets(r.prune) {
+			out = append(out, dim("    "+truncate(t, inner-2)))
 		}
 		if len(s.warn) > 0 {
 			out = append(out, "")
@@ -843,22 +894,8 @@ func (m Model) cleanupDetail(w int) []string {
 	default:
 		it := rep.Items[r.item]
 		out = append(out, "  "+styleBold.Render(truncate(it.Name, inner)), "")
-		if it.ID != "" && it.ID != it.Name {
-			id := it.ID
-			if len(id) > 19 && strings.HasPrefix(id, "sha256:") {
-				id = id[7:19]
-			}
-			out = append(out, row("Identifiant", id))
-		}
-		out = append(out, row("Libéré seul", fmtCleanupSize(it.Size, it.Approx)))
-		if !it.Created.IsZero() {
-			out = append(out, row("Créé", relativeTime(it.Created, time.Now())))
-		}
-		switch it.Kind {
-		case compose.CleanStackImage:
-			out = append(out, row("Stack", strings.Join(it.Stacks, ", ")))
-		case compose.CleanOrphanVolume:
-			out = append(out, row("Projet (stack absente)", strings.Join(it.Stacks, ", ")))
+		for _, f := range itemFacts(it) {
+			out = append(out, row(f[0], f[1]))
 		}
 		if len(it.Refs) > 1 {
 			out = append(out, wrap("Étiquettes : "+strings.Join(it.Refs, ", "), dim)...)
@@ -867,16 +904,181 @@ func (m Model) cleanupDetail(w int) []string {
 	return out
 }
 
-// cleanupBilan : disque, colonnes de « docker system df » (images en
-// exact), note sur les volumes.
-func (m Model) cleanupBilan(w int) []string {
+// pruneTargets : objets nommés qu'une commande prune supprimerait
+// (conteneurs arrêtés, réseaux inutilisés ou externes à une stack).
+func (m Model) pruneTargets(p compose.PruneCommand) []string {
 	rep := m.cleanupRep
 	var out []string
-	if mt := m.metrics; mt.DiskTotalGB > 0 {
-		free := mt.DiskFreeGB
-		out = append(out, "  "+styleCyan.Render("Disque ")+styleDim.Render(truncate(mt.DiskMount, 12))+" "+
-			bar(mt.DiskPercent, 12)+fmt.Sprintf(" %d / %d Go (%d %%)", mt.DiskUsedGB, mt.DiskTotalGB, mt.DiskPercent)+
-			styleDim.Render(fmt.Sprintf(" · %d Go libres", free)))
+	if p == compose.PruneContainers || p == compose.PruneSystem {
+		for _, c := range rep.StoppedContainers {
+			name := c.Name
+			if c.Project != "" {
+				name += " (stack " + c.Project + ")"
+			}
+			out = append(out, name)
+		}
+	}
+	if p == compose.PruneNetworks || p == compose.PruneSystem {
+		for _, i := range m.cleanupItems(compose.CleanUnusedNetwork) {
+			out = append(out, rep.Items[i].Name)
+		}
+		for _, kn := range rep.KeptExternalNetworks {
+			out = append(out, kn.Name+" (externe de "+strings.Join(kn.Stacks, ", ")+")")
+		}
+	}
+	return out
+}
+
+// itemFacts : propriétés d'un élément (libellé, valeur), pour le détail.
+func itemFacts(it compose.CleanupItem) [][2]string {
+	var out [][2]string
+	if it.ID != "" && it.ID != it.Name {
+		id := it.ID
+		if len(id) > 19 && strings.HasPrefix(id, "sha256:") {
+			id = id[7:19]
+		}
+		out = append(out, [2]string{"Identifiant", id})
+	}
+	out = append(out, [2]string{"Libéré seul", fmtCleanupSize(it.Size, it.Approx)})
+	if !it.Created.IsZero() {
+		out = append(out, [2]string{"Créé", relativeTime(it.Created, time.Now())})
+	}
+	switch it.Kind {
+	case compose.CleanStackImage:
+		out = append(out, [2]string{"Stack", strings.Join(it.Stacks, ", ")})
+	case compose.CleanOrphanVolume:
+		out = append(out, [2]string{"Projet (stack absente)", strings.Join(it.Stacks, ", ")})
+	}
+	return out
+}
+
+// cleanupBrief : détail de la ligne sous le curseur en au plus h lignes,
+// pour la bande de la disposition étroite. Une ligne de tête (la commande
+// et ce qu'elle supprime, la catégorie ou l'élément), puis les
+// avertissements d'une commande prune, qui passent avant le reste : c'est
+// ce qu'il ne faut pas découvrir seulement à la confirmation.
+func (m Model) cleanupBrief(w, h int) []string {
+	r, ok := m.cleanupCurrent()
+	if !ok || h < 1 {
+		return nil
+	}
+	rep := m.cleanupRep
+	inner := max(w-4, 20)
+	var head string
+	var warn, rest []string // rest : suite grisée, si la place le permet
+	switch {
+	case r.isPrune:
+		s := m.prunePreview(r.prune)
+		// Les objets eux-mêmes quand la commande ne supprime qu'eux (réseaux,
+		// conteneurs) ; sinon le décompte complet, que la ligne de la liste
+		// coupe souvent (docker system prune).
+		what := s.what
+		if len(r.prune.Steps()) > 1 {
+			what = s.count
+		} else if t := m.pruneTargets(r.prune); len(t) > 0 {
+			what = strings.Join(t, ", ")
+		}
+		head = styleBold.Render(r.prune.CLI()) + styleDim.Render(" · "+what)
+		warn = s.warn
+	case r.item < 0:
+		items := m.cleanupItems(r.kind)
+		head = styleBold.Render(r.kind.Label())
+		if size, approx := m.cleanupSize(items); size > 0 {
+			head += styleDim.Render(" · " + fmtCleanupSize(size, approx))
+		}
+		// Les éléments, si la catégorie est repliée (dépliée, la liste les
+		// montre déjà).
+		if r.kind != compose.CleanBuildCache && !m.cleanupOpen[r.kind] {
+			var names []string
+			for _, i := range items {
+				it := rep.Items[i]
+				if it.Size > 0 {
+					names = append(names, it.Name+" ("+fmtCleanupSize(it.Size, it.Approx)+")")
+				} else {
+					names = append(names, it.Name)
+				}
+			}
+			rest = wordWrap(strings.Join(names, " · "), inner)
+		}
+	default:
+		it := rep.Items[r.item]
+		head = styleBold.Render(it.Name)
+		var facts []string
+		for _, f := range itemFacts(it) {
+			facts = append(facts, f[0]+" "+f[1])
+		}
+		rest = wordWrap(strings.Join(facts, " · "), inner)
+		if len(it.Refs) > 1 {
+			rest = append(rest, wordWrap("Étiquettes : "+strings.Join(it.Refs, ", "), inner)...)
+		}
+	}
+	out := []string{"  " + ansiTruncate(head, inner)}
+	for _, l := range briefWarnings(warn, inner, h-1) {
+		out = append(out, "  "+styleYellow.Render(l))
+	}
+	for _, l := range clipLines(rest, h-len(out), inner) {
+		out = append(out, "  "+styleDim.Render(l))
+	}
+	return out
+}
+
+// briefWarnings : avertissements en au plus n lignes de w colonnes. Repliés
+// s'ils tiennent, sinon un par ligne, coupés ; s'ils sont trop nombreux, la
+// dernière ligne renvoie à la confirmation, qui les donne tous.
+func briefWarnings(warn []string, w, n int) []string {
+	if len(warn) == 0 || n < 1 {
+		return nil
+	}
+	var out []string
+	for _, x := range warn {
+		out = append(out, wordWrap("! "+x, w)...)
+	}
+	if len(out) <= n {
+		return out
+	}
+	out = nil
+	for _, x := range warn {
+		out = append(out, truncate("! "+x, w))
+	}
+	if len(out) > n {
+		more := len(out) - (n - 1)
+		out = append(out[:n-1], truncate(fmt.Sprintf("! +%d autres avertissements (↩ pour les lire)", more), w))
+	}
+	return out
+}
+
+// clipLines garde au plus n lignes de lines (de w colonnes au plus) ; si
+// elle en retire, la dernière gardée finit par « … ».
+func clipLines(lines []string, n, w int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	if n <= 0 {
+		return nil
+	}
+	out := append([]string(nil), lines[:n]...)
+	out[n-1] = truncate(out[n-1]+" …", w)
+	return out
+}
+
+// cleanupDiskLine : occupation du disque des données Docker (rien si elle
+// n'est pas mesurée).
+func (m Model) cleanupDiskLine() []string {
+	mt := m.metrics
+	if mt.DiskTotalGB <= 0 {
+		return nil
+	}
+	return []string{"  " + styleCyan.Render("Disque ") + styleDim.Render(truncate(mt.DiskMount, 12)) + " " +
+		bar(mt.DiskPercent, 12) + fmt.Sprintf(" %d / %d Go (%d %%)", mt.DiskUsedGB, mt.DiskTotalGB, mt.DiskPercent) +
+		styleDim.Render(fmt.Sprintf(" · %d Go libres", mt.DiskFreeGB))}
+}
+
+// cleanupImagesFree : espace libérable des images inutilisées, exact
+// (couche par couche) si l'analyse a pu détailler toutes les images.
+func (m Model) cleanupImagesFree() (int64, bool) {
+	rep := m.cleanupRep
+	if rep.Layers == nil {
+		return rep.Images.Reclaimable, false
 	}
 	var unusedImages []string
 	for _, it := range rep.Items {
@@ -885,10 +1087,15 @@ func (m Model) cleanupBilan(w int) []string {
 			unusedImages = append(unusedImages, it.ID)
 		}
 	}
-	imgFree, imgExact := rep.Layers.Freed(unusedImages)
-	if rep.Layers == nil {
-		imgFree, imgExact = rep.Images.Reclaimable, false
-	}
+	return rep.Layers.Freed(unusedImages)
+}
+
+// cleanupBilan : disque, colonnes de « docker system df » (images en
+// exact), note sur les volumes.
+func (m Model) cleanupBilan(w int) []string {
+	rep := m.cleanupRep
+	out := m.cleanupDiskLine()
+	imgFree, imgExact := m.cleanupImagesFree()
 	row := func(label string, r compose.DFRow, free string) string {
 		return fmt.Sprintf("  %-15s %6d %7d %10s %11s", label, r.Count, r.Active, fmtBytes(r.Size), free)
 	}
@@ -906,6 +1113,42 @@ func (m Model) cleanupBilan(w int) []string {
 	return out
 }
 
+// cleanupBilanCompact : le bilan en 2 lignes, quand le bilan complet ne
+// laisserait pas 8 lignes à la sélection (cf. cleanupNarrowLayout) : le
+// disque, puis la colonne « Libérable » de docker system df, total et par
+// type, du plus gros au plus petit pour que la largeur coupe le moins utile.
+// Sans la note « * » (une ligne de plus) : la section « Conservé » de la
+// liste signale déjà les volumes des stacks arrêtées.
+func (m Model) cleanupBilanCompact(w int) []string {
+	rep := m.cleanupRep
+	imgFree, imgExact := m.cleanupImagesFree()
+	type part struct {
+		label  string
+		size   int64
+		approx bool
+	}
+	parts := []part{
+		{"images", imgFree, !imgExact},
+		{"conteneurs", rep.Containers.Reclaimable, false},
+		{"volumes", rep.Volumes.Reclaimable, false},
+		{"cache", rep.Builds.Reclaimable, false},
+	}
+	slices.SortStableFunc(parts, func(a, b part) int { return cmp.Compare(b.size, a.size) })
+	var total int64
+	var txt []string
+	for _, p := range parts {
+		if p.size > 0 {
+			total += p.size
+			txt = append(txt, p.label+" "+fmtCleanupSize(p.size, p.approx))
+		}
+	}
+	line := "  " + styleCyan.Render("Libérable ") + styleBold.Render(fmtCleanupSize(total, !imgExact))
+	if len(txt) > 0 {
+		line += styleDim.Render(" : " + strings.Join(txt, " · "))
+	}
+	return append(m.cleanupDiskLine(), ansiTruncate(line, max(w, 1)))
+}
+
 // Colonnes de la sélection : préfixe, libellé, décompte, taille. Toutes les
 // lignes (catégories, éléments, commandes prune) finissent leur taille sur
 // la même colonne.
@@ -917,7 +1160,10 @@ const (
 // cleanupList : lignes de la sélection pour une colonne de largeur colW,
 // fenêtrées sur h lignes autour du curseur, avec « ··· N au-dessus / en
 // dessous » quand tout ne tient pas. withKept : inclure la section
-// « Conservé » (disposition étroite).
+// « Conservé » (disposition étroite). Le titre de la section du curseur
+// reste en tête quand la fenêtre l'a fait sortir par le haut : la page est
+// classée par risque, et « Volumes orphelins » sans « Données » au-dessus ne
+// disait plus qu'il efface des données.
 func (m Model) cleanupList(colW, h int, withKept bool) []string {
 	rep := m.cleanupRep
 	rows := m.cleanupRows()
@@ -930,16 +1176,17 @@ func (m Model) cleanupList(colW, h int, withKept bool) []string {
 	// la date d'un élément déplié (« il y a 137 j », 14 avec la marge).
 	labelW := min(max(colW-10-cleanupCountW-1-cleanupSizeW-2-14, 12), 56)
 	var lines []string
-	curLine := -1
+	curLine, secLine, lastSec := -1, -1, -1
 	for i, r := range rows {
 		if r.kept && !withKept {
 			continue
 		}
 		if i == cur {
-			curLine = len(lines)
+			curLine, secLine = len(lines), lastSec
 		}
 		switch {
 		case r.section != "":
+			lastSec = len(lines)
 			lines = append(lines, "  "+styleYellow.Render(r.section))
 		case !r.nav:
 			lines = append(lines, styleDim.Render(truncate("      "+r.note, max(colW, 1))))
@@ -995,31 +1242,63 @@ func (m Model) cleanupList(colW, h int, withKept bool) []string {
 			lines = append(lines, cleanupLine(plain, i == cur, colW))
 		}
 	}
-	return windowWithMarks(lines, curLine, h)
+	start, _ := windowSpan(len(lines), curLine, h)
+	if secLine < 0 || secLine >= start || h < 4 {
+		return windowWithMarks(lines, curLine, h)
+	}
+	// Une ligne pour le titre, le reste pour la fenêtre. Rétrécie, la
+	// fenêtre peut remonter d'une ligne en fin de liste et montrer le titre
+	// à sa place : pas de doublon alors.
+	win := windowWithMarks(lines, curLine, h-1)
+	if s, _ := windowSpan(len(lines), curLine, h-1); secLine >= s {
+		return win
+	}
+	return append([]string{lines[secLine]}, win...)
 }
 
 // windowWithMarks garde h lignes autour de cur et signale ce qui est
 // caché (« ··· N au-dessus », « ··· N en dessous »), comme les autres listes.
 func windowWithMarks(lines []string, cur, h int) []string {
 	n := len(lines)
-	if n <= h {
+	start, end := windowSpan(n, cur, h)
+	if start == 0 && end == n {
 		return lines
 	}
-	h = max(h, 3)
-	cur = max(cur, 0)
-	above := func(k int) string { return styleDim.Render(fmt.Sprintf("    ··· %d au-dessus", k)) }
-	below := func(k int) string { return styleDim.Render(fmt.Sprintf("    ··· %d en dessous", k)) }
+	var out []string
+	if start > 0 && h >= 3 {
+		out = append(out, styleDim.Render(fmt.Sprintf("    ··· %d au-dessus", start)))
+	}
+	out = append(out, lines[start:end]...)
+	if end < n && h >= 3 {
+		out = append(out, styleDim.Render(fmt.Sprintf("    ··· %d en dessous", n-end)))
+	}
+	return out
+}
+
+// windowSpan : lignes [start, end) d'une liste de n lignes que
+// windowWithMarks montre dans h lignes autour de cur, repères compris. Sous
+// 3 lignes, pas de repère (cf. markedWindow) : h lignes autour du curseur.
+// Un plancher de 3 rendait 3 lignes là où 2 tenaient, et le bas de l'écran
+// coupait justement le repère « ··· N en dessous ».
+func windowSpan(n, cur, h int) (start, end int) {
+	h = max(h, 1)
+	if n <= h {
+		return 0, n
+	}
+	cur = min(max(cur, 0), n-1)
+	if h < 3 {
+		start = min(max(cur-(h-1)/2, 0), n-h)
+		return start, start + h
+	}
 	switch {
-	case cur < h-1: // en tête : h-1 lignes puis l'indicateur du bas
-		return append(lines[:h-1:h-1], below(n-(h-1)))
-	case cur >= n-(h-1): // en fin : l'indicateur du haut puis h-1 lignes
-		start := n - (h - 1)
-		return append([]string{above(start)}, lines[start:]...)
+	case cur < h-1: // en tête : h-1 lignes puis le repère du bas
+		return 0, h - 1
+	case cur >= n-(h-1): // en fin : le repère du haut puis h-1 lignes
+		return n - (h - 1), n
 	}
 	inner := h - 2
-	start := min(max(cur-inner/2, 1), n-1-inner)
-	out := append([]string{above(start)}, lines[start:start+inner]...)
-	return append(out, below(n-start-inner))
+	start = min(max(cur-inner/2, 1), n-1-inner)
+	return start, start + inner
 }
 
 // markedWindow : fenêtre de h lignes d'une liste de n lignes, à partir de la

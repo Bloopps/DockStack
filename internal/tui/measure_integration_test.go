@@ -369,7 +369,7 @@ func TestMeasureLongIdle(t *testing.T) {
 		h.waitFor("rechargée", func(m Model) bool { return !m.refreshing && !m.loading }, 30*time.Second)
 		h.key("o")
 		h.waitFor("dossiers", func(m Model) bool { return m.view == viewDirPicker && len(m.dirEntries) > 0 }, 10*time.Second)
-		h.key("enter") // « Choisir ce dossier » (config écrite dans le HOME isolé)
+		h.key("enter") // « Choisir ce répertoire » (config écrite dans le HOME isolé)
 		h.waitFor("liste rechargée", func(m Model) bool { return m.view == viewList && !m.loading && len(m.stacks) > 0 }, 60*time.Second)
 		if i%5 == 4 {
 			t.Logf("cycle %d : %v", i+1, snapshot())

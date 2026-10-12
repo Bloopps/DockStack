@@ -14,7 +14,7 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
-// Largeur de terminal en-dessous de laquelle l'aperçu est masqué même s'il est
+// Largeur de terminal en dessous de laquelle l'aperçu est masqué même s'il est
 // activé : amputer la liste (compteurs alignés à droite, ~600 stacks) la
 // rendrait illisible sur un écran étroit. Le mode services, lui, reste
 // possible : son volet prend alors toute la largeur (cf. listBlock).
@@ -180,7 +180,7 @@ func previewStack(m Model, s compose.Stack, inner, height int) []string {
 	}
 	if more > 0 {
 		// La dernière ligne devient le compteur de troncature.
-		body[len(body)-1] = styleDim.Render(fmt.Sprintf("… +%d ligne(s)", more+1))
+		body[len(body)-1] = styleDim.Render(fmt.Sprintf("… +%d ligne%s", more+1, plural(more+1)))
 	}
 	return append(head, body...)
 }

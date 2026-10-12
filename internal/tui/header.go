@@ -479,7 +479,7 @@ func renderCompactHeader(m monitor.Metrics, du *compose.DockerUsage, sc StackCou
 		styleDim.Render("(1/5/15 min)"),
 		styleDim.Render("·"), L.Render("IO"),
 		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)), ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)),
-		styleDim.Render("·"), L.Render("Actif"), m.Uptime,
+		styleDim.Render("·"), L.Render("Uptime"), m.Uptime,
 	)
 
 	// Titres des deux colonnes sur la ligne de respiration : sans eux, les
@@ -613,7 +613,7 @@ func dockerValues(du *compose.DockerUsage, sc StackCounts) dockerVals {
 				if !du.ImagesExact {
 					approx = "≈ "
 				}
-				imagesNote = styleDim.Render(" (" + approx + fmtBytes(du.ImagesReclaimable) + " libres)")
+				imagesNote = styleDim.Render(" (" + approx + fmtBytes(du.ImagesReclaimable) + " libérables)")
 			}
 		}
 		if du.VolumesOK {

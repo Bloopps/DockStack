@@ -30,13 +30,13 @@ func TestDockerLine(t *testing.T) {
 	}
 	got := ansi.Strip(dockerLine(&compose.DockerUsage{Running: 39, Containers: 40,
 		ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesExact: true, ImagesOK: true, VolumesSize: 512 << 20, VolumesOK: true}, sc))
-	for _, want := range []string{"Stacks ⚠ 14/15 (■ 1 arrêtée)", "Conteneurs 39/40", "Images 85.0 Go (24.0 Go libres)", "Volumes 512 Mo"} {
+	for _, want := range []string{"Stacks ⚠ 14/15 (■ 1 arrêtée)", "Conteneurs 39/40", "Images 85.0 Go (24.0 Go libérables)", "Volumes 512 Mo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ligne Docker %q : %q absent", got, want)
 		}
 	} // Libérable estimé (image non détaillée couche par couche) : « ≈ ».
 	got = ansi.Strip(dockerLine(&compose.DockerUsage{ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesOK: true}, sc))
-	if !strings.Contains(got, "(≈ 24.0 Go libres)") {
+	if !strings.Contains(got, "(≈ 24.0 Go libérables)") {
 		t.Errorf("estimation non signalée : %q", got)
 	}
 }

@@ -396,7 +396,7 @@ func TestDirPickerArrows(t *testing.T) {
 	if m.dirCursor != 0 || !strings.Contains(ansi.Strip(renderDirPicker(m)), "↩  choisir") {
 		t.Errorf("g : curseur %d, ou ↩ ne dit pas « choisir »", m.dirCursor)
 	}
-	m = drive(t, m, keyMsg("right"), 0) // sur « Choisir ce dossier » : rien
+	m = drive(t, m, keyMsg("right"), 0) // sur « Choisir ce répertoire » : rien
 	if m.dirPath != filepath.Join(root, "a") || m.cfg.StackDir != "/srv" {
 		t.Fatalf("→ sur « Choisir » : %q, dossier %q", m.dirPath, m.cfg.StackDir)
 	}

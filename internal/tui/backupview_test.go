@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
@@ -142,5 +143,89 @@ func TestRestorePickFlow(t *testing.T) {
 	got = out.(Model)
 	if got.view != viewRestorePick || got.statusKind != statusInfo || !strings.Contains(got.status, "Aucune") {
 		t.Errorf("↩ sans sélection : view=%v status=%q (%v)", got.view, got.status, got.statusKind)
+	}
+}
+
+// captureScreen : la vue des captures de l'audit (une capture nommée, une
+// stack à relancer, une introuvable, deux en marche et sept hors capture).
+func captureScreen(width int) Model {
+	m := New(&config.Config{StackDir: "/srv"})
+	m.width, m.view = width, viewBackup
+	m.stacks = []compose.Stack{{Name: "media/radarr", Total: 1}, {Name: "traefik", Running: 1, Total: 1}, {Name: "immich", Running: 1, Total: 1}}
+	for _, n := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		m.stacks = append(m.stacks, compose.Stack{Name: n, Running: 1, Total: 1})
+	}
+	m.backups = []backup.Snapshot{
+		{Date: time.Now(), StackDir: "/srv", Label: "avant mise à jour immich", Stacks: []string{"media/radarr", "ancienne-stack", "traefik", "immich"}},
+		{Date: time.Now().Add(-26 * time.Hour), StackDir: "/srv", Stacks: []string{"traefik"}},
+	}
+	return m
+}
+
+// En 80 colonnes, le bilan d'une capture se replie entre deux comptes, dans
+// la hauteur prévue : replié par le cadre, il prenait une ligne de trop et
+// le bas de l'écran coupait la bordure basse. « 1 introuvable » s'accorde.
+func TestCaptureSummaryWrapsInsideFrame(t *testing.T) {
+	m := captureScreen(80)
+	const h = 21
+	lines := strings.Split(ansi.Strip(renderBackupView(m, h)), "\n")
+	if len(lines) != h || strings.Count(lines[h-1], "╰") != 2 {
+		t.Fatalf("%d lignes, want %d avec les deux bordures basses en dernier :\n%s", len(lines), h, strings.Join(lines, "\n"))
+	}
+	s := strings.Join(lines, "\n")
+	for _, want := range []string{"1 à relancer · 1 introuvable", "2 en marche · 7 hors capture"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("%q absent (bilan coupé au milieu d'un compte ?) :\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "(s)") {
+		t.Errorf("« (s) » au lieu de l'accord :\n%s", s)
+	}
+}
+
+// Le volet des captures s'élargit pour montrer le libellé en entier (il
+// n'en montrait que 15 colonnes à toutes les largeurs), sans dépasser les
+// 2/5 de l'écran ni descendre sous 38 colonnes.
+func TestCaptureListWidensForLabel(t *testing.T) {
+	m := captureScreen(120)
+	if s := ansi.Strip(renderBackupView(m, 20)); !strings.Contains(s, "avant mise à jour immich │") {
+		t.Errorf("120 colonnes : libellé coupé\n%s", s)
+	}
+	m.backups[0].Label = strings.Repeat("x", 60)
+	if got := m.captureListW(); got != 48 {
+		t.Errorf("libellé de 60 en 120 colonnes : volet de %d, want 48 (2/5)", got)
+	}
+	m = captureScreen(80)
+	if got := m.captureListW(); got != captureListMinW {
+		t.Errorf("80 colonnes : volet de %d, want %d", got, captureListMinW)
+	}
+	if s := ansi.Strip(renderBackupView(m, 20)); !strings.Contains(s, "Capture du") {
+		t.Errorf("80 colonnes : plus de place pour le détail\n%s", s)
+	}
+}
+
+// Le statut de chaque stack suit son nom, aligné sur le plus long nom + 2,
+// au lieu d'être collé au bord droit (à 120 colonnes du nom en 180).
+func TestCaptureDetailStatusNextToName(t *testing.T) {
+	m := captureScreen(180)
+	s := ansi.Strip(renderBackupView(m, 20))
+	col := func(line, sub string) int { return ansi.StringWidth(line[:strings.Index(line, sub)]) }
+	nameCol, statusCol := -1, -1
+	for _, l := range strings.Split(s, "\n") {
+		for _, e := range [][2]string{{"■ media/radarr", "à relancer"}, {"✕ ancienne-stack", "introuvable"}, {"● traefik", "en marche"}, {"● immich", "en marche"}} {
+			if !strings.Contains(l, e[0]) {
+				continue
+			}
+			n, st := col(l, e[0])+2, col(l, e[1])
+			if nameCol < 0 {
+				nameCol, statusCol = n, st
+			}
+			if n != nameCol || st != statusCol {
+				t.Errorf("%q : nom en %d, statut en %d ; want %d et %d", e[0], n, st, nameCol, statusCol)
+			}
+		}
+	}
+	if want := nameCol + len("ancienne-stack") + 2; statusCol != want {
+		t.Errorf("statuts en colonne %d, want %d (plus long nom + 2)\n%s", statusCol, want, s)
 	}
 }

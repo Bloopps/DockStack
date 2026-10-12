@@ -323,17 +323,22 @@ func (m Model) buildListRows() []listRow {
 // rendue comme celles du pied de page pour qu'on la repère.
 const hiddenHint = "a pour tout afficher"
 
-// hiddenNote : texte de la ligne qui résume les stacks masquées.
+// hiddenNote : texte de la ligne qui résume les stacks masquées. Chaque
+// compte porte le symbole de son état (cf. stateStyle) : un ○ unique en tête
+// faisait passer les arrêtées pour des non déployées, que la légende de
+// l'aide note ○.
 func hiddenNote(stopped, undeployed int) string {
 	var parts []string
 	if stopped > 0 {
-		parts = append(parts, fmt.Sprintf("%d arrêtée%s", stopped, plural(stopped)))
+		g, _ := stateStyle(compose.StateStopped)
+		parts = append(parts, fmt.Sprintf("%s %d arrêtée%s", g, stopped, plural(stopped)))
 	}
 	if undeployed > 0 {
-		parts = append(parts, fmt.Sprintf("%d non déployée%s", undeployed, plural(undeployed)))
+		g, _ := stateStyle(compose.StateUnknown)
+		parts = append(parts, fmt.Sprintf("%s %d non déployée%s", g, undeployed, plural(undeployed)))
 	}
 	n := stopped + undeployed
-	return fmt.Sprintf("○ %s masquée%s — %s", strings.Join(parts, " et "), plural(n), hiddenHint)
+	return fmt.Sprintf("%s masquée%s — %s", strings.Join(parts, " et "), plural(n), hiddenHint)
 }
 
 // cursorRow renvoie la ligne sous le curseur, clampé si la liste a rétréci.
@@ -505,7 +510,7 @@ func renderStackList(m Model, height, width int) string {
 	// whole list on every frame would be wasted work).
 	lines := make([]string, 0, end-start+2)
 	if moreAbove > 0 {
-		lines = append(lines, styleDim.Render(fmt.Sprintf("  ··· %d ligne(s) au-dessus", moreAbove)))
+		lines = append(lines, styleDim.Render(fmt.Sprintf("  ··· %d ligne%s au-dessus", moreAbove, plural(moreAbove))))
 	}
 	for i := start; i < end; i++ {
 		row := rows[i]
@@ -529,7 +534,7 @@ func renderStackList(m Model, height, width int) string {
 		}
 	}
 	if moreBelow > 0 {
-		lines = append(lines, styleDim.Render(fmt.Sprintf("  ··· %d ligne(s) en-dessous", moreBelow)))
+		lines = append(lines, styleDim.Render(fmt.Sprintf("  ··· %d ligne%s en dessous", moreBelow, plural(moreBelow))))
 	}
 
 	body := strings.Join(lines, "\n")
