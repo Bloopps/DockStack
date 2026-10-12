@@ -67,6 +67,7 @@ func TestListFooterContext(t *testing.T) {
 		stack("g/a", "g", 1, 1, 0), stack("g/b", "g", 0, 1, 0),
 	})
 	m.cfg.ShowAll = true // g/b est arrêtée : l'afficher pour avoir un dossier à 2 stacks
+	m.loading = false    // liste lue : pendant le chargement, le pied se réduit à q
 	m.invalidateRows()
 	has := func(f, s string) bool { return strings.Contains(ansi.Strip(f), s) }
 
@@ -240,7 +241,7 @@ func TestHelpFits(t *testing.T) {
 func TestServiceFooterPinsExit(t *testing.T) {
 	for _, w := range []int{100, 120, 160} {
 		m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
-		m.width, m.svcFocus = w, true
+		m.width, m.svcFocus, m.loading = w, true, false
 		f := ansi.Strip(m.renderFooter())
 		if !strings.Contains(f, "retour") || !strings.Contains(f, "aide") {
 			t.Errorf("w=%d : retour/aide absents du footer %q", w, f)

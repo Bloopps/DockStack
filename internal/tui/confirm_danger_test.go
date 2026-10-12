@@ -37,7 +37,7 @@ func TestRemoveNeedsExplicitY(t *testing.T) {
 	if m.view != viewConfirm || len(fake.called("remove")) != 0 {
 		t.Fatalf("↩ a confirmé le Remove (vue %v, appels %v)", m.view, fake.called("remove"))
 	}
-	if !m.statusErr || !strings.Contains(m.status, "y pour confirmer") {
+	if m.statusKind != statusErr || !strings.Contains(m.status, "y pour confirmer") {
 		t.Errorf("statut = %q, want un rappel de y", m.status)
 	}
 

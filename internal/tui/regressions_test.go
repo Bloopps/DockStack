@@ -190,7 +190,7 @@ func TestCaptureRefusedBeforeLoad(t *testing.T) {
 	m := backupModel(&fakeClient{}, nil)
 	m.view = viewBackup
 	m, cmd := update(m, keyMsg("c"))
-	if m.spinning || !m.statusErr {
+	if m.spinning || m.statusKind != statusErr {
 		t.Fatalf("capture lancée sans liste chargée (spinning=%v, statut %q)", m.spinning, m.status)
 	}
 	_ = cmd
@@ -202,7 +202,7 @@ func TestRestoreOtherDirRefused(t *testing.T) {
 		backup.Snapshot{Date: time.Now(), StackDir: "/ailleurs", Stacks: []string{"a"}})
 	m.view = viewBackup
 	m = press(m, "enter")
-	if m.view != viewBackup || !m.statusErr {
+	if m.view != viewBackup || m.statusKind != statusErr {
 		t.Fatalf("vue %v : relance depuis un autre répertoire non refusée", m.view)
 	}
 }

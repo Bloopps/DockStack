@@ -155,10 +155,10 @@ func (m Model) closeThemePicker(save bool) (tea.Model, tea.Cmd) {
 	if err := m.cfg.Save(); err != nil {
 		m.cfg.Theme = prev
 		m.setStatus("Thème non enregistré : "+err.Error(), true)
-		return m, clearStatusIn(5 * time.Second)
+		return m, m.clearStatusIn(5 * time.Second)
 	}
 	m.setStatus(fmt.Sprintf("Thème « %s » enregistré", m.themeName), false)
-	return m, clearStatusIn(3 * time.Second)
+	return m, m.clearStatusIn(3 * time.Second)
 }
 
 func (m Model) handleThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

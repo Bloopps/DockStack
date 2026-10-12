@@ -190,8 +190,8 @@ func TestCleanupConfirmWarnings(t *testing.T) {
 	m, _ = cleanupModel(t)
 	m.cleanupSel = map[string]bool{}
 	m = drive(t, m, keyMsg("enter"), 0)
-	if m.view != viewCleanup || m.status != "Rien de coché" {
-		t.Errorf("sélection vide : vue %v, statut %q", m.view, m.status)
+	if m.view != viewCleanup || !strings.HasPrefix(m.status, "Rien de coché") || m.statusKind != statusInfo {
+		t.Errorf("sélection vide : vue %v, statut %q (%v), want un rappel", m.view, m.status, m.statusKind)
 	}
 }
 

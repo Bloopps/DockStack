@@ -121,8 +121,8 @@ func (m Model) confirmCleanup() (tea.Model, tea.Cmd) {
 	}
 	sel := m.cleanupSelected()
 	if len(sel) == 0 {
-		m.setStatus("Rien de coché", true)
-		return m, clearStatusIn(3 * time.Second)
+		m.setInfo("Rien de coché : ␣ pour cocher")
+		return m, m.clearStatusIn(3 * time.Second)
 	}
 	planned, approx := m.cleanupSize(sel)
 	var items []compose.CleanupItem
@@ -936,7 +936,12 @@ func cleanupLine(plain string, selected bool, w int) string {
 // cleanupFooter : pied de page de la page.
 func (m Model) cleanupFooter() string {
 	back := []footerKey{{"esc", "retour"}}
-	if m.cleanupLoading || m.cleanupRep == nil {
+	// Pendant l'analyse, rien à faire qu'attendre ou sortir (R relance
+	// encore l'analyse, sans qu'il faille le proposer).
+	if m.cleanupLoading {
+		return renderBar(nil, back, m.width, "")
+	}
+	if m.cleanupRep == nil {
 		return renderBar([]footerKey{{"R", "réanalyser"}}, back, m.width, "")
 	}
 	if r, ok := m.cleanupCurrent(); ok && r.isPrune {

@@ -92,12 +92,12 @@ func (m Model) focusedStack() (compose.Stack, bool) {
 func (m Model) enterServices() (tea.Model, tea.Cmd) {
 	s, ok := m.cursorStack()
 	if !ok {
-		m.setStatus("Viser une stack (pas un dossier) pour gérer ses services", false)
-		return m, clearStatusIn(3 * time.Second)
+		m.setInfo("Viser une stack (pas un dossier) pour gérer ses services")
+		return m, m.clearStatusIn(3 * time.Second)
 	}
 	if m.width < minPreviewTermWidth {
 		m.setStatus("Terminal trop étroit pour gérer les services (100 colonnes min.)", true)
-		return m, clearStatusIn(4 * time.Second)
+		return m, m.clearStatusIn(4 * time.Second)
 	}
 	m.previewCompose = false
 	m.svcFocus, m.svcStack, m.svcCursor = true, s.Name, 0
@@ -275,7 +275,7 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if len(sel) == 0 {
 			m.setStatus("Aucun service en défaut", false)
-			return m, clearStatusIn(3 * time.Second)
+			return m, m.clearStatusIn(3 * time.Second)
 		}
 		m.svcSel = sel
 	case "+":

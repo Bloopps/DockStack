@@ -120,8 +120,9 @@ func (m Model) startOrConfirmGroupUp(stacks []compose.Stack) (tea.Model, tea.Cmd
 	return m.startGroupAction("up", stacks)
 }
 
-// planStatus : statut affiché pendant la prévision d'un up.
-const planStatus = "Analyse des changements…"
+// planStatus : statut affiché (animé, cf. setBusy) pendant la prévision
+// d'un up, qui peut durer jusqu'à 20 s : précédé du nom de l'action.
+const planStatus = "analyse des changements…"
 
 // planUpMsg : résultat de la prévision des recréations d'un up.
 type planUpMsg struct {
@@ -142,8 +143,8 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 	client, from := m.client, m.view
 	m.planSeq++
 	seq := m.planSeq
-	m.setStatus(planStatus, false)
-	return m, func() tea.Msg {
+	m.setBusy(label + " : " + planStatus)
+	return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var recs []string
@@ -161,7 +162,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 			}
 		}
 		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from, seq: seq}
-	}
+	})
 }
 
 // handlePlanUp applique la décision après la prévision (voir confirmUpWithPlan).
@@ -171,7 +172,10 @@ func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
 	if msg.seq != m.planSeq {
 		return m, nil
 	}
-	m.status = ""
+	// Seulement l'attente : un statut posé depuis (R, refus…) reste affiché.
+	if m.statusKind == statusBusy {
+		m.setStatus("", false)
+	}
 	// Vue changée (même revenue depuis), ou opération lancée entre-temps :
 	// la demande est périmée.
 	if m.view != msg.from || m.opInProgress() {
@@ -191,7 +195,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "enter":
 		if m.confirmDanger && msg.String() == "enter" {
 			m.setStatus("Action destructrice : y pour confirmer, esc pour annuler", true)
-			return m, clearStatusIn(4 * time.Second)
+			return m, m.clearStatusIn(4 * time.Second)
 		}
 		exec := m.confirmExec
 		m.confirmExec = nil

@@ -17,28 +17,29 @@ import (
 
 // Non-régressions de la passe complémentaire du 2026-10-01.
 
-// planMsgOf exécute la commande renvoyée par une touche et en extrait la
+// findPlanMsg exécute la commande renvoyée par une touche et en extrait la
 // prévision d'up, en descendant dans les lots (tea.Batch).
-func planMsgOf(t *testing.T, cmd tea.Cmd) planUpMsg {
-	t.Helper()
-	var walk func(tea.Cmd) (planUpMsg, bool)
-	walk = func(c tea.Cmd) (planUpMsg, bool) {
-		if c == nil {
-			return planUpMsg{}, false
-		}
-		switch msg := c().(type) {
-		case planUpMsg:
-			return msg, true
-		case tea.BatchMsg:
-			for _, sub := range msg {
-				if pm, ok := walk(sub); ok {
-					return pm, true
-				}
-			}
-		}
+func findPlanMsg(c tea.Cmd) (planUpMsg, bool) {
+	if c == nil {
 		return planUpMsg{}, false
 	}
-	pm, ok := walk(cmd)
+	switch msg := c().(type) {
+	case planUpMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, sub := range msg {
+			if pm, ok := findPlanMsg(sub); ok {
+				return pm, true
+			}
+		}
+	}
+	return planUpMsg{}, false
+}
+
+// planMsgOf : findPlanMsg, prévision obligatoire.
+func planMsgOf(t *testing.T, cmd tea.Cmd) planUpMsg {
+	t.Helper()
+	pm, ok := findPlanMsg(cmd)
 	if !ok {
 		t.Fatal("aucune prévision d'up dans la commande")
 	}
@@ -266,7 +267,7 @@ func TestRenderErrorDaemonUnreachable(t *testing.T) {
 		`Cannot connect to the Docker daemon at tcp://127.0.0.1:2376. Is the docker daemon running?`,
 		`le démon Docker ne répond pas (10s sans réponse) : context deadline exceeded`,
 	} {
-		out := ansi.Strip(renderError(errors.New(msg), 100))
+		out := ansi.Strip(renderError(errors.New(msg), 100, ""))
 		if strings.Contains(out, "Accès Docker refusé") || strings.Contains(out, "usermod") {
 			t.Errorf("%q affiché comme un refus d'accès :\n%s", msg, out)
 		}

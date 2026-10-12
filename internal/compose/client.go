@@ -206,6 +206,10 @@ func New() (*Client, error) {
 // pingTimeout borne la première prise de contact avec le démon.
 var pingTimeout = 10 * time.Second
 
+// PingTimeout : délai de la prise de contact, annoncé par l'écran de
+// chargement quand le démon tarde à répondre.
+func PingTimeout() time.Duration { return pingTimeout }
+
 // containerPID : PID principal d'un conteneur en marche, sur l'hôte du démon.
 func (c *Client) containerPID(ctx context.Context, id string) (int, error) {
 	res, err := c.cli.Client().ContainerInspect(ctx, id, mobyclient.ContainerInspectOptions{})

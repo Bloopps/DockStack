@@ -59,10 +59,10 @@ func send(m Model, k string) Model {
 		mm, cmd = m.handleListKey(keyMsg(k))
 	}
 	m = mm.(Model)
-	// Seule la commande de prévision est rejouée : les autres (minuteurs du
-	// statut, spinner) dormiraient.
-	if cmd != nil && m.status == "Analyse des changements…" {
-		if pm, ok := cmd().(planUpMsg); ok {
+	// Seule la commande de prévision est rejouée (statut d'attente) : les
+	// minuteurs du statut dormiraient.
+	if cmd != nil && m.statusKind == statusBusy {
+		if pm, ok := findPlanMsg(cmd); ok {
 			mm, _ = m.Update(pm)
 			m = mm.(Model)
 		}

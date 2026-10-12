@@ -135,7 +135,7 @@ func TestViewsSurviveAnySize(t *testing.T) {
 // l'écran (il était coupé en bout de ligne par le terminal).
 func TestErrorWrapsToWidth(t *testing.T) {
 	err := fmt.Errorf("failed to connect to the docker API at unix:///tmp/zz.sock; check if the path is correct and if the daemon is running: dial unix /tmp/zz.sock: connect: no such file or directory")
-	out := renderError(err, 80)
+	out := renderError(err, 80, "")
 	for _, l := range strings.Split(out, "\n") {
 		if w := ansi.StringWidth(l); w > 80 {
 			t.Fatalf("ligne de %d colonnes : %q", w, ansi.Strip(l))
@@ -231,13 +231,13 @@ func TestReadOnlyConfigDir(t *testing.T) {
 	showAll := m.cfg.ShowAll
 	out, _ := m.Update(keyMsg("a"))
 	m = out.(Model)
-	if m.cfg.ShowAll == showAll || !m.statusErr || !strings.Contains(m.status, "non sauvegardée") {
-		t.Fatalf("a : ShowAll=%v, statut %q (erreur=%v)", m.cfg.ShowAll, m.status, m.statusErr)
+	if m.cfg.ShowAll == showAll || m.statusKind != statusErr || !strings.Contains(m.status, "non sauvegardée") {
+		t.Fatalf("a : ShowAll=%v, statut %q (%v)", m.cfg.ShowAll, m.status, m.statusKind)
 	}
 	msg := saveBackup(m.cfg.ConfigDir(), m.cfg.StackDir, m.stacks)()
 	out, _ = m.Update(msg)
-	if m = out.(Model); !m.statusErr || m.status == "" {
-		t.Fatalf("capture : statut %q (erreur=%v)", m.status, m.statusErr)
+	if m = out.(Model); m.statusKind != statusErr || m.status == "" {
+		t.Fatalf("capture : statut %q (%v)", m.status, m.statusKind)
 	}
 	t.Logf("statut : %s", m.status)
 }

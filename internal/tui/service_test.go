@@ -247,7 +247,7 @@ func TestUpdateOpErr(t *testing.T) {
 	if got.err != nil {
 		t.Error("opErrMsg ne doit pas poser m.err (pas d'écran fatal)")
 	}
-	if got.status == "" || !got.statusErr {
+	if got.status == "" || got.statusKind != statusErr {
 		t.Error("l'erreur d'op devrait s'afficher en barre de statut (rouge)")
 	}
 	if !cancelled {
@@ -281,13 +281,13 @@ func TestUpdateOpDone(t *testing.T) {
 	m.opLabel = "Capture"
 
 	out, _ := m.Update(opDoneMsg{err: errors.New("disque plein")})
-	if got := out.(Model); !got.statusErr || got.status == "" {
-		t.Errorf("opDone en erreur : statusErr=%v status=%q, want erreur affichée", got.statusErr, got.status)
+	if got := out.(Model); got.statusKind != statusErr || got.status == "" {
+		t.Errorf("opDone en erreur : statut %q (%v), want erreur affichée", got.status, got.statusKind)
 	}
 
 	out, _ = m.Update(opDoneMsg{})
-	if got := out.(Model); got.statusErr {
-		t.Error("opDone réussi ne devrait pas marquer statusErr")
+	if got := out.(Model); got.statusKind != statusOK {
+		t.Errorf("opDone réussi : statut de nature %v, want réussite", got.statusKind)
 	}
 }
 

@@ -137,10 +137,10 @@ func TestRestorePickFlow(t *testing.T) {
 	if got = out.(Model); got.restoreSel["gone"] {
 		t.Error("␣ ne doit pas cocher une stack introuvable")
 	}
-	// Plus rien de coché : pas d'op lancée.
+	// Plus rien de coché : pas d'op lancée, un simple rappel (pas une panne).
 	out, _ = out.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	got = out.(Model)
-	if got.view != viewRestorePick || !got.statusErr || !strings.Contains(got.status, "Aucune") {
-		t.Errorf("↩ sans sélection : view=%v status=%q", got.view, got.status)
+	if got.view != viewRestorePick || got.statusKind != statusInfo || !strings.Contains(got.status, "Aucune") {
+		t.Errorf("↩ sans sélection : view=%v status=%q (%v)", got.view, got.status, got.statusKind)
 	}
 }

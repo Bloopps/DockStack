@@ -37,9 +37,9 @@ func lipglossScreen(m Model) string {
 		body = renderThemePicker(m, bodyH)
 	default:
 		if m.loading {
-			body = styleDim.Render("\n  Chargement...")
+			body = m.loadingView()
 		} else if m.err != nil {
-			body = renderError(m.err, m.width)
+			body = renderError(m.err, m.width, m.retryNote())
 		} else {
 			banner := m.captureBanner()
 			listH := bodyH

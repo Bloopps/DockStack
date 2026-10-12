@@ -10,7 +10,8 @@ import (
 type dirLoadedMsg struct {
 	path    string
 	entries []string
-	err     error // lecture du répertoire impossible (permissions…)
+	err     error  // lecture du répertoire impossible (permissions…)
+	focus   string // entrée sous le curseur à l'arrivée (« » : la première)
 }
 
 func renderDirPicker(m Model) string {
@@ -58,7 +59,21 @@ func renderDirPicker(m Model) string {
 		// Premier lancement : esc n'a nulle part où revenir, q quitte.
 		exit = footerKey{"q", "quitter"}
 	}
-	hint := renderBar([]footerKey{{"↑↓", "naviguer"}, {"↩", "ouvrir / choisir"}}, []footerKey{exit}, m.width, "")
+	// ↩ dit ce qu'il fera sur la ligne visée : choisir le dossier affiché,
+	// ouvrir le sous-dossier (comme →) ou remonter (comme ←). ↩ vient avant
+	// → et ← : sur un terminal étroit, renderBar retire d'abord les
+	// dernières touches, et ↩ est la seule qui choisit.
+	keys := []footerKey{{"↑↓", "naviguer"}, {"↩", "choisir"}, {"→", "ouvrir"}, {"←", "parent"}}
+	if m.dirCursor < len(m.dirEntries) {
+		switch m.dirEntries[m.dirCursor] {
+		case dirChooseEntry:
+		case "../":
+			keys = []footerKey{{"↑↓", "naviguer"}, {"↩ / ←", "parent"}, {"→", "ouvrir"}}
+		default:
+			keys = []footerKey{{"↑↓", "naviguer"}, {"↩ / →", "ouvrir"}, {"←", "parent"}}
+		}
+	}
+	hint := renderBar(keys, []footerKey{exit}, m.width, "")
 	// Cette vue a son propre pied de page : la confirmation de sortie doit y
 	// être visible aussi (le footer commun ne s'affiche pas ici).
 	if m.quitArmed {

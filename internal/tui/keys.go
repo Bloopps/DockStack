@@ -230,8 +230,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s, ok := m.cursorStack(); ok {
 			return m.openComposeView(s)
 		}
-		m.setStatus("Compose : viser une stack, pas un dossier", false)
-		return m, clearStatusIn(3 * time.Second)
+		m.setInfo("Compose : viser une stack, pas un dossier")
+		return m, m.clearStatusIn(3 * time.Second)
 	case "tab":
 		// Volet ouvert : bascule détail de la stack ↔ fichier compose.
 		if m.previewVisible() {
@@ -245,13 +245,16 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = viewBackup
 		m.captureSeen = true // le bandeau « stacks à relancer » a fait son office
 		m.actionCursor = 0
-		return m, loadBackups(m.cfg.ConfigDir())
+		// La liste est relue à l'ouverture : c enregistre m.stacks, qui
+		// pouvait dater d'avant une coupure du flux d'événements.
+		reload := m.refreshOrMark()
+		return m, tea.Batch(loadBackups(m.cfg.ConfigDir()), reload)
 	case "n":
 		return m.openCleanup()
 	case "o":
 		start := m.cfg.StackDir
 		if start == "" {
-			start = "/"
+			start = pickerStart()
 		}
 		m.view = viewDirPicker
 		return m, loadDirCmd(start)
@@ -282,7 +285,7 @@ func (m Model) toggleInactive() (tea.Model, tea.Cmd) {
 	}
 	if err := m.cfg.Save(); err != nil {
 		m.setStatus("Config non sauvegardée : "+err.Error(), true)
-		return m, clearStatusIn(6 * time.Second)
+		return m, m.clearStatusIn(6 * time.Second)
 	}
 	return m, nil
 }
@@ -329,7 +332,7 @@ func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 			} else {
 				m.setStatus("Exclu du scan : "+target, false)
 			}
-			return m, clearStatusIn(4 * time.Second)
+			return m, m.clearStatusIn(4 * time.Second)
 		})
 }
 
@@ -629,7 +632,13 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// capture serait vide et écraserait active_stacks, lu par les scripts.
 		if m.lastRefresh.IsZero() || m.err != nil {
 			m.setStatus("État des stacks inconnu (liste non chargée ou Docker injoignable) : capture impossible", true)
-			return m, clearStatusIn(5 * time.Second)
+			return m, m.clearStatusIn(5 * time.Second)
+		}
+		// Liste en cours de relecture (ouverture de la vue, événement Docker
+		// reçu) : la capture enregistrerait l'état d'avant.
+		if m.listDirty || m.refreshing || m.refreshPending {
+			m.setInfo("Liste en cours d'actualisation : c dans un instant")
+			return m, m.clearStatusIn(3 * time.Second)
 		}
 		// On reste sur la vue : la nouvelle capture doit y apparaître,
 		// sinon rien ne prouve à l'utilisateur qu'elle a été faite.
@@ -719,12 +728,12 @@ func (m Model) confirmAlign(snap backup.Snapshot) (tea.Model, tea.Cmd) {
 	}
 	if snap.StackDir != "" && snap.StackDir != m.cfg.StackDir {
 		m.setStatus("Capture prise depuis "+snap.StackDir+" : alignement impossible depuis ce répertoire", true)
-		return m, clearStatusIn(5 * time.Second)
+		return m, m.clearStatusIn(5 * time.Second)
 	}
 	plan := planAlign(snap.Items(), m.stacks)
 	if plan.empty() {
 		m.setStatus("Déjà aligné sur cette capture", false)
-		return m, clearStatusIn(3 * time.Second)
+		return m, m.clearStatusIn(3 * time.Second)
 	}
 
 	var lines []string
@@ -793,7 +802,7 @@ func (m Model) openRestorePick() (tea.Model, tea.Cmd) {
 	// répertoire désigneraient d'autres stacks (ou aucune) ici.
 	if snap.StackDir != "" && snap.StackDir != m.cfg.StackDir {
 		m.setStatus("Capture prise depuis "+snap.StackDir+" : relance impossible depuis ce répertoire", true)
-		return m, clearStatusIn(5 * time.Second)
+		return m, m.clearStatusIn(5 * time.Second)
 	}
 	m.view = viewRestorePick
 	m.restoreLabel = fmt.Sprintf("Capture du %s", snap.Date.Format("02/01/2006 15:04"))
@@ -865,8 +874,8 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(items) == 0 {
-			m.setStatus("Aucune stack sélectionnée", true)
-			return m, clearStatusIn(3 * time.Second)
+			m.setInfo("Aucune stack cochée : ␣ pour cocher")
+			return m, m.clearStatusIn(3 * time.Second)
 		}
 		if m.opInProgress() {
 			return m.refuseOp()
@@ -877,7 +886,7 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		stacks, missing := resolveRestoreStacks(items, m.cfg.StackDir)
 		if len(stacks) == 0 {
 			m.setStatus(fmt.Sprintf("Aucune stack relançable (%d introuvable(s) sur le disque)", len(missing)), true)
-			return m, clearStatusIn(5 * time.Second)
+			return m, m.clearStatusIn(5 * time.Second)
 		}
 		title := fmt.Sprintf("Relance — %d stack(s)", len(stacks))
 		if len(missing) > 0 {
@@ -915,6 +924,27 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.dirCursor < len(m.dirEntries)-1 {
 			m.dirCursor++
 		}
+	case "g", "home":
+		m.dirCursor = 0
+	case "G", "end":
+		m.dirCursor = max(len(m.dirEntries)-1, 0)
+	case "left", "backspace":
+		// Dossier parent, curseur posé sur celui d'où l'on sort.
+		if m.dirPath != "" && m.dirPath != "/" {
+			return m, loadDirFocus(filepath.Dir(m.dirPath), filepath.Base(m.dirPath)+"/")
+		}
+	case "right":
+		// Ouvre le sous-dossier sous le curseur (jamais de choix : ↩ seul
+		// choisit, sur « Choisir ce dossier »).
+		if m.dirCursor < len(m.dirEntries) {
+			switch entry := m.dirEntries[m.dirCursor]; entry {
+			case dirChooseEntry:
+			case "../":
+				return m, loadDirFocus(filepath.Dir(m.dirPath), filepath.Base(m.dirPath)+"/")
+			default:
+				return m, loadDirCmd(filepath.Join(m.dirPath, strings.TrimSuffix(entry, "/")))
+			}
+		}
 	case "esc":
 		// Premier lancement : aucune liste où revenir ; q (global) quitte.
 		if m.cfg.StackDir != "" {
@@ -926,7 +956,7 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		entry := m.dirEntries[m.dirCursor]
 		switch entry {
-		case "[*] Choisir ce dossier":
+		case dirChooseEntry:
 			if m.dirPath != m.cfg.StackDir {
 				// Les stacks affichées et la sélection (par nom relatif)
 				// désignaient l'ancien dossier : un nom identique dans le
@@ -940,26 +970,27 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfg.StackDir = m.dirPath
 			m.view = viewList
 			m.loading = true
+			m.loadingSince = time.Now()
 			// On peut arriver ici avec un client nil (init Docker échoué, le
 			// footer d'erreur propose « o ») : retenter la connexion au lieu
 			// de charger — loadStacks sur un client nil paniquerait. Une fois
 			// le client prêt, clientReadyMsg chargera la liste.
-			var cmds []tea.Cmd
+			cmds := []tea.Cmd{m.spinner.Tick} // anime l'écran de chargement
 			if m.client == nil {
 				m.err = nil
-				cmds = []tea.Cmd{initClient()}
+				cmds = append(cmds, initClient())
 			} else {
-				cmds = []tea.Cmd{m.loadStacksCmd()}
+				cmds = append(cmds, m.loadStacksCmd())
 			}
 			// Le choix vaut pour la session même si l'écriture échoue ;
 			// prévenir qu'il ne survivra pas au prochain lancement.
 			if err := m.cfg.Save(); err != nil {
 				m.setStatus("Config non sauvegardée : "+err.Error(), true)
-				cmds = append(cmds, clearStatusIn(6*time.Second))
+				cmds = append(cmds, m.clearStatusIn(6*time.Second))
 			}
 			return m, tea.Batch(cmds...)
 		case "../":
-			return m, loadDirCmd(filepath.Dir(m.dirPath))
+			return m, loadDirFocus(filepath.Dir(m.dirPath), filepath.Base(m.dirPath)+"/")
 		default:
 			next := filepath.Join(m.dirPath, strings.TrimSuffix(entry, "/"))
 			return m, loadDirCmd(next)
@@ -970,9 +1001,16 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ---- helpers ----
 
-func loadDirCmd(path string) tea.Cmd {
+// dirChooseEntry : première ligne du sélecteur, qui choisit le dossier affiché.
+const dirChooseEntry = "[*] Choisir ce dossier"
+
+func loadDirCmd(path string) tea.Cmd { return loadDirFocus(path, "") }
+
+// loadDirFocus liste path et pose le curseur sur l'entrée focus si elle
+// existe (le dossier d'où l'on remonte).
+func loadDirFocus(path, focus string) tea.Cmd {
 	return func() tea.Msg {
-		entries := []string{"[*] Choisir ce dossier"}
+		entries := []string{dirChooseEntry}
 		if path != "/" {
 			entries = append(entries, "../")
 		}
@@ -980,8 +1018,23 @@ func loadDirCmd(path string) tea.Cmd {
 		// illisible (permissions) s'affiche comme simplement vide.
 		dirs, err := listSubDirs(path)
 		entries = append(entries, dirs...)
-		return dirLoadedMsg{path: path, entries: entries, err: err}
+		return dirLoadedMsg{path: path, entries: entries, err: err, focus: focus}
 	}
+}
+
+// pickerStart : point de départ du sélecteur sans dossier configuré. Le
+// dossier courant (souvent celui des stacks, ou le home), à défaut le home,
+// et « / » en dernier recours : depuis « / », un ↩ réflexe choisissait la
+// racine, que le scan (3 niveaux) ne peut pas exploiter. Un dossier courant
+// égal à « / » (lancement par un service) compte comme un défaut.
+func pickerStart() string {
+	if wd, err := os.Getwd(); err == nil && wd != "/" {
+		return wd
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	return "/"
 }
 
 func listSubDirs(path string) ([]string, error) {

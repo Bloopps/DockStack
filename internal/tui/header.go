@@ -104,6 +104,14 @@ type StackCounts struct {
 	// Unknown : la liste n'a pas encore pu être lue (chargement, démon
 	// injoignable). Sans lui, l'en-tête affichait « aucune déployée ».
 	Unknown bool
+	// Fraîcheur des données. LastRefresh : dernière liste lue, Refreshing :
+	// lecture en cours, UsageAt : dernière mesure d'occupation réussie.
+	// Stale : la dernière lecture a échoué, les compteurs sont ceux d'avant ;
+	// DockerDown : le démon ne répond plus, les mesures Docker aussi sont
+	// figées (une erreur de dossier, elle, laisse Docker répondre).
+	LastRefresh, UsageAt time.Time
+	Refreshing           bool
+	Stale, DockerDown    bool
 }
 
 func colorForPct(pct int) lipgloss.Style {
@@ -158,11 +166,19 @@ func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *co
 	// Le dossier scanné et la touche pour en changer, côte à côte : sans ce
 	// rappel, un nouvel utilisateur ne sait pas comment quitter un mauvais
 	// dossier (le raccourci o ne tient pas toujours dans le pied de page).
-	path := L.Render("📂") + " " + sc.Dir + styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
+	change := styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
 	// L'état des stacks est sur la ligne Docker (dockerLine), avec les
 	// conteneurs : un seul endroit pour « est-ce que tout tourne ? ».
-	now := styleCyan.Render("🕐") + " " + time.Now().Format("15:04:05")
-	line1 := title + sep + path + sep + now
+	clock := freshnessText(sc, time.Now(), width)
+	// Un chemin long cède la place (début coupé, la fin est la plus parlante)
+	// plutôt que l'heure et « o changer », que la coupe de fin de ligne
+	// emportait en premier.
+	dir := sc.Dir
+	if room := width - lipgloss.Width(title+sep+L.Render("📂")+" "+change+sep+clock); lipgloss.Width(dir) > room && room >= 8 {
+		dir = ansi.TruncateLeft(dir, lipgloss.Width(dir)-room+1, "…")
+	}
+	path := L.Render("📂") + " " + dir + change
+	line1 := title + sep + path + sep + clock
 
 	if width >= compactHeaderMinWidth {
 		return renderCompactHeader(m, du, sc, line1, width)
@@ -350,6 +366,48 @@ func loadColor(load string, ncores int) lipgloss.Style {
 	fmt.Sscanf(load, "%f", &f)
 	pct := int(f / float64(ncores) * 100)
 	return colorForPct(pct)
+}
+
+// freshnessWideMin : à partir de cette largeur, l'heure courante et l'âge de
+// la liste tiennent ensemble en ligne 1 ; en dessous, l'heure de la liste
+// remplace l'horloge.
+const freshnessWideMin = 100
+
+// staleAfter : âge de la liste au-delà duquel « maj » passe au jaune. Le
+// tick relit la liste toutes les 60 s, les événements Docker plus souvent :
+// une liste plus vieille signale un flux d'événements ou des lectures en
+// échec.
+const staleAfter = 2 * time.Minute
+
+// freshnessText : fin de la ligne 1, l'heure et la fraîcheur de la liste.
+// « maj » était au pied de page, où il cédait la place aux touches sous
+// ~180 colonnes : on ne savait pas de quand dataient les chiffres.
+func freshnessText(sc StackCounts, now time.Time, width int) string {
+	clock := styleCyan.Render("🕐") + " " + now.Format("15:04:05")
+	var fresh string
+	switch {
+	case sc.Refreshing:
+		fresh = styleDim.Render("↻ actualisation…")
+	case !sc.LastRefresh.IsZero():
+		// Jaune : liste ancienne, ou dernière lecture en échec (l'heure est
+		// alors celle de la dernière liste valide).
+		st := styleDim
+		if sc.Stale || now.Sub(sc.LastRefresh) > staleAfter {
+			st = styleYellow
+		}
+		if width >= freshnessWideMin {
+			fresh = st.Render("maj " + relativeTime(sc.LastRefresh, now))
+		} else {
+			fresh = st.Render("maj " + sc.LastRefresh.Format("15:04:05"))
+		}
+	}
+	switch {
+	case fresh == "":
+		return clock
+	case width >= freshnessWideMin:
+		return clock + styleDim.Render(" · ") + fresh
+	}
+	return fresh
 }
 
 // stacksSummary : verdict sur les stacks déployées. « ✔ 15/15 » si tout
@@ -576,7 +634,31 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 	}
 	wait := styleDim.Render("…")
 	ctrs, images, volumes := wait, wait, wait
-	if du != nil {
+	stacks := stacksSummary(sc)
+	if sc.Stale {
+		// Dernière lecture en échec : les compteurs d'avant, affichés comme
+		// actuels au-dessus de l'écran d'erreur, laissaient croire que tout
+		// tournait encore. On dit de quand date la dernière liste.
+		stacks = styleDim.Render("?")
+		if !sc.LastRefresh.IsZero() {
+			stacks += styleDim.Render(" (dernière liste " + sc.LastRefresh.Format("15:04:05") + ")")
+		}
+	}
+	if du != nil && sc.DockerDown {
+		// Démon injoignable : les dernières mesures, en gris et entre
+		// parenthèses, derrière un « ? ».
+		at := ""
+		if !sc.UsageAt.IsZero() {
+			at = " à " + sc.UsageAt.Format("15:04")
+		}
+		ctrs = styleDim.Render(fmt.Sprintf("? (%d/%d%s)", du.Running, du.Containers, at))
+		if du.ImagesOK {
+			images = styleDim.Render("? (" + fmtBytes(du.ImagesSize) + ")")
+		}
+		if du.VolumesOK {
+			volumes = styleDim.Render("? (" + fmtBytes(du.VolumesSize) + ")")
+		}
+	} else if du != nil {
 		st := styleGreen
 		if du.Running < du.Containers {
 			st = styleYellow
@@ -584,8 +666,9 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 		ctrs = st.Render(fmt.Sprintf("%d/%d", du.Running, du.Containers))
 		// Écart avec les stacks : conteneurs lancés hors compose, dont on
 		// signale ceux qui sont arrêtés (c'est souvent eux qui jaunissent le
-		// compteur). Sans stacks chargées, rien à comparer.
-		if out := du.Containers - sc.CtrTotal; sc.Total > 0 && out > 0 {
+		// compteur). Sans stacks chargées, ou avec une liste périmée, rien à
+		// comparer.
+		if out := du.Containers - sc.CtrTotal; sc.Total > 0 && !sc.Stale && out > 0 {
 			note := fmt.Sprintf(" · %d hors stack", out)
 			if stopped := (du.Containers - du.Running) - (sc.CtrTotal - sc.CtrRunning); stopped > 0 {
 				note += fmt.Sprintf(" (%d arrêté%s)", stopped, plural(stopped))
@@ -609,7 +692,7 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 		}
 	}
 	return []string{
-		item("Stacks", stacksSummary(sc)),
+		item("Stacks", stacks),
 		item("Conteneurs", ctrs),
 		item("Images", images),
 		item("Volumes", volumes),
