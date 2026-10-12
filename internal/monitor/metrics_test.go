@@ -84,3 +84,30 @@ func TestCollectConcurrent(t *testing.T) {
 		<-done
 	}
 }
+
+// Occupation calculée comme df : la réserve de root n'est pas « utilisée »,
+// et le pourcentage rapporte l'utilisé à l'utilisé + disponible (arrondi au
+// supérieur). L'ancien calcul (total - disponible) affichait 75 % ici, df 74 %.
+func TestFillDiskLikeDf(t *testing.T) {
+	const gb = 1 << 30
+	var m Metrics
+	fillDisk(&m, 1000, 300, 250, gb) // 50 blocs réservés à root
+	if m.DiskUsedGB != 700 || m.DiskTotalGB != 1000 || m.DiskFreeGB != 250 || m.DiskPercent != 74 {
+		t.Errorf("disque = %d/%d Go, %d libres, %d %% ; want 700/1000, 250, 74 %%", m.DiskUsedGB, m.DiskTotalGB, m.DiskFreeGB, m.DiskPercent)
+	}
+	var empty Metrics
+	fillDisk(&empty, 0, 0, 0, 4096)
+	if empty.DiskPercent != 0 {
+		t.Errorf("disque vide : %d %%", empty.DiskPercent)
+	}
+}
+
+func TestLongestMountEscapes(t *testing.T) {
+	mounts := "/dev/sdb1 /mnt/mes\\040données ext4 rw 0 0\n/dev/sdc1 /mnt/a\\134b ext4 rw 0 0\n"
+	if got := longestMount("/mnt/mes données/docker", mounts); got != "/mnt/mes données" {
+		t.Errorf("espace échappé : %q", got)
+	}
+	if got := longestMount(`/mnt/a\b/x`, mounts); got != `/mnt/a\b` {
+		t.Errorf("barre oblique inverse échappée : %q", got)
+	}
+}

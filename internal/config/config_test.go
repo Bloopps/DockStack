@@ -72,3 +72,28 @@ func TestLoadZeroParallelUsesDefault(t *testing.T) {
 		}
 	}
 }
+
+// Entrées d'exclusion saisies à la main : « dev/ », « ./dev » ou « dev//a »
+// valent leur forme propre ; vides ou « . », elles n'excluent rien.
+func TestIsExcludedNormalized(t *testing.T) {
+	for _, tc := range []struct {
+		exclude []string
+		name    string
+		want    bool
+	}{
+		{[]string{"dev"}, "dev/a", true},
+		{[]string{"dev/"}, "dev/a", true},
+		{[]string{"./dev"}, "dev", true},
+		{[]string{"dev//a"}, "dev/a", true},
+		{[]string{" dev "}, "dev/a", true},
+		{[]string{"dev"}, "devops", false},
+		{[]string{""}, "a", false},
+		{[]string{"."}, "a", false},
+		{[]string{"/"}, "a", false},
+	} {
+		c := Config{Exclude: tc.exclude}
+		if got := c.IsExcluded(tc.name); got != tc.want {
+			t.Errorf("Exclude %q, %q : %v, want %v", tc.exclude, tc.name, got, tc.want)
+		}
+	}
+}

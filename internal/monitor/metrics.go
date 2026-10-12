@@ -24,6 +24,7 @@ type Metrics struct {
 	SwapPercent  int
 	DiskUsedGB   int
 	DiskTotalGB  int
+	DiskFreeGB   int // disponible pour un utilisateur (hors réserve root), comme « Avail » de df
 	DiskPercent  int
 	DiskMount    string // point de montage mesuré (partition des données Docker)
 	DiskReadKBs  int
@@ -185,11 +186,19 @@ func memswap(m *Metrics) {
 	st := vals["SwapTotal"]
 	sf := vals["SwapFree"]
 
+	// MemAvailable absent (noyau < 3.14) ou supérieur au total (LXCFS) :
+	// pas de soustraction qui déborderait en uint64.
+	if ma > mt {
+		ma = mt
+	}
 	used := mt - ma
 	m.MemUsedGB = float64(used) / 1048576
 	m.MemTotalGB = float64(mt) / 1048576
 	if mt > 0 {
 		m.MemPercent = int(used * 100 / mt)
+	}
+	if sf > st {
+		sf = st
 	}
 	swapUsed := st - sf
 	m.SwapUsedGB = float64(swapUsed) / 1048576
@@ -213,13 +222,25 @@ func disk(m *Metrics) {
 		}
 	}
 	m.DiskMount = mountPoint(path)
-	total := stat.Blocks * uint64(stat.Bsize)
-	avail := stat.Bavail * uint64(stat.Bsize)
-	used := total - avail
-	m.DiskUsedGB = int(used / (1024 * 1024 * 1024))
-	m.DiskTotalGB = int(total / (1024 * 1024 * 1024))
-	if total > 0 {
-		m.DiskPercent = int(used * 100 / total)
+	fillDisk(m, stat.Blocks, stat.Bfree, stat.Bavail, uint64(stat.Bsize))
+}
+
+// fillDisk calcule l'occupation comme df : utilisé = blocs - blocs libres,
+// pourcentage = utilisé / (utilisé + disponible), arrondi au supérieur. Avant,
+// la réserve de root (5 % sur ext4) comptait comme utilisée : sur 194 Go,
+// ≈ 10 Go et plusieurs points de plus que df.
+func fillDisk(m *Metrics, blocks, bfree, bavail, bsize uint64) {
+	const gb = 1 << 30
+	if bfree > blocks {
+		bfree = blocks
+	}
+	used := (blocks - bfree) * bsize
+	avail := bavail * bsize
+	m.DiskUsedGB = int(used / gb)
+	m.DiskTotalGB = int(blocks * bsize / gb)
+	m.DiskFreeGB = int(avail / gb)
+	if used+avail > 0 {
+		m.DiskPercent = int((used*100 + used + avail - 1) / (used + avail))
 	}
 }
 
@@ -349,6 +370,10 @@ func mountPoint(path string) string {
 	return mp
 }
 
+// mountUnescape : échappements octaux du noyau dans /proc/self/mounts
+// (espace, tabulation, saut de ligne, barre oblique inverse).
+var mountUnescape = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+
 func longestMount(path, mounts string) string {
 	best := "/"
 	for _, line := range strings.Split(mounts, "\n") {
@@ -356,7 +381,7 @@ func longestMount(path, mounts string) string {
 		if len(f) < 2 {
 			continue
 		}
-		mp := strings.ReplaceAll(f[1], "\\040", " ")
+		mp := mountUnescape.Replace(f[1])
 		if (path == mp || strings.HasPrefix(path, strings.TrimSuffix(mp, "/")+"/")) && len(mp) > len(best) {
 			best = mp
 		}

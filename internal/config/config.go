@@ -30,8 +30,18 @@ type Config struct {
 }
 
 // IsExcluded dit si la stack de chemin relatif name tombe sous une exclusion.
+// Les entrées sont normalisées : « dev/ » ou « ./dev » (saisies à la main
+// dans config.json) valent « dev », au lieu de ne rien exclure.
 func (c *Config) IsExcluded(name string) bool {
 	for _, e := range c.Exclude {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue // une entrée vide n'exclut rien (et surtout pas tout)
+		}
+		e = filepath.ToSlash(filepath.Clean(e))
+		if e == "." || e == "/" {
+			continue
+		}
 		if name == e || strings.HasPrefix(name, e+"/") {
 			return true
 		}
@@ -90,6 +100,13 @@ func (c *Config) Save() error {
 	}
 	name := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	// Données sur le disque avant le renommage, comme pour les captures :
+	// sinon une coupure de courant peut laisser un config.json vide.
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		os.Remove(name)
 		return err
