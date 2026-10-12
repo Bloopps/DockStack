@@ -1,11 +1,12 @@
 package compose
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,6 +40,9 @@ type cgroupReader struct {
 	mu    sync.Mutex
 	paths map[string]string    // ID → dossier cgroup du conteneur
 	miss  map[string]time.Time // ID → dernier échec de recherche
+
+	bufMu sync.Mutex
+	buf   []byte // tampon de lecture réutilisé (cf. read)
 }
 
 // newCgroupReader retourne nil si root n'est pas une hiérarchie cgroup v2.
@@ -65,7 +69,7 @@ func (r *cgroupReader) sample(ctx context.Context, id string) (cgroupSample, boo
 	if !ok {
 		return cgroupSample{}, false
 	}
-	s, err := readCgroup(dir)
+	s, err := r.read(dir)
 	if err != nil {
 		// Conteneur arrêté entre-temps (dossier supprimé) ou cgroup déplacé :
 		// on oublie le chemin, il sera recherché au prochain passage.
@@ -150,10 +154,32 @@ func isCgroupDir(d string) bool {
 
 var errCgroupFormat = errors.New("format cgroup inattendu")
 
+// cgroupBufSize : tampon de lecture des fichiers cgroup. memory.stat, le
+// plus gros, fait moins de 2 Ko ; un fichier plus grand est relu en entier.
+const cgroupBufSize = 8 << 10
+
 // readCgroup lit les compteurs d'un dossier cgroup v2.
 func readCgroup(dir string) (cgroupSample, error) {
+	return readCgroupBuf(dir, make([]byte, cgroupBufSize))
+}
+
+// read est readCgroup avec le tampon du lecteur, réutilisé d'un conteneur et
+// d'un passage à l'autre : la lecture a lieu toutes les 3 s pour chaque
+// conteneur à l'écran.
+func (r *cgroupReader) read(dir string) (cgroupSample, error) {
+	r.bufMu.Lock()
+	defer r.bufMu.Unlock()
+	if r.buf == nil {
+		r.buf = make([]byte, cgroupBufSize)
+	}
+	return readCgroupBuf(dir, r.buf)
+}
+
+// readCgroupBuf lit les compteurs dans buf, sans autre allocation que celles
+// des appels système. Le résultat ne retient pas buf.
+func readCgroupBuf(dir string, buf []byte) (cgroupSample, error) {
 	s := cgroupSample{at: time.Now()}
-	cpu, err := os.ReadFile(filepath.Join(dir, "cpu.stat"))
+	cpu, err := readSmallFile(filepath.Join(dir, "cpu.stat"), buf)
 	if err != nil {
 		return s, err
 	}
@@ -161,57 +187,107 @@ func readCgroup(dir string) (cgroupSample, error) {
 	if s.cpuUsec, found = statValue(cpu, "usage_usec"); !found {
 		return s, fmt.Errorf("%s/cpu.stat : %w", dir, errCgroupFormat)
 	}
-	cur, err := os.ReadFile(filepath.Join(dir, "memory.current"))
+	cur, err := readSmallFile(filepath.Join(dir, "memory.current"), buf)
 	if err != nil {
 		return s, err
 	}
-	if s.mem, err = strconv.ParseUint(strings.TrimSpace(string(cur)), 10, 64); err != nil {
-		return s, err
+	if s.mem, found = parseUintBytes(bytes.TrimSpace(cur)); !found {
+		return s, fmt.Errorf("%s/memory.current : %w", dir, errCgroupFormat)
 	}
 	// Comme « docker stats » (et memUsage) : sans le cache de pages inactif.
-	if ms, err := os.ReadFile(filepath.Join(dir, "memory.stat")); err == nil {
+	if ms, err := readSmallFile(filepath.Join(dir, "memory.stat"), buf); err == nil {
 		if inactive, ok := statValue(ms, "inactive_file"); ok && inactive < s.mem {
 			s.mem -= inactive
 		}
 	}
 	// io.stat absent si le contrôleur io n'est pas délégué : débits inconnus,
 	// mais CPU et mémoire restent valables.
-	if io, err := os.ReadFile(filepath.Join(dir, "io.stat")); err == nil {
+	if io, err := readSmallFile(filepath.Join(dir, "io.stat"), buf); err == nil {
 		s.read, s.write = ioStatBytes(io)
 	}
 	return s, nil
 }
 
+// readSmallFile lit path dans buf et renvoie la partie remplie ; un fichier
+// qui ne tient pas dans buf est relu par os.ReadFile.
+func readSmallFile(path string, buf []byte) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	n := 0
+	for n < len(buf) {
+		k, err := f.Read(buf[n:])
+		n += k
+		if err == io.EOF || (err == nil && k == 0) {
+			return buf[:n], nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return os.ReadFile(path)
+}
+
 // statValue lit « clé valeur » dans un fichier cpu.stat / memory.stat.
 func statValue(data []byte, key string) (uint64, bool) {
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for sc.Scan() {
-		k, v, ok := strings.Cut(sc.Text(), " ")
-		if ok && k == key {
-			n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
-			return n, err == nil
+	for len(data) > 0 {
+		line := data
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			data = nil
+		}
+		if len(line) > len(key) && line[len(key)] == ' ' && string(line[:len(key)]) == key {
+			return parseUintBytes(bytes.TrimSpace(line[len(key)+1:]))
 		}
 	}
 	return 0, false
 }
 
+// parseUintBytes : entier décimal non signé, sans allocation.
+func parseUintBytes(b []byte) (uint64, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+	var n uint64
+	for _, c := range b {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		d := uint64(c - '0')
+		if n > (math.MaxUint64-d)/10 {
+			return 0, false // dépassement
+		}
+		n = n*10 + d
+	}
+	return n, true
+}
+
 // ioStatBytes cumule rbytes / wbytes de tous les périphériques d'io.stat
 // (« 8:0 rbytes=… wbytes=… rios=… »), comme le fait le démon.
 func ioStatBytes(data []byte) (read, write uint64) {
-	for _, line := range strings.Split(string(data), "\n") {
-		for _, f := range strings.Fields(line) {
-			k, v, ok := strings.Cut(f, "=")
-			if !ok {
-				continue
-			}
-			n, err := strconv.ParseUint(v, 10, 64)
-			if err != nil {
-				continue
-			}
-			switch k {
-			case "rbytes":
+	for len(data) > 0 {
+		// Champ suivant, séparé par des espaces ou des fins de ligne.
+		i := 0
+		for i < len(data) && (data[i] == ' ' || data[i] == '\n') {
+			i++
+		}
+		data = data[i:]
+		j := 0
+		for j < len(data) && data[j] != ' ' && data[j] != '\n' {
+			j++
+		}
+		f := data[:j]
+		data = data[j:]
+		switch {
+		case bytes.HasPrefix(f, []byte("rbytes=")):
+			if n, ok := parseUintBytes(f[len("rbytes="):]); ok {
 				read += n
-			case "wbytes":
+			}
+		case bytes.HasPrefix(f, []byte("wbytes=")):
+			if n, ok := parseUintBytes(f[len("wbytes="):]); ok {
 				write += n
 			}
 		}

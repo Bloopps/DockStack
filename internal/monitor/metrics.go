@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -48,6 +49,12 @@ type collector struct {
 
 var c collector
 
+// collectMu sérialise Collect : c garde les compteurs de la mesure
+// précédente. La TUI n'a qu'une collecte en vol, mais un minuteur d'un
+// programme précédent (tests successifs dans un même processus) pouvait en
+// lancer une seconde en même temps.
+var collectMu sync.Mutex
+
 // diskPath : chemin dont on mesure la partition. « / » par défaut ; la TUI y
 // place le dossier de données Docker dès qu'elle le connaît, car c'est lui
 // qui se remplit (images, volumes) et il peut être sur une autre partition.
@@ -62,6 +69,8 @@ func parseUint(s string) uint64 {
 }
 
 func Collect() Metrics {
+	collectMu.Lock()
+	defer collectMu.Unlock()
 	var m Metrics
 	c.cpu(&m)
 	memswap(&m)
@@ -302,14 +311,42 @@ func uptime(m *Metrics) {
 	}
 }
 
+// mountTTL : durée de validité du point de montage mémorisé, pour les
+// changements que le périphérique ne trahit pas (bind mount du même disque).
+const mountTTL = 5 * time.Minute
+
+// mountMemo : dernier point de montage calculé, pour ne pas relire
+// /proc/self/mounts à chaque mesure. Ce fichier grandit avec chaque
+// conteneur (un montage overlay chacun, avec de longues options) : 74 Ko ici
+// pour 69 conteneurs, soit ≈ 13 Mo d'allocations par minute relu toutes les
+// 2 s. Comme collector, utilisé par Collect seul, jamais en parallèle.
+type mountMemo struct {
+	path, mount string
+	dev         uint64
+	at          time.Time
+}
+
+var mounts mountMemo
+
 // mountPoint renvoie le point de montage qui contient path : le plus long
-// préfixe parmi les montages de /proc/self/mounts (« / » à défaut).
+// préfixe parmi les montages de /proc/self/mounts (« / » à défaut). Le
+// résultat est réutilisé tant que le chemin, son périphérique (un montage
+// ajouté ou retiré sur le chemin le change) et mountTTL le permettent.
 func mountPoint(path string) string {
+	dev, ok := deviceOf(path)
+	now := time.Now()
+	if ok && mounts.mount != "" && mounts.path == path && mounts.dev == dev && now.Sub(mounts.at) < mountTTL {
+		return mounts.mount
+	}
 	data, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
 		return "/"
 	}
-	return longestMount(path, string(data))
+	mp := longestMount(path, string(data))
+	if ok {
+		mounts = mountMemo{path: path, mount: mp, dev: dev, at: now}
+	}
+	return mp
 }
 
 func longestMount(path, mounts string) string {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -150,6 +151,10 @@ type Client struct {
 	// deux lectures (cf. ContainerUsages).
 	statsMu   sync.Mutex
 	statsPrev map[string]usageSample
+	// layers : couches et historique de chaque image, par identifiant. Ils
+	// ne changent jamais pour un identifiant donné : seules les nouvelles
+	// images sont lues au démon (cf. layerIndex).
+	layers layerCache
 	// cg lit la consommation dans les cgroups v2 de l'hôte ; nil si
 	// indisponibles (tout passe alors par l'API, cf. cgroup.go).
 	cg *cgroupReader
@@ -178,10 +183,27 @@ func New() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Version de l'API négociée tout de suite, avec un délai. Sinon le premier
+	// appel s'en charge, sous un verrou qui ne tient pas compte du contexte :
+	// face à un démon qui accepte les connexions sans répondre, l'abonnement
+	// aux événements (sans délai) le gardait pour toujours, et tous les autres
+	// appels restaient bloqués derrière lui, délais compris. L'écran restait
+	// sur « Chargement… » sans rien expliquer.
+	ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+	defer cancel()
+	if _, err := cli.Client().Ping(ctx, mobyclient.PingOptions{NegotiateAPIVersion: true}); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("le démon Docker ne répond pas (%s sans réponse) : %w", pingTimeout, err)
+		}
+		return nil, err
+	}
 	c := &Client{svc: svc, cli: cli}
 	c.cg = newCgroupReader("/sys/fs/cgroup", c.containerPID)
 	return c, nil
 }
+
+// pingTimeout borne la première prise de contact avec le démon.
+var pingTimeout = 10 * time.Second
 
 // containerPID : PID principal d'un conteneur en marche, sur l'hôte du démon.
 func (c *Client) containerPID(ctx context.Context, id string) (int, error) {
@@ -373,12 +395,8 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 		if stacks[i].Total > 0 {
 			continue // déjà rattachée par label
 		}
-		proj, err := loadProject(stacks[i])
-		if err != nil {
-			continue
-		}
-		cand := projectContainerNames(proj)
-		if len(cand) == 0 {
+		projName, cand, err := cachedContainerNames(stacks[i])
+		if err != nil || len(cand) == 0 {
 			continue
 		}
 		svcAgg := make(map[string]*ServiceStatus)
@@ -421,7 +439,7 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 			continue
 		}
 		stacks[i].Orphaned = true
-		stacks[i].Project = proj.Name
+		stacks[i].Project = projName
 		services := make([]ServiceStatus, 0, len(svcAgg))
 		for _, ss := range svcAgg {
 			services = append(services, *ss)
@@ -429,6 +447,65 @@ func attachOrphans(stacks []Stack, items []container.Summary) {
 		sort.Slice(services, func(a, b int) bool { return services[a].Name < services[b].Name })
 		stacks[i].Services = services
 	}
+}
+
+// namesEntry : résultat mémorisé de loadProject pour attachOrphans.
+type namesEntry struct {
+	sig  string            // signature des fichiers lus (cf. stackFilesSig)
+	proj string            // nom du projet
+	cand map[string]string // cf. projectContainerNames
+	err  error
+}
+
+var (
+	namesMu    sync.Mutex
+	namesCache = map[string]namesEntry{} // clé : fichier compose
+)
+
+// cachedContainerNames renvoie le nom du projet de la stack et les noms de
+// conteneurs qu'il peut porter, sans recharger le projet tant que ses
+// fichiers n'ont pas changé. Dès qu'un orphelin existe, attachOrphans les
+// demande pour chaque stack sans conteneur, à chaque rafraîchissement de la
+// liste : 48 projets rechargés (≈ 170 ms) ici, 554 ms pour 600 stacks.
+func cachedContainerNames(s Stack) (string, map[string]string, error) {
+	sig := stackFilesSig(s)
+	namesMu.Lock()
+	e, ok := namesCache[s.ComposeFile]
+	namesMu.Unlock()
+	if ok && e.sig == sig {
+		return e.proj, e.cand, e.err
+	}
+	e = namesEntry{sig: sig}
+	if proj, err := loadProject(s); err != nil {
+		e.err = err
+	} else {
+		e.proj, e.cand = proj.Name, projectContainerNames(proj)
+	}
+	namesMu.Lock()
+	namesCache[s.ComposeFile] = e
+	namesMu.Unlock()
+	return e.proj, e.cand, e.err
+}
+
+// stackFilesSig résume ce que loadProject lit sur disque pour une stack :
+// fichier compose, override et .env, avec leur date et leur taille (un
+// fichier absent compte aussi). L'environnement du processus, l'autre
+// entrée, ne change pas en cours d'exécution.
+func stackFilesSig(s Stack) string {
+	var b strings.Builder
+	for _, f := range []string{s.ComposeFile, findOverrideFile(s.Dir), filepath.Join(s.Dir, ".env")} {
+		if f == "" {
+			b.WriteString("-|")
+			continue
+		}
+		st, err := os.Stat(f)
+		if err != nil {
+			b.WriteString(f + ":absent|")
+			continue
+		}
+		fmt.Fprintf(&b, "%s:%d:%d|", f, st.ModTime().UnixNano(), st.Size())
+	}
+	return b.String()
 }
 
 // projectContainerNames retourne les noms de conteneurs qu'un projet peut
@@ -516,6 +593,7 @@ func (s *streamingCollector) On(resources ...api.Resource) {
 			select {
 			case s.out <- ev:
 			default:
+				droppedWorking.Add(1)
 			}
 		case api.Done, api.Warning, api.Error:
 			// Blocking send: a terminal state (Started/Removed/…) must never be
@@ -532,6 +610,14 @@ func (s *streamingCollector) On(resources ...api.Resource) {
 		}
 	}
 }
+
+// droppedWorking compte les événements « working » abandonnés faute de
+// lecteur assez rapide (mesure de la contre-pression, voir DroppedWorking).
+var droppedWorking atomic.Int64
+
+// DroppedWorking renvoie le nombre d'événements « working » abandonnés depuis
+// le lancement.
+func DroppedWorking() int64 { return droppedWorking.Load() }
 
 func newSvcWithProcessor(cli dockercli.Cli, proc api.EventProcessor) (api.Compose, error) {
 	return compose.NewComposeService(cli,
@@ -863,6 +949,10 @@ func (c *Client) removeLive(ctx context.Context, stack Stack, ch chan<- Progress
 	return svc.Down(ctx, proj.Name, api.DownOptions{RemoveOrphans: true, Volumes: true})
 }
 
+// LogBuffer : lignes d'avance du canal de LogsAsync. La TUI lit par images
+// de 50 ms : assez pour ≈ 80 000 lignes/s sans bloquer compose.
+const LogBuffer = 4096
+
 // logTail : lignes d'historique par conteneur à l'ouverture des logs.
 const logTail = "500"
 
@@ -873,7 +963,7 @@ func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, e
 	if err != nil {
 		return nil, err
 	}
-	ch := make(chan LogEntry, 200)
+	ch := make(chan LogEntry, LogBuffer)
 	consumer := &chanConsumer{ctx: ctx, ch: ch}
 	go func() {
 		defer close(ch)
@@ -913,18 +1003,20 @@ func (c *chanConsumer) Status(_, _ string)   {}
 // DockerEvent is a minimal, decoupled view of a moby system event: just
 // enough for the TUI to decide whether the stack list needs a refresh.
 type DockerEvent struct {
+	// Type : « container » ou « image ».
+	Type   string
 	Action string
 }
 
 // SubscribeEvents streams container lifecycle events (start/stop/die/
-// health_status…) until ctx is cancelled or the underlying API stream ends,
-// at which point the returned channel is closed.
+// health_status…) and image changes (pull, delete…) until ctx is cancelled
+// or the underlying API stream ends, at which point the returned channel is
+// closed.
 func (c *Client) SubscribeEvents(ctx context.Context) <-chan DockerEvent {
 	out := make(chan DockerEvent, 32)
 	go func() {
 		defer close(out)
-		f := make(mobyclient.Filters).Add("type", "container")
-		res := c.cli.Client().Events(ctx, mobyclient.EventsListOptions{Filters: f})
+		res := c.cli.Client().Events(ctx, mobyclient.EventsListOptions{Filters: eventFilters()})
 		for {
 			select {
 			case msg, ok := <-res.Messages:
@@ -934,7 +1026,13 @@ func (c *Client) SubscribeEvents(ctx context.Context) <-chan DockerEvent {
 				if !ok {
 					return
 				}
-				out <- DockerEvent{Action: string(msg.Action)}
+				// Envoi qui écoute aussi l'annulation : tampon plein et plus
+				// personne pour lire, la goroutine restait bloquée ici.
+				select {
+				case out <- DockerEvent{Type: string(msg.Type), Action: string(msg.Action)}:
+				case <-ctx.Done():
+					return
+				}
 			case <-res.Err:
 				return
 			case <-ctx.Done():
@@ -943,6 +1041,24 @@ func (c *Client) SubscribeEvents(ctx context.Context) <-chan DockerEvent {
 		}
 	}()
 	return out
+}
+
+// eventFilters : filtre appliqué par le démon lui-même, pour ne recevoir que
+// les événements utiles. Sans le filtre « event », chaque contrôle de santé
+// envoyait exec_create, exec_start et exec_die (≈ 2 événements/s ici), qui
+// réveillaient l'application pour rien. Le démon compare health_status par
+// préfixe (l'action réelle est « health_status: healthy »), donc les
+// changements de santé passent. Les valeurs d'une même clé se combinent en
+// OU ; une action n'existe que pour un type, sauf prune, absent de la liste.
+func eventFilters() mobyclient.Filters {
+	f := make(mobyclient.Filters).Add("type", "container", "image")
+	for a := range relevantEventActions {
+		f.Add("event", a)
+	}
+	for a := range imageEventActions {
+		f.Add("event", a)
+	}
+	return f.Add("event", "health_status")
 }
 
 // relevantEventActions are the container actions that can change a stack's
@@ -959,10 +1075,36 @@ var relevantEventActions = map[string]bool{
 	"destroy": true,
 }
 
-// IsRelevantDockerEvent reports whether action should trigger a stack-list
-// refresh: container lifecycle transitions and health-check results.
-func IsRelevantDockerEvent(action string) bool {
-	return relevantEventActions[action] || strings.HasPrefix(action, "health_status")
+// imageEventActions : actions sur les images qui changent leur occupation
+// disque.
+var imageEventActions = map[string]bool{
+	"pull":   true,
+	"delete": true,
+	"tag":    true,
+	"untag":  true,
+	"load":   true,
+	"import": true,
+}
+
+// IsRelevantDockerEvent reports whether ev should trigger a stack-list
+// refresh: container lifecycle transitions and health-check results. Le
+// filtre du démon fait déjà le tri ; ce test reste en garde-fou.
+func IsRelevantDockerEvent(ev DockerEvent) bool {
+	return ev.Type == "container" &&
+		(relevantEventActions[ev.Action] || strings.HasPrefix(ev.Action, "health_status"))
+}
+
+// ImagesChanged indique si ev peut changer la taille des images ou la part
+// libérable : une image ajoutée ou retirée, ou un conteneur créé ou supprimé
+// (une image sans conteneur devient libérable, et inversement).
+func ImagesChanged(ev DockerEvent) bool {
+	switch ev.Type {
+	case "image":
+		return imageEventActions[ev.Action]
+	case "container":
+		return ev.Action == "create" || ev.Action == "destroy"
+	}
+	return false
 }
 
 type stackLiveFn func(context.Context, Stack, chan<- ProgressEvent) error
@@ -1031,10 +1173,14 @@ func (c *Client) RemoveManyLive(ctx context.Context, stacks []Stack, parallel in
 // DockerUsage résume l'occupation Docker affichée dans l'en-tête.
 type DockerUsage struct {
 	Running, Containers int   // conteneurs en marche / total (tous, hors stacks compris)
-	ImagesSize          int64 // octets
-	ImagesReclaimable   int64 // octets libérables (images inutilisées)
-	VolumesSize         int64 // octets ; valide seulement si VolumesOK
-	VolumesOK           bool
+	ImagesSize          int64 // octets ; valide seulement si ImagesOK
+	ImagesReclaimable   int64 // octets libérables (images sans conteneur), calculés couche par couche
+	// ImagesExact : ImagesReclaimable est exact ; sinon (image non détaillée)
+	// c'est une estimation.
+	ImagesExact bool
+	ImagesOK    bool
+	VolumesSize int64 // octets ; valide seulement si VolumesOK
+	VolumesOK   bool
 	// VolumesByProject : taille des volumes nommés par projet compose (mis en
 	// minuscules). Issue du même appel que VolumesSize, donc valide avec lui.
 	VolumesByProject map[string]int64
@@ -1044,50 +1190,74 @@ type DockerUsage struct {
 	RootDir         string // dossier de données du démon (ex. /var/lib/docker)
 }
 
-// Usage interroge le démon : Info (compteurs, dossier de données) et l'espace
-// des images, peu coûteux. La taille des volumes oblige le démon à parcourir
-// leurs données (≈1,5 s pour 5 Go ici, davantage sur de gros volumes) : elle
-// n'est demandée que si withVolumes, à charge pour l'appelant de l'espacer.
-func (c *Client) Usage(ctx context.Context, withVolumes bool) (DockerUsage, error) {
+// UsageOptions : mesures coûteuses à inclure dans Usage. Les compteurs de
+// conteneurs et le dossier de données (Info, ≈ 7 ms côté démon) sont
+// toujours lus.
+type UsageOptions struct {
+	// Images : taille des images et part libérable. Le démon calcule toutes
+	// les images (≈ 115 ms de CPU ici) : à ne demander que si elles ont pu
+	// changer.
+	Images bool
+	// Volumes : taille des volumes et des couches d'écriture des conteneurs.
+	// Le démon parcourt leurs données (≈1,5 s pour 5 Go ici, davantage sur
+	// de gros volumes) : à charge pour l'appelant de l'espacer.
+	Volumes bool
+}
+
+// Usage interroge le démon : Info (compteurs, dossier de données), puis
+// l'espace disque selon opts. Sans Images ni Volumes, l'appel à /system/df
+// est omis.
+func (c *Client) Usage(ctx context.Context, opts UsageOptions) (DockerUsage, error) {
 	api := c.cli.Client()
 	info, err := api.Info(ctx, mobyclient.InfoOptions{})
 	if err != nil {
 		return DockerUsage{}, err
 	}
-	du, err := api.DiskUsage(ctx, mobyclient.DiskUsageOptions{Images: true, Volumes: withVolumes, Containers: withVolumes,
-		// Sans Verbose le démon ne renvoie que le total des volumes, pas la liste
-		// (donc pas la ventilation par projet) ; le coût est le même.
-		Verbose: withVolumes})
+	out := DockerUsage{
+		Running:    info.Info.ContainersRunning,
+		Containers: info.Info.Containers,
+		RootDir:    info.Info.DockerRootDir,
+	}
+	if !opts.Images && !opts.Volumes {
+		return out, nil
+	}
+	du, err := api.DiskUsage(ctx, mobyclient.DiskUsageOptions{Images: opts.Images,
+		Volumes: opts.Volumes, Containers: opts.Volumes,
+		// Sans Verbose le démon ne renvoie que les totaux, pas la liste des
+		// volumes (ventilation par projet) ni celle des images (calcul exact
+		// du libérable) ; le coût est le même.
+		Verbose: true})
 	if err != nil {
 		return DockerUsage{}, err
 	}
-	var byProject, layers map[string]int64
-	if withVolumes {
-		layers = make(map[string]int64)
+	if opts.Images {
+		out.ImagesSize, out.ImagesOK = du.Images.TotalSize, true
+		// Libérable exact : le résumé du démon additionne mal les couches
+		// partagées (24,5 Go annoncés pour 67,7 Go réels ici).
+		ix := c.layerIndex(ctx, du.Images.Items)
+		out.ImagesReclaimable, out.ImagesExact = ix.Freed(unusedImageIDs(du.Images.Items))
+		if ctx.Err() != nil {
+			return DockerUsage{}, ctx.Err()
+		}
+	}
+	if opts.Volumes {
+		layers := make(map[string]int64)
 		for _, ctr := range du.Containers.Items {
 			if p := strings.ToLower(ctr.Labels["com.docker.compose.project"]); p != "" && ctr.SizeRw > 0 {
 				layers[p] += ctr.SizeRw
 			}
 		}
-		byProject = make(map[string]int64)
+		byProject := make(map[string]int64)
 		for _, v := range du.Volumes.Items {
 			p := strings.ToLower(v.Labels["com.docker.compose.project"])
 			if p != "" && v.UsageData != nil && v.UsageData.Size > 0 {
 				byProject[p] += v.UsageData.Size
 			}
 		}
+		out.VolumesSize, out.VolumesOK = du.Volumes.TotalSize, true
+		out.VolumesByProject, out.LayersByProject = byProject, layers
 	}
-	return DockerUsage{
-		VolumesByProject:  byProject,
-		LayersByProject:   layers,
-		Running:           info.Info.ContainersRunning,
-		Containers:        info.Info.Containers,
-		ImagesSize:        du.Images.TotalSize,
-		ImagesReclaimable: du.Images.Reclaimable,
-		VolumesSize:       du.Volumes.TotalSize,
-		VolumesOK:         withVolumes,
-		RootDir:           info.Info.DockerRootDir,
-	}, nil
+	return out, nil
 }
 
 // ContainerUsage : consommation instantanée d'un conteneur en marche.

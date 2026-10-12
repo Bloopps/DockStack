@@ -84,8 +84,12 @@ func findComposeFiles(root string) ([]string, error) {
 	}
 	cacheMu.Unlock()
 
+	// Racine illisible : erreur, affichée par la TUI. Plus bas, un dossier
+	// illisible est simplement sauté (cf. scanComposeDir).
 	var files []string
-	scanComposeDir(root, 0, &files)
+	if err := scanComposeDir(root, 0, &files); err != nil {
+		return nil, err
+	}
 
 	sort.Strings(files)
 	cacheMu.Lock()
@@ -103,10 +107,13 @@ func findComposeFiles(root string) ([]string, error) {
 // levels are almost always example/buried compose files, not real stack roots.
 // Sub-stacks (e.g. a group dir whose children each hold a compose) are still
 // found because we keep descending past a compose until the depth cap is hit.
-func scanComposeDir(dir string, depth int, files *[]string) {
+//
+// L'erreur de lecture n'est renvoyée que pour dir lui-même : les
+// sous-dossiers illisibles sont sautés.
+func scanComposeDir(dir string, depth int, files *[]string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return err
 	}
 	// Une seule stack par répertoire : si plusieurs fichiers compose
 	// coexistent (compose.yaml + docker-compose.yml…), on garde le plus
@@ -126,7 +133,7 @@ func scanComposeDir(dir string, depth int, files *[]string) {
 		*files = append(*files, filepath.Join(dir, best))
 	}
 	if depth >= maxScanDepth {
-		return
+		return nil
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -139,8 +146,9 @@ func scanComposeDir(dir string, depth int, files *[]string) {
 		if skipDirsAlways[name] || (depth == 0 && skipDirsRoot[name]) || strings.HasPrefix(name, ".") {
 			continue
 		}
-		scanComposeDir(filepath.Join(dir, name), depth+1, files)
+		_ = scanComposeDir(filepath.Join(dir, name), depth+1, files)
 	}
+	return nil
 }
 
 // composeNamesByPriority ordonne les noms de fichiers compose par priorité
@@ -282,11 +290,16 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		}
 	}
 	if envFile := filepath.Join(stack.Dir, ".env"); fileExists(envFile) {
-		if fileEnv, err := dotenv.GetEnvFromFile(env, []string{envFile}); err == nil {
-			for k, v := range fileEnv {
-				if _, exists := env[k]; !exists { // le process garde la priorité
-					env[k] = v
-				}
+		// Parité CLI : un .env illisible est une erreur. L'ignorer
+		// interpolait ses variables à vide (ou à leur valeur par défaut) et un
+		// up pouvait déployer une autre config que « docker compose ».
+		fileEnv, err := dotenv.GetEnvFromFile(env, []string{envFile})
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range fileEnv {
+			if _, exists := env[k]; !exists { // le process garde la priorité
+				env[k] = v
 			}
 		}
 	}
