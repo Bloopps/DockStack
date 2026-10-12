@@ -265,6 +265,15 @@ type Model struct {
 	progressSeq           int  // numérote l'op courante : invalide les messages en vol d'une précédente
 	progressConfirmCancel bool // armed by a first esc/q while running; the next confirms
 	progressCancelling    bool // cancel() fired, waiting for the stream to drain
+	// Début et fin de l'opération : temps écoulé dans le titre, durée au
+	// bilan (figée à la fin).
+	progressStart time.Time
+	progressEnd   time.Time
+
+	// lastFail : dernier échec de chaque stack, gardé après la fermeture de
+	// la progression pour que le volet en dise la cause. Effacé par une
+	// réussite de la même stack et au changement de dossier.
+	lastFail map[string]stackFailure
 
 	// Page « Nettoyage » (cleanupview.go). cleanupSeq écarte le résultat
 	// d'une analyse abandonnée (page quittée, R).
@@ -282,6 +291,11 @@ type Model struct {
 	cleanupPlanned int64
 	cleanupApprox  bool // l'espace prévu est une estimation
 	cleanupResult  string
+	cleanupTone    tone // couleur de cleanupResult : réussite, échec partiel, échec
+	// cleanupOutcome : issue de la progression, relevée en la quittant. La
+	// réanalyse chiffre l'espace libéré, seule la progression savait ce qui
+	// avait échoué ou été annulé.
+	cleanupOutcome cleanupOutcome
 
 	// progressReturn : vue rouverte en quittant la progression (la liste,
 	// ou la page de nettoyage qui se réanalyse).
@@ -612,6 +626,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if ev.Err == nil {
 					m.progressOk++
 				}
+				m.stackDone(ev)
 			}
 		}
 		if msg.done {
@@ -914,6 +929,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m.startCleanupAnalysis()
 				}
 			}
+		case "l":
+			// Fin d'opération : logs de la première stack en échec, sans
+			// avoir à la retrouver dans la liste après une opération groupée.
+			// Le curseur s'y pose : en sortant des logs, le volet en montre
+			// l'échec.
+			if s, ok := m.failedLogsTarget(); ok {
+				m.leaveProgressView()
+				for i, r := range m.listRows() {
+					if r.isStack() && r.stack.Name == s.Name {
+						m.cursor = i
+						break
+					}
+				}
+				return m.startStackAction("logs", s)
+			}
+			m.progressConfirmCancel = false
 		default:
 			// Toute autre touche désarme la confirmation d'annulation.
 			m.progressConfirmCancel = false
@@ -1373,6 +1404,7 @@ func (m Model) logsHeight() int {
 // progressFinished : fin de l'opération en cours (sentinelle AllDone lue).
 func (m Model) progressFinished() (tea.Model, tea.Cmd) {
 	m.progressDone = true
+	m.progressEnd = time.Now()
 	m.progressCh = nil
 	if m.progressCancel != nil {
 		m.progressCancel()
@@ -1810,9 +1842,56 @@ func (m Model) startOp(label string, op tea.Cmd) (tea.Model, tea.Cmd) {
 // gros pull peut accumuler des dizaines de milliers de ressources dans
 // progressState, inutile de les retenir une fois de retour sur la liste.
 func (m *Model) leaveProgressView() {
+	if m.progressReturn == viewCleanup && m.progress != nil {
+		m.cleanupOutcome = m.progress.cleanupOutcome()
+	}
 	m.view = m.progressReturn
 	m.progressReturn = viewList
 	m.progress = nil
+}
+
+// stackFailure : dernier échec d'une stack (cf. lastFail).
+type stackFailure struct {
+	op     string // « Pull », « Up », « Relance »… (cf. opName)
+	reason string // failureReason, sur une ligne
+	at     time.Time
+}
+
+// stackDone tient le bilan d'une stack terminée. Arrêtée par l'annulation
+// demandée, elle n'est ni réussie ni en échec (sans ça, chaque stack en file
+// s'affichait en échec « context canceled »). Sinon son échec est retenu
+// pour le volet de la liste, et une réussite l'efface. Les catégories du
+// nettoyage, qui passent par la même vue, ne sont pas des stacks.
+func (m *Model) stackDone(ev compose.ProgressEvent) {
+	var st *stackProgress
+	if m.progress != nil {
+		st = m.progress.byName[ev.StackName]
+	}
+	if m.progressCancelling && isCanceled(ev.Err) {
+		if st != nil {
+			st.cancelled = true
+		}
+		return
+	}
+	if m.progressReturn == viewCleanup {
+		return
+	}
+	s, ok := m.stackNamed(ev.StackName)
+	if !ok {
+		return
+	}
+	if ev.Err == nil {
+		delete(m.lastFail, s.Name)
+		return
+	}
+	reason := oneLine(ev.Err.Error())
+	if st != nil {
+		reason = failureReason(st)
+	}
+	if m.lastFail == nil {
+		m.lastFail = make(map[string]stackFailure)
+	}
+	m.lastFail[s.Name] = stackFailure{op: opName(m.progressTitle), reason: reason, at: time.Now()}
 }
 
 func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-chan compose.ProgressEvent) (tea.Model, tea.Cmd) {
@@ -1826,6 +1905,7 @@ func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-cha
 	m.progressCancel = cancel
 	m.progressConfirmCancel = false
 	m.progressCancelling = false
+	m.progressStart, m.progressEnd = time.Now(), time.Time{}
 	m.spinning = false
 	m.setStatus("", false)
 	m.view = viewProgress

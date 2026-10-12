@@ -2,6 +2,7 @@ package compose
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -380,5 +381,34 @@ func TestClassifyImageLabelSanitized(t *testing.T) {
 	}
 	if !strings.Contains(it.Name, "app") {
 		t.Errorf("titre perdu : %q", it.Name)
+	}
+}
+
+// Nettoyage annulé avant de commencer : les catégories s'annoncent, puis se
+// terminent sur context.Canceled sans avoir démarré ni touché au démon (le
+// client sans connexion paniquerait).
+func TestCleanupLiveCancelledBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	items := []CleanupItem{{Kind: CleanUnusedNetwork, ID: "n1", Name: "n1"}, {Kind: CleanOrphanVolume, ID: "v1", Name: "v1"}}
+	var queued, done int
+	for ev := range (&Client{}).CleanupLive(ctx, items) {
+		if ev.AllDone {
+			break
+		}
+		switch {
+		case ev.StackQueued:
+			queued++
+		case ev.StackDone:
+			done++
+			if !errors.Is(ev.Err, context.Canceled) {
+				t.Errorf("%s : err %v, want context.Canceled", ev.StackName, ev.Err)
+			}
+		default:
+			t.Errorf("événement inattendu après l'annulation : %+v", ev)
+		}
+	}
+	if queued != 2 || done != 2 {
+		t.Errorf("%d annonces, %d fins ; want 2 et 2", queued, done)
 	}
 }

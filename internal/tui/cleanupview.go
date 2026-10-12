@@ -87,11 +87,12 @@ func (m Model) handleCleanupLoaded(msg cleanupLoadedMsg) (tea.Model, tea.Cmd) {
 	}
 	rep := msg.rep
 	// Après un nettoyage : espace réellement libéré, mesuré par le démon
-	// (tailles totales avant et après), face à l'espace prévu.
+	// (tailles totales avant et après), face à l'espace prévu, et ce qui a
+	// échoué ou été annulé.
 	if before := m.cleanupBefore; before != nil {
 		freed := dfTotal(*before) - dfTotal(rep)
-		m.cleanupResult = fmt.Sprintf("✔ Libéré %s · prévu %s", fmtCleanupSize(freed, false), fmtCleanupSize(m.cleanupPlanned, m.cleanupApprox))
-		m.cleanupBefore = nil
+		m.cleanupResult, m.cleanupTone = cleanupResultText(m.cleanupOutcome, freed, m.cleanupPlanned, m.cleanupApprox)
+		m.cleanupBefore, m.cleanupOutcome = nil, cleanupOutcome{}
 	}
 	m.cleanupRep = &rep
 	m.cleanupSel = map[string]bool{}
@@ -102,6 +103,86 @@ func (m Model) handleCleanupLoaded(msg cleanupLoadedMsg) (tea.Model, tea.Cmd) {
 	}
 	m.cleanupCursor = min(m.cleanupCursor, max(len(m.cleanupNav())-1, 0))
 	return m, nil
+}
+
+// cleanupOutcome : échecs et annulation d'un nettoyage (cf. Model).
+type cleanupOutcome struct {
+	fails     int  // éléments en échec (ou catégories, faute de détail)
+	cancelled bool // annulé en cours de route
+}
+
+// cleanupOutcome relève l'issue d'un nettoyage dans la progression. Un
+// élément arrêté par l'annulation (« context canceled ») n'est pas un échec,
+// mais dit que l'annulation a pris effet, même dans une catégorie qui a
+// aussi un vrai échec (et n'est donc pas marquée annulée).
+func (ps *progressState) cleanupOutcome() cleanupOutcome {
+	var o cleanupOutcome
+	for _, st := range ps.order {
+		if st.cancelled {
+			o.cancelled = true
+		}
+		n := 0
+		for _, r := range st.byID {
+			switch {
+			case r.state != "error":
+			case canceledText(r.status):
+				o.cancelled = true
+			default:
+				n++
+			}
+		}
+		if n == 0 && failureReason(st) != "" {
+			n = 1 // échec de la catégorie entière, sans élément en cause
+		}
+		o.fails += n
+	}
+	return o
+}
+
+// tone : couleur d'un bilan.
+type tone int
+
+const (
+	toneOK   tone = iota // vert : réussite
+	toneWarn             // jaune : échec partiel ou annulation
+	toneErr              // rouge : rien n'a abouti
+)
+
+func (t tone) style() lipgloss.Style {
+	switch t {
+	case toneWarn:
+		return styleYellow
+	case toneErr:
+		return styleRed
+	}
+	return styleGreen
+}
+
+// cleanupResultText : bilan affiché au retour sur la page. Il était toujours
+// « ✔ Libéré » en vert, même après un refus du démon ou une annulation.
+// « rien » plutôt que « — », qui se lisait « inconnu ».
+func cleanupResultText(o cleanupOutcome, freed, planned int64, approx bool) (string, tone) {
+	got := "rien"
+	if freed > 0 {
+		got = fmtCleanupSize(freed, false)
+	}
+	switch {
+	case o.cancelled:
+		s := "⊘ Annulé"
+		if o.fails > 0 {
+			s += fmt.Sprintf(" · %d échec%s", o.fails, plural(o.fails))
+		}
+		return s + " · libéré " + got, toneWarn
+	case o.fails > 0 && freed > 0:
+		return fmt.Sprintf("⚠ %d élément%s en échec · libéré %s", o.fails, plural(o.fails), got), toneWarn
+	case o.fails > 0:
+		return fmt.Sprintf("✕ Rien libéré : %d échec%s", o.fails, plural(o.fails)), toneErr
+	}
+	s := "✔ Libéré " + got
+	if planned > 0 {
+		s += " · prévu " + fmtCleanupSize(planned, approx)
+	}
+	return s, toneOK
 }
 
 // dfTotal : espace occupé par Docker (images, conteneurs, volumes, cache).
@@ -596,10 +677,9 @@ func renderCleanup(m Model, height int) string {
 		return title
 	}
 	rep := m.cleanupRep
-	ago := time.Since(rep.At).Round(time.Second)
-	titleLine := title + styleDim.Render(fmt.Sprintf("   analysé il y a %s", ago))
+	titleLine := title + styleDim.Render("   analysé "+relativeTime(rep.At, time.Now()))
 	if m.cleanupResult != "" {
-		titleLine += "   " + styleGreen.Render(m.cleanupResult)
+		titleLine += "   " + m.cleanupTone.style().Render(m.cleanupResult)
 	}
 	sel := m.cleanupSelected()
 	selSize, selApprox := m.cleanupSize(sel)

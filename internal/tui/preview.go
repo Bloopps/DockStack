@@ -361,6 +361,31 @@ func isYamlNumber(t string) bool {
 	return false
 }
 
+// failLines : dernier échec de la stack, sous son état. Sans lui, une stack
+// en échec n'était plus qu'« arrêtée » une fois la progression fermée, et
+// il fallait relancer l'action pour en revoir la cause. Trois lignes au
+// plus : la cause d'un up est souvent en fin de message. Le conseil
+// éventuel (errhint.go) suit en jaune.
+func failLines(f stackFailure, inner int) []string {
+	wrap := func(text string, n int) []string {
+		lines := wordWrap(text, inner)
+		if len(lines) > n {
+			lines = append(lines[:n-1], truncate(strings.Join(lines[n-1:], " "), inner))
+		}
+		return lines
+	}
+	var out []string
+	for _, l := range wrap(fmt.Sprintf("✕ %s en échec à %s · %s", f.op, f.at.Format("15:04"), daemonCause(f.reason)), 3) {
+		out = append(out, styleRed.Render(l))
+	}
+	if hint := errHint(f.reason); hint != "" {
+		for _, l := range wrap("→ "+hint, 2) {
+			out = append(out, styleYellow.Render(l))
+		}
+	}
+	return out
+}
+
 // previewDetail rend le détail d'une stack : état global, services (les
 // problèmes d'abord), remarque éventuelle, puis les actions possibles adaptées
 // à l'état. C'est la vue par défaut du volet ; tab bascule vers le compose.
@@ -373,6 +398,9 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", s.Running, s.Total))
 	}
 	out = append(out, state)
+	if ex.fail != nil {
+		out = append(out, failLines(*ex.fail, inner)...)
+	}
 
 	dir := s.Dir
 	if r, err := filepath.Rel(stackDir, s.Dir); err == nil && !strings.HasPrefix(r, "..") {

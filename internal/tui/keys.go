@@ -1007,6 +1007,7 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// nouveau aurait hérité de la coche.
 				m.stacks = nil
 				m.selected = make(map[string]bool)
+				m.lastFail = nil // même raison : un échec par nom relatif
 				m.svcFocus = false
 				m.cursor = 0
 				m.invalidateRows()

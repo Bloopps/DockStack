@@ -432,3 +432,72 @@ func TestCleanupDetailNoDuplicate(t *testing.T) {
 		t.Errorf("dépliée : la liste est répétée à droite\n%s", right())
 	}
 }
+
+// Le bilan au retour sur la page dit l'issue réelle : il annonçait « ✔
+// Libéré » en vert même après un refus du démon ou une annulation, et « — »
+// pour zéro, qui se lisait « inconnu ».
+func TestCleanupResultText(t *testing.T) {
+	gb := int64(1 << 30)
+	for _, tc := range []struct {
+		o       cleanupOutcome
+		freed   int64
+		planned int64
+		want    string
+		tone    tone
+	}{
+		{cleanupOutcome{}, 19 * gb, 19 * gb, "✔ Libéré 19.0 Go · prévu ≈ 19.0 Go", toneOK},
+		{cleanupOutcome{}, 0, 0, "✔ Libéré rien", toneOK},
+		{cleanupOutcome{fails: 3}, 3 * gb, 5 * gb, "⚠ 3 éléments en échec · libéré 3.0 Go", toneWarn},
+		{cleanupOutcome{fails: 1}, 0, 5 * gb, "✕ Rien libéré : 1 échec", toneErr},
+		{cleanupOutcome{cancelled: true}, 2 * gb, 5 * gb, "⊘ Annulé · libéré 2.0 Go", toneWarn},
+		{cleanupOutcome{cancelled: true, fails: 2}, 0, 5 * gb, "⊘ Annulé · 2 échecs · libéré rien", toneWarn},
+	} {
+		got, tn := cleanupResultText(tc.o, tc.freed, tc.planned, true)
+		if got != tc.want || tn != tc.tone {
+			t.Errorf("%+v, libéré %d : %q (%v), want %q (%v)", tc.o, tc.freed, got, tn, tc.want, tc.tone)
+		}
+	}
+}
+
+// Un nettoyage en échec : en quittant la progression, l'issue est relevée et
+// la page réanalysée l'annonce en rouge. L'ancienneté de l'analyse est en
+// toutes lettres. Un élément arrêté par l'annulation n'est pas un échec,
+// mais dit que l'annulation a pris effet.
+func TestCleanupResultAfterFailure(t *testing.T) {
+	ps := newProgressState()
+	for _, ev := range []compose.ProgressEvent{
+		{StackName: "Images pendantes <none>", Container: "<none> d1", Status: "conflict: unable to delete d1 (must be forced)", State: "error"},
+		{StackName: "Images pendantes <none>", Container: "<none> d2", Status: "context canceled", State: "error"},
+		{StackName: "Images pendantes <none>", StackDone: true, Err: errors.New("conflict: unable to delete d1 (must be forced)")},
+	} {
+		ps.apply(ev)
+	}
+	if o := ps.cleanupOutcome(); o != (cleanupOutcome{fails: 1, cancelled: true}) {
+		t.Errorf("issue relevée : %+v", o)
+	}
+
+	m, _ := cleanupModel(t)
+	before := *m.cleanupRep
+	m.cleanupBefore, m.cleanupPlanned = &before, 2<<30
+	m.view, m.progressReturn, m.progress, m.progressDone = viewProgress, viewCleanup, newProgressState(), true
+	for _, ev := range []compose.ProgressEvent{
+		{StackName: "Images pendantes <none>", Container: "<none> d1", Status: "conflict: unable to delete d1 (must be forced)", State: "error"},
+		{StackName: "Images pendantes <none>", StackDone: true, Err: errors.New("conflict: unable to delete d1 (must be forced)")},
+	} {
+		m.progress.apply(ev)
+	}
+	m = drive(t, m, keyMsg("enter"), 0)
+	if m.view != viewCleanup || m.cleanupRep == nil {
+		t.Fatalf("retour : vue %v", m.view)
+	}
+	s := ansi.Strip(m.viewContent())
+	if !strings.Contains(s, "✕ Rien libéré : 1 échec") || m.cleanupTone != toneErr {
+		t.Errorf("bilan d'échec absent (%v) :\n%s", m.cleanupTone, s)
+	}
+	if !strings.Contains(s, "analysé à l'instant") {
+		t.Errorf("ancienneté de l'analyse :\n%s", s)
+	}
+	if m.cleanupOutcome != (cleanupOutcome{}) {
+		t.Errorf("issue non consommée : %+v", m.cleanupOutcome)
+	}
+}

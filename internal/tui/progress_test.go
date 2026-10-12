@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -79,8 +82,11 @@ func TestProgressFailureRecap(t *testing.T) {
 
 	m.progress = newProgressState()
 	m.progress.apply(compose.ProgressEvent{StackName: "seule", StackDone: true, Err: errors.New("boom")})
+	m.progressTotal, m.progressOk = 1, 0
 	lines, _ = m.progressLines(0, 100)
-	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "échec") {
+	// Le bilan compte l'échec (« 0/1 OK · 1 échec »), mais sans le bloc
+	// récapitulatif « ✕ 1 échec » qui répéterait la cause.
+	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "✕ 1 échec") {
 		t.Error("une seule stack : pas de récapitulatif redondant")
 	}
 }
@@ -118,5 +124,280 @@ func TestProgressBatching(t *testing.T) {
 	ch <- compose.ProgressEvent{StackName: "c", Container: "x", State: "working"}
 	if msg := readProgressCmd(ch, 1)().(progressEventMsg); len(msg.evs) != 1 || msg.done {
 		t.Fatalf("lot d'un événement attendu : %+v", msg)
+	}
+}
+
+// feedProgress livre des événements comme readProgressCmd ; done termine
+// l'opération.
+func feedProgress(m Model, done bool, evs ...compose.ProgressEvent) Model {
+	m, _ = update(m, progressEventMsg{evs: evs, done: done, seq: m.progressSeq})
+	return m
+}
+
+// opProgress : vue de progression vide d'une opération, sur la liste stacks.
+func opProgress(title string, stacks ...compose.Stack) Model {
+	m := newTestModel(stacks)
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 120, 40, false
+	m.view, m.progressTitle, m.progress = viewProgress, title, newProgressState()
+	return m
+}
+
+// Un pull en échec : compose émet l'erreur sur l'image (texte « Error »,
+// message dans le détail) puis la renvoie, préfixée par le démon. Le message
+// ne s'affiche qu'une fois dans le bloc de la stack ; une erreur de stack
+// sans rapport avec ses ressources reste affichée.
+func TestProgressStackErrorNotRepeated(t *testing.T) {
+	msg := "manifest for app:404 not found: manifest unknown: manifest unknown"
+	m := opProgress("Pull: app")
+	m.width = 200
+	m.progress.apply(compose.ProgressEvent{StackName: "app", Container: "Image app:404", Status: "Error", Details: msg, State: "error"})
+	m.progress.apply(compose.ProgressEvent{StackName: "app", StackDone: true, Err: errors.New("Error response from daemon: " + msg)})
+	lines, _ := m.progressLines(0, 100)
+	if out := ansi.Strip(strings.Join(lines, "\n")); strings.Count(out, "not found") != 1 {
+		t.Errorf("message répété :\n%s", out)
+	}
+
+	m.progress.apply(compose.ProgressEvent{StackName: "b", Container: "Container b", Status: "Error", Details: "conflit de nom", State: "error"})
+	m.progress.apply(compose.ProgressEvent{StackName: "b", StackDone: true, Err: errors.New("réseau introuvable")})
+	lines, _ = m.progressLines(0, 100)
+	if out := ansi.Strip(strings.Join(lines, "\n")); !strings.Contains(out, "réseau introuvable") || !strings.Contains(out, "conflit de nom") {
+		t.Errorf("erreur de stack distincte masquée :\n%s", out)
+	}
+}
+
+// Sans erreur de stack, la cause est celle de la ressource : pour un pull,
+// le message est dans le détail, le texte ne vaut que « Error ».
+func TestFailureReasonPullDetails(t *testing.T) {
+	ps := newProgressState()
+	ps.apply(compose.ProgressEvent{StackName: "x", Container: "Image x:1", Status: "Error", Details: "manifest unknown", State: "error"})
+	if got := failureReason(ps.byName["x"]); got != "Image x:1 : manifest unknown" {
+		t.Errorf("failureReason = %q", got)
+	}
+	ps.apply(compose.ProgressEvent{StackName: "y", Container: "Container y", Status: "Conflict. name in use", State: "error"})
+	if got := failureReason(ps.byName["y"]); got != "Container y : Conflict. name in use" {
+		t.Errorf("failureReason (up) = %q", got)
+	}
+}
+
+// Un échec reste lisible après la fermeture de la progression : le volet de
+// la stack le date et en donne la cause (et le conseil) ; une réussite
+// l'efface. Ni les catégories du nettoyage ni les stacks annulées ne sont
+// retenues.
+func TestLastFailKeptInPreview(t *testing.T) {
+	web := stack("web", "", 0, 1, 0)
+	m := opProgress("Pull — 2 stacks", web)
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: "web", Container: "Image web:404", Status: "Error", Details: "manifest unknown", State: "error"},
+		compose.ProgressEvent{StackName: "web", StackDone: true, Err: errors.New("Error response from daemon: manifest unknown")},
+		compose.ProgressEvent{StackName: "inconnue", StackDone: true, Err: errors.New("boom")},
+	)
+	f, ok := m.lastFail["web"]
+	if !ok || f.op != "Pull" || f.reason != "Error response from daemon: manifest unknown" {
+		t.Fatalf("échec retenu : %+v (%v)", f, ok)
+	}
+	if _, ok := m.lastFail["inconnue"]; ok {
+		t.Error("échec retenu pour un nom absent de la liste")
+	}
+	m, _ = update(m, keyMsg("enter"))
+	if m.view != viewList {
+		t.Fatalf("↩ : vue %v", m.view)
+	}
+	out := ansi.Strip(strings.Join(previewDetail("/tmp", web, nil, 60, 30, selState{}, m.previewExtraFor(web)), "\n"))
+	if !strings.Contains(out, "✕ Pull en échec à "+f.at.Format("15:04")+" · manifest unknown") ||
+		!strings.Contains(out, "→ étiquette absente du registre") {
+		t.Errorf("volet sans l'échec :\n%s", out)
+	}
+
+	// Réussite suivante : l'échec s'efface.
+	m.view, m.progressTitle, m.progress, m.progressDone = viewProgress, "Up: web", newProgressState(), false
+	m = feedProgress(m, true, compose.ProgressEvent{StackName: "web", StackDone: true})
+	if _, ok := m.lastFail["web"]; ok {
+		t.Error("échec gardé après une réussite")
+	}
+
+	// Nettoyage (catégories) et annulation : rien n'est retenu.
+	m.progress, m.progressDone, m.progressReturn = newProgressState(), false, viewCleanup
+	m = feedProgress(m, false, compose.ProgressEvent{StackName: "web", StackDone: true, Err: errors.New("refusé")})
+	m.progressReturn, m.progressCancelling = viewList, true
+	m = feedProgress(m, true, compose.ProgressEvent{StackName: "web", StackDone: true, Err: context.Canceled})
+	if _, ok := m.lastFail["web"]; ok {
+		t.Error("échec retenu pour une catégorie du nettoyage ou une annulation")
+	}
+}
+
+// En fin d'opération (hors pull), l ouvre les logs de la première stack en
+// échec, annoncée au pied, et y pose le curseur de la liste.
+func TestProgressLogsOfFailedStack(t *testing.T) {
+	// ko partielle : une stack arrêtée est masquée par défaut (a), le
+	// curseur ne pourrait pas s'y poser.
+	m := opProgress("Up — 2 stacks", stack("ok", "", 1, 1, 0), stack("ko", "", 1, 2, 0))
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: "ok", StackDone: true},
+		compose.ProgressEvent{StackName: "ko", StackDone: true, Err: errors.New("port is already allocated")},
+	)
+	if s := ansi.Strip(m.viewContent()); !strings.Contains(s, "logs de ko") {
+		t.Fatalf("pied sans l :\n%s", s)
+	}
+	m, _ = update(m, keyMsg("l"))
+	if m.view != viewLogs || m.logStack != "ko" {
+		t.Fatalf("l : vue %v, logs de %q", m.view, m.logStack)
+	}
+	if row, ok := m.cursorRow(); !ok || !row.isStack() || row.stack.Name != "ko" {
+		t.Errorf("curseur pas sur la stack en échec : %+v", row)
+	}
+
+	// Pull : des logs n'aident pas pour une erreur de registre.
+	m = opProgress("Pull — 2 stacks", stack("ok", "", 1, 1, 0), stack("ko", "", 0, 1, 0))
+	m = feedProgress(m, true, compose.ProgressEvent{StackName: "ko", StackDone: true, Err: errors.New("manifest unknown")})
+	if s := ansi.Strip(m.viewContent()); strings.Contains(s, "logs de") {
+		t.Errorf("l proposé après un pull :\n%s", s)
+	}
+	if m, _ = update(m, keyMsg("l")); m.view != viewProgress {
+		t.Errorf("l après un pull : vue %v", m.view)
+	}
+}
+
+// Annulation confirmée : les stacks arrêtées ne sont pas des échecs. Celle
+// qui avait commencé est « interrompue », celle encore en file « non
+// lancée », et le bilan les compte à part.
+func TestProgressCancelledNotFailed(t *testing.T) {
+	m := opProgress("Pull — 3 stacks")
+	m = feedProgress(m, false,
+		compose.ProgressEvent{StackName: "a", StackQueued: true},
+		compose.ProgressEvent{StackName: "b", StackQueued: true},
+		compose.ProgressEvent{StackName: "c", StackQueued: true},
+		compose.ProgressEvent{StackName: "a", StackStarted: true},
+		compose.ProgressEvent{StackName: "b", StackStarted: true},
+		compose.ProgressEvent{StackName: "a", StackDone: true},
+		compose.ProgressEvent{StackName: "b", Container: "Image b", Status: "Pulling", State: "working"},
+	)
+	m.progressCancelling = true
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: "b", StackDone: true, Err: context.Canceled},
+		compose.ProgressEvent{StackName: "c", StackDone: true, Err: errors.New("Error response from daemon: context canceled")},
+	)
+	lines, _ := m.progressLines(0, 100)
+	out := ansi.Strip(strings.Join(lines, "\n"))
+	for _, want := range []string{"⊘ b  0/1  interrompue", "· c  non lancée", "⊘ Annulé — 1/3 OK · 1 interrompue · 1 non lancée"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q absent :\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "échec") || strings.Contains(out, "context canceled") {
+		t.Errorf("annulation présentée comme un échec :\n%s", out)
+	}
+}
+
+// La question d'annulation dit ce qui reste fait ; la réponse attendue
+// (esc = oui) tient toujours sur la ligne.
+func TestProgressCancelQuestion(t *testing.T) {
+	m := opProgress("Pull — 3 stacks")
+	m.progressConfirmCancel = true
+	for _, tc := range []struct {
+		width  int
+		back   view
+		reason string
+	}{
+		{120, viewList, "Les stacks terminées le restent, celles en cours peuvent rester partielles"},
+		{80, viewList, "Ce qui est fait reste fait"},
+		{120, viewCleanup, "Ce qui est déjà supprimé le reste"},
+	} {
+		m.width, m.progressReturn = tc.width, tc.back
+		lines := strings.Split(ansi.Strip(m.viewContent()), "\n")
+		last := lines[len(lines)-1]
+		if !strings.Contains(last, tc.reason) || !strings.Contains(last, "esc = oui") {
+			t.Errorf("%d colonnes : %q", tc.width, last)
+		}
+	}
+}
+
+// Le titre suit l'avancement d'une opération groupée (en cours, réussies,
+// en échec, en attente, temps écoulé) ; une stack qui attend sa place est
+// listée en gris. En fin d'opération, titre et bilan donnent la durée.
+func TestProgressTitleShowsProgress(t *testing.T) {
+	m := opProgress("Pull — 5 stacks")
+	m.progressStart = time.Now().Add(-42 * time.Second)
+	var evs []compose.ProgressEvent
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		evs = append(evs, compose.ProgressEvent{StackName: n, StackQueued: true})
+	}
+	for _, n := range []string{"a", "b", "c", "d"} {
+		evs = append(evs, compose.ProgressEvent{StackName: n, StackStarted: true})
+	}
+	evs = append(evs,
+		compose.ProgressEvent{StackName: "a", StackDone: true},
+		compose.ProgressEvent{StackName: "b", StackDone: true, Err: errors.New("boom")},
+		compose.ProgressEvent{StackName: "c", Container: "Image c", Status: "Pulling", State: "working"},
+	)
+	m = feedProgress(m, false, evs...)
+	if title := ansi.Strip(m.progressTitleLine()); !strings.Contains(title, "2 en cours · ✔ 1 · ✕ 1 · 1 en attente   0:42") {
+		t.Errorf("titre : %q", title)
+	}
+	lines, _ := m.progressLines(0, 100)
+	if out := ansi.Strip(strings.Join(lines, "\n")); !strings.Contains(out, "· e  en attente") {
+		t.Errorf("stack en file absente :\n%s", out)
+	}
+
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: "c", StackDone: true},
+		compose.ProgressEvent{StackName: "d", StackDone: true},
+		compose.ProgressEvent{StackName: "e", StackStarted: true},
+		compose.ProgressEvent{StackName: "e", StackDone: true},
+	)
+	m.progressEnd = m.progressStart.Add(72 * time.Second)
+	want := "4/5 OK · 1 échec · 1 min 12 s"
+	if title := ansi.Strip(m.progressTitleLine()); !strings.Contains(title, want) {
+		t.Errorf("titre final : %q", title)
+	}
+	lines, _ = m.progressLines(0, 100)
+	if out := ansi.Strip(strings.Join(lines, "\n")); !strings.Contains(out, "  "+want) {
+		t.Errorf("bilan sans durée :\n%s", out)
+	}
+}
+
+// La fenêtre suit le bas : ce qui sort par le haut est signalé, avec les
+// stacks encore en cours dont l'en-tête n'est plus visible. Tout en haut
+// (g), plus de repère.
+func TestProgressAboveHint(t *testing.T) {
+	m := opProgress("Up — 2 stacks")
+	m.height = 30
+	var evs []compose.ProgressEvent
+	for i := range 30 {
+		evs = append(evs, compose.ProgressEvent{StackName: "longue", Container: fmt.Sprintf("Container longue-%d", i), Status: "Starting", State: "working"})
+	}
+	evs = append(evs, compose.ProgressEvent{StackName: "courte", Container: "Container courte", Status: "Started", State: "done"},
+		compose.ProgressEvent{StackName: "courte", StackDone: true})
+	m = feedProgress(m, false, evs...)
+	out := ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "lignes au-dessus · en cours : longue") {
+		t.Fatalf("repère du haut absent :\n%s", out)
+	}
+	if n := strings.Count(out, "\n") + 1; n != m.height {
+		t.Errorf("%d lignes, want %d", n, m.height)
+	}
+	m, _ = update(m, keyMsg("g"))
+	if out := ansi.Strip(m.viewContent()); strings.Contains(out, "au-dessus") || !strings.Contains(out, "longue  0/30") {
+		t.Errorf("en haut : repère ou en-tête de stack incorrect :\n%s", out)
+	}
+}
+
+// Durées : chronomètre dans le titre, en toutes lettres au bilan.
+func TestProgressDurations(t *testing.T) {
+	for _, tc := range []struct {
+		d            time.Duration
+		clock, human string
+	}{
+		{300 * time.Millisecond, "0:00", "< 1 s"},
+		{42 * time.Second, "0:42", "42 s"},
+		{65 * time.Second, "1:05", "1 min 5 s"},
+		{3*time.Hour + 4*time.Minute + 5*time.Second, "3:04:05", "3 h 4 min"},
+	} {
+		if got := fmtClock(tc.d); got != tc.clock {
+			t.Errorf("fmtClock(%v) = %q, want %q", tc.d, got, tc.clock)
+		}
+		if got := fmtDuration(tc.d); got != tc.human {
+			t.Errorf("fmtDuration(%v) = %q, want %q", tc.d, got, tc.human)
+		}
 	}
 }

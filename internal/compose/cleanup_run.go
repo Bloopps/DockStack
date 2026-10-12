@@ -52,8 +52,18 @@ func (c *Client) CleanupLive(ctx context.Context, items []CleanupItem) <-chan Pr
 			}
 			byKind[it.Kind] = append(byKind[it.Kind], it)
 		}
+		// Comme runLive : les catégories à venir s'annoncent d'emblée, et
+		// celles qu'une annulation devance ne sont jamais commencées.
+		for _, k := range kinds {
+			ch <- ProgressEvent{StackName: k.Label(), StackQueued: true}
+		}
 		for _, k := range kinds {
 			label := k.Label()
+			if ctx.Err() != nil {
+				ch <- ProgressEvent{StackName: label, StackDone: true, Err: ctx.Err()}
+				continue
+			}
+			ch <- ProgressEvent{StackName: label, StackStarted: true}
 			var (
 				mu       sync.Mutex
 				firstErr error
@@ -61,11 +71,16 @@ func (c *Client) CleanupLive(ctx context.Context, items []CleanupItem) <-chan Pr
 				sem      = make(chan struct{}, cleanupParallel)
 			)
 			for _, it := range byKind[k] {
+				// L'attente d'une place cède aussi à l'annulation : sinon
+				// l'élément suivant partait avec un contexte annulé.
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+				}
 				if ctx.Err() != nil {
-					break
+					break // une place prise en trop reste dans sem, local à la catégorie
 				}
 				wg.Add(1)
-				sem <- struct{}{}
 				go func() {
 					defer func() { <-sem; wg.Done() }()
 					id := cleanupResourceID(it)

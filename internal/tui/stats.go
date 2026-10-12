@@ -285,11 +285,15 @@ type previewExtra struct {
 	volumes int64                             // octets de volumes nommés (0 : aucun ou inconnu)
 	layers  int64                             // octets de couches d'écriture des conteneurs
 	usage   map[string]compose.ContainerUsage // mesures par conteneur
+	fail    *stackFailure                     // dernier échec de la stack (cf. lastFail)
 }
 
 func (m Model) previewExtraFor(s compose.Stack) previewExtra {
 	ex := previewExtra{usage: m.ctrUsage}
 	ex.volumes, ex.layers, _ = m.stackDisk(s)
+	if f, ok := m.lastFail[s.Name]; ok {
+		ex.fail = &f
+	}
 	return ex
 }
 

@@ -587,6 +587,11 @@ type ProgressEvent struct {
 	Err       error  // non-nil when StackDone=true and op failed
 	StackDone bool   // true = this stack's op is complete
 	AllDone   bool   // sentinelle : toutes les stacks de l'opération sont terminées
+	// StackQueued annonce une stack qui attend sa place (MaxParallel),
+	// StackStarted dit qu'elle l'a obtenue. Champs à part : un événement
+	// ordinaire sans Container créerait une ressource vide côté TUI.
+	StackQueued  bool
+	StackStarted bool
 }
 
 // streamingCollector implements api.EventProcessor and forwards per-resource
@@ -1149,15 +1154,35 @@ func (c *Client) runLive(ctx context.Context, stacks []Stack, parallel int, ch c
 	if parallel <= 0 {
 		parallel = 1
 	}
+	// Toutes les stacks s'annoncent d'emblée : au-delà de parallel, celles
+	// qui attendaient leur place n'apparaissaient qu'à leur tour.
+	for _, s := range stacks {
+		ch <- ProgressEvent{StackName: s.Name, StackQueued: true}
+	}
 	sem := make(chan struct{}, parallel)
 	var wg sync.WaitGroup
 	for _, s := range stacks {
+		// L'attente d'une place cède à l'annulation : une stack encore en file
+		// n'est jamais lancée. Avant, fn partait quand même avec un contexte
+		// annulé et chaque stack restante échouait sur « context canceled ».
+		acquired := false
+		select {
+		case sem <- struct{}{}:
+			acquired = true
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			if acquired {
+				<-sem
+			}
+			ch <- ProgressEvent{StackName: s.Name, Err: ctx.Err(), StackDone: true}
+			continue
+		}
 		wg.Add(1)
-		sem <- struct{}{}
-		s := s
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
+			ch <- ProgressEvent{StackName: s.Name, StackStarted: true}
 			err := fn(ctx, s, ch)
 			ch <- ProgressEvent{StackName: s.Name, Err: err, StackDone: true}
 		}()
