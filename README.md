@@ -56,6 +56,15 @@ de l'utiliser sur des stacks importantes.
   arrête ce qui n'y figure pas, après confirmation). `n` nomme une capture,
   `*` l'épingle (jamais supprimée par la rotation). Un bandeau rappelle,
   au lancement, les stacks de la dernière capture qui ne tournent plus
+- Page **Nettoyage** (`n`) : bilan façon `docker system df`, éléments
+  supprimables classés par risque (cache de build, images pendantes, réseaux
+  inutilisés d'abord ; images à retélécharger et volumes orphelins jamais
+  cochés d'office) et commandes `prune` avec la sémantique exacte de la CLI.
+  Une suppression qui efface des données (volumes, conteneurs arrêtés) se
+  confirme avec `y` seulement, pas avec `↩`
+- Mêmes règles de chargement que `docker compose` : `.env` du dossier,
+  fichier d'override, `COMPOSE_PROJECT_NAME`, `COMPOSE_PROFILES` ; un up ou
+  un recreate garde les volumes anonymes des conteneurs remplacés
 - Filtrage / recherche dans la liste des stacks
 - Thèmes de couleurs (`t`) : les 650+ thèmes livrés avec
   [Ghostty](https://ghostty.org) (Dracula, Nord, Gruvbox, Catppuccin,
@@ -83,6 +92,7 @@ chmod +x dockstack
 ```
 
 Pour arm64, remplacer `dockstack-linux-amd64` par `dockstack-linux-arm64`.
+`./dockstack --version` affiche la version installée.
 
 ## Lancer depuis les sources
 
@@ -163,6 +173,7 @@ Le catalogue intégré se met à jour avec `scripts/update-themes.sh`.
 | `a`                   | Afficher / masquer les stacks arrêtées et non déployées (masquées par défaut) |
 | `x`                   | Exclure du scan la stack ou le dossier sous le curseur |
 | `o`                   | Changer de répertoire                                |
+| `n`                   | Nettoyage (images, cache de build, réseaux, volumes orphelins, `prune`) |
 | `t`                   | Thème de couleurs (aperçu en direct, `↩` enregistre) |
 | `?`                   | Aide (`↑↓` pour défiler si elle dépasse l'écran)     |
 | `q`                   | Quitter (deux frappes, depuis toutes les vues ; `esc` = retour) |

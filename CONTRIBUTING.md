@@ -35,8 +35,10 @@ go test -tags integration -count=1 ./internal/compose/ ./internal/tui/
 ```
 
 `./internal/tui/` contient `TestLiveJourney` : le parcours de l'interface
-sur les vraies stacks du dossier configuré, en lecture seule (actions et logs
-simulés, `HOME` isolé).
+sur de vraies stacks, en lecture seule (actions et logs simulés, `HOME`
+isolé). Dossier : `/home/ubuntu` par défaut, ou celui de
+`DOCKSTACK_JOURNEY_DIR` (par ex. `DOCKSTACK_JOURNEY_DIR=$PWD/demo-stacks`) ;
+le test est sauté si le dossier n'existe pas.
 
 ### Tests longs et mesures
 
