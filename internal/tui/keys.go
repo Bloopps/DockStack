@@ -469,9 +469,7 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 		return m.startProgressOp("Pull: "+stackLabel(stack), cancel, client.PullManyLive(ctx, one, 1))
 	case "logs":
 		m.view = viewLogs
-		m.logStack = stackLabel(stack)
-		m.logLines = nil
-		m.logScroll = 0
+		m.resetLogSession(stack)
 		m.logSeq++ // nouvelle session : invalide les messages en vol de la précédente
 		// Contexte annulable : fermer la vue arrête le suivi des logs (sans
 		// lui, le flux Follow continuerait en arrière-plan indéfiniment).
@@ -544,8 +542,37 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 // ---- logs ----
 
 func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+	// Saisie du filtre, sur le modèle de celui des services : chaque lettre
+	// refiltre aussitôt, ↩ fige le filtre, esc l'efface. ↑↓ font défiler,
+	// pour parcourir les lignes retenues sans quitter la saisie.
+	if m.logFiltering {
+		switch key {
+		case "esc":
+			m.logFiltering = false
+			m.setLogFilter("")
+		case "enter":
+			m.logFiltering = false
+		case "backspace":
+			if r := []rune(m.logFilter); len(r) > 0 {
+				m.setLogFilter(string(r[:len(r)-1]))
+			}
+		case "up", "down":
+			m.scrollLogs(key)
+		default:
+			if t := msg.Key().Text; t != "" {
+				m.setLogFilter(m.logFilter + t)
+			}
+		}
+		return m, nil
+	}
+	switch key {
 	case "esc":
+		// Le filtre s'efface d'abord, comme dans la liste et les services.
+		if m.logFilter != "" {
+			m.setLogFilter("")
+			return m, nil
+		}
 		if m.logCancel != nil {
 			m.logCancel()
 			m.logCancel = nil
@@ -553,19 +580,15 @@ func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.logSeq++ // périme la session : stoppe la pompe de lecture
 		m.logCh = nil
 		m.view = viewList
-	case "up", "k":
-		if m.logScroll > 0 {
-			m.logScroll--
-		}
-	case "down", "j":
-		// Borné : au-delà, renderLogsView découperait hors limites.
-		if m.logScroll < max(0, len(m.logLines)-m.logsHeight()) {
-			m.logScroll++
-		}
-	case "g", "home":
-		m.logScroll = 0
-	case "G", "end":
-		m.logScroll = max(0, len(m.logLines)-m.logsHeight())
+	case "/":
+		m.logFiltering = true
+	case "w":
+		// Replié ou tronqué, la ligne du haut reste la même : logScroll compte
+		// des lignes de log, pas des lignes d'écran.
+		m.logWrap = !m.logWrap
+		m.syncLogScroll()
+	default:
+		m.scrollLogs(key)
 	}
 	return m, nil
 }

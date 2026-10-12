@@ -50,7 +50,7 @@ func helpBox(m Model) string {
 		title("Actions", "  (sélection si active, sinon stack/dossier courant)"),
 		"  " + k("u") + "  Up      " + k("s") + "  Stop      " + k("d") + "  Down",
 		"  " + k("r") + "  Restart " + k("c") + "  Recreate  " + k("p") + "  Pull",
-		"  " + k("l") + "  Logs" + d("  (stack courante)"),
+		"  " + k("l") + "  Logs" + d("  (") + k("G") + d(" suivre · ") + k("/") + d(" filtrer · ") + k("w") + d(" replier les lignes)"),
 		"  " + k("↩") + "  panneau d'actions" + d("  (mêmes lettres, plus Remove)"),
 	}
 	services := []string{

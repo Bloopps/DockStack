@@ -337,7 +337,7 @@ func TestKeymapCoherent(t *testing.T) {
 	}
 
 	m.view, m.height = viewLogs, 10
-	m.logLines = make([]string, 50)
+	m.logLines = make([]logLine, 50)
 	m.logScroll = 20
 	m, _ = update(m, keyMsg("g"))
 	if m.logScroll != 0 {

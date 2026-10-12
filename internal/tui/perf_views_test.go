@@ -59,9 +59,11 @@ func BenchmarkLogBatch(b *testing.B) {
 	m := scaleModel(10)
 	m.view = viewLogs
 	m.logSeq = 1
-	for i := range maxLogLines {
-		m.logLines = append(m.logLines, fmt.Sprintf("[web-1] ligne %d", i))
+	fill := make([]compose.LogEntry, maxLogLines)
+	for i := range fill {
+		fill[i] = compose.LogEntry{Name: "web-1", Line: fmt.Sprintf("ligne %d", i)}
 	}
+	m.appendLogs(fill)
 	batch := make([]compose.LogEntry, logBatchMax)
 	for i := range batch {
 		batch[i] = compose.LogEntry{Name: "web-1", Line: fmt.Sprintf("%s GET /api/v1/items?id=%d 200 12ms \"Mozilla/5.0\"", time.Now().Format(time.RFC3339), i)}
@@ -77,9 +79,7 @@ func BenchmarkLogBatch(b *testing.B) {
 func BenchmarkLogsView(b *testing.B) {
 	m := scaleModel(10)
 	m.view = viewLogs
-	for i := range maxLogLines {
-		m.logLines = append(m.logLines, fmt.Sprintf("[web-1] ligne %d GET /api/v1/items 200", i))
-	}
+	m.appendLogs(webLogs(maxLogLines))
 	m.logScroll = maxLogLines - m.logsHeight()
 	b.ReportAllocs()
 	for b.Loop() {
@@ -179,9 +179,7 @@ func BenchmarkProgressView10k(b *testing.B) {
 func BenchmarkLogsScroll(b *testing.B) {
 	m := scaleModel(10)
 	m.view = viewLogs
-	for i := range maxLogLines {
-		m.logLines = append(m.logLines, fmt.Sprintf("[web-1] ligne %d GET /api/v1/items 200", i))
-	}
+	m.appendLogs(webLogs(maxLogLines))
 	m.logScroll = maxLogLines - m.logsHeight()
 	up, down := keyMsg("up"), keyMsg("down")
 	b.ReportAllocs()

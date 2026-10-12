@@ -76,7 +76,7 @@ func viewStates(t *testing.T) map[string]Model {
 	m = base()
 	m.view, m.logStack = viewLogs, "stack"
 	for i := range 50 {
-		m.logLines = append(m.logLines, fmt.Sprintf("[web-1] ligne %d 日本語 🎉", i))
+		m.appendLogs([]compose.LogEntry{{Name: "web-1", Line: fmt.Sprintf("ligne %d 日本語 🎉", i)}})
 	}
 	out["logs"] = m
 	m = base()

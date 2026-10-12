@@ -58,11 +58,11 @@ func TestDaemonDownAndBack(t *testing.T) {
 	h.focusStack("zzdsprobefake")
 	h.key("l")
 	h.waitFor("logs reçus", func(m Model) bool {
-		return m.view == viewLogs && len(m.logLines) > 0 && strings.Contains(m.logLines[len(m.logLines)-1], "tic")
+		return m.view == viewLogs && len(m.logLines) > 0 && strings.Contains(m.logLines[len(m.logLines)-1].text, "tic")
 	}, 10*time.Second)
 	d.Kill()
 	m := h.waitFor("fin du suivi signalée", func(m Model) bool { return m.logCh == nil }, 10*time.Second)
-	last := m.logLines[len(m.logLines)-1]
+	last := m.logLines[len(m.logLines)-1].text
 	if !strings.Contains(last, "flux de logs interrompu") {
 		t.Errorf("dernière ligne des logs : %q, want l'interruption expliquée", last)
 	}

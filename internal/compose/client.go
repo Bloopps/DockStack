@@ -1004,7 +1004,8 @@ func (c *Client) LogsAsync(ctx context.Context, stack Stack) (<-chan LogEntry, e
 		defer close(ch)
 		// L'erreur du flux est poussée comme entrée de log : la TUI n'a pas
 		// d'autre canal de retour ici, et sans elle un échec immédiat
-		// s'afficherait comme un simple « Logs terminés ». L'annulation par
+		// s'afficherait comme un simple « flux terminé » (titre de la vue
+		// logs, posé à la fermeture du canal). L'annulation par
 		// l'utilisateur (ctx.Err() != nil) n'est pas une erreur.
 		// Tail borné : sans lui, tout l'historique est relu à l'ouverture alors
 		// que la vue n'en garde que maxLogLines.

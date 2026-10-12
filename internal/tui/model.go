@@ -174,12 +174,40 @@ type Model struct {
 	// Logs (canal et annulation portés par le Model, pas par des globals).
 	// logSeq numérote la session courante pour invalider les messages en vol
 	// d'une session précédente.
-	logStack  string
-	logLines  []string
+	logStack string
+	logLines []logLine
+	// logScroll : première ligne affichée, en lignes visibles (celles que
+	// retient le filtre), pas en lignes physiques (cf. logsMaxScroll).
 	logScroll int
 	logCh     <-chan compose.LogEntry
 	logCancel context.CancelFunc
 	logSeq    int
+	// Suivi du flux. La valeur zéro suit le direct : chaque lot recolle la
+	// vue en bas. En pause (on a remonté), la vue ne bouge plus et les lignes
+	// arrivées depuis logPauseAt (indice dans logLines) sont comptées ;
+	// logAnchor (indice dans logLines) est la ligne où reprendre quand le
+	// filtre change. logEnded : le flux s'est fermé (stack sans conteneur,
+	// conteneurs arrêtés ou supprimés, démon perdu).
+	logPaused  bool
+	logPauseAt int
+	logAnchor  int
+	logEnded   bool
+	// logNoCtr : les services suivis n'avaient aucun conteneur à l'ouverture,
+	// ce qui explique un flux fermé sans une ligne.
+	logNoCtr bool
+	// Préfixes : logNames donne le nom affiché de chaque source (logAlias
+	// raccourcit « svc-1 » quand le service n'a qu'un conteneur), logNameW la
+	// largeur du plus long, sur laquelle les messages s'alignent.
+	logNames map[string]string
+	logAlias map[string]string
+	logNameW int
+	// Filtre (/) : logMatch liste, dans l'ordre, les indices des lignes de
+	// logLines qui le contiennent. logWrap replie les lignes longues au lieu
+	// de les couper ; il est gardé d'une session à l'autre.
+	logFilter    string
+	logFiltering bool
+	logMatch     []int
+	logWrap      bool
 
 	// Dir picker
 	dirPath    string
@@ -398,6 +426,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Le bas des logs dépend de la hauteur, et de la largeur une fois les
+		// lignes repliées : sans recalcul, un terminal réduit cachait la fin
+		// du direct.
+		if m.view == viewLogs {
+			m.syncLogScroll()
+		}
 
 	case metricsMsg:
 		m.metrics = monitor.Metrics(msg)
@@ -599,25 +633,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.logSeq {
 			return m, nil // session de logs périmée : ne pas réarmer la lecture
 		}
-		for _, entry := range msg.entries {
-			line := "[" + sanitizeLogLine(entry.Name) + "] " + sanitizeLogLine(entry.Line)
-			m.logLines = append(m.logLines, line)
-		}
-		// Plafond glissant : le suivi est continu (Follow), sans limite la
-		// mémoire grandit indéfiniment. On taille par paquets pour ne pas
-		// recopier à chaque ligne, et on réalloue pour libérer l'ancien tampon.
-		if len(m.logLines) > maxLogLines+logTrimChunk {
-			drop := len(m.logLines) - maxLogLines
-			m.logLines = append([]string(nil), m.logLines[drop:]...)
-			if m.logScroll > drop {
-				m.logScroll -= drop
-			} else {
-				m.logScroll = 0
-			}
-		}
-		if m.logScroll >= len(m.logLines)-m.logsHeight()-2 {
-			m.logScroll = max(0, len(m.logLines)-m.logsHeight())
-		}
+		m.appendLogs(msg.entries)
 		return m, readLogCmd(m.logCh, m.logSeq)
 
 	case logsStartedMsg:
@@ -713,12 +729,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.logCh = nil
-		// Flux clos après fermeture de la vue (annulation) : rien à signaler.
-		if m.view != viewLogs {
-			return m, nil
-		}
-		m.setStatus("Logs terminés", false)
-		return m, m.clearStatusIn(3 * time.Second)
+		// Affiché dans le titre de la vue (« ■ flux terminé ») : la barre de
+		// statut, où l'annonce partait avant, n'y est jamais rendue.
+		m.logEnded = true
+		return m, nil
 
 	case dirLoadedMsg:
 		m.dirPath = msg.path
@@ -1349,8 +1363,9 @@ func (m *Model) catchUpList() tea.Cmd {
 	return m.refreshOrMark()
 }
 
+// logsHeight : lignes du corps de la vue logs (titre, séparateur et pied ôtés).
 func (m Model) logsHeight() int {
-	return m.height - 3
+	return max(m.height-3, 0)
 }
 
 // progressFinished : fin de l'opération en cours (sentinelle AllDone lue).
@@ -1662,12 +1677,12 @@ func quitWarning() string {
 		styleDim.Render("  ·  autre touche = annuler")
 }
 
-// typing dit si une saisie de texte est en cours (filtre de la liste, filtre
-// des services, nom de capture) : les raccourcis globaux (R, Q) y sont des
-// lettres ordinaires.
+// typing dit si une saisie de texte est en cours (filtre de la liste, des
+// services, des thèmes ou des logs, nom de capture) : les raccourcis globaux
+// (R, Q, q) y sont des lettres ordinaires.
 func (m Model) typing() bool {
 	return m.filtering || (m.svcFocus && m.svcFiltering) || m.captureLabeling ||
-		(m.view == viewTheme && m.themeFiltering)
+		(m.view == viewTheme && m.themeFiltering) || (m.view == viewLogs && m.logFiltering)
 }
 
 // bodyHeight : hauteur du corps des vues sous l'en-tête (footer d'une ligne).
