@@ -28,6 +28,15 @@ type LayerIndex struct {
 	// est estimée par leur taille propre (Size - SharedSize).
 	approx   map[string]bool
 	fallback map[string]int64
+	// Stockage d'images containerd (défaut des installations neuves de
+	// Docker 29) : la taille d'une image compte, en plus de ses couches
+	// décompressées (l'historique), les blobs compressés d'où elles
+	// viennent, supprimés avec elle. unpacked et content : ces deux parts
+	// par image, connues quand toutes ses couches le sont. contentStore :
+	// au moins une image en porte, l'espace libéré n'est alors qu'estimé.
+	unpacked     map[string]int64
+	content      map[string]int64
+	contentStore bool
 }
 
 // emptyInstr : instructions qui ne créent jamais de couche, quel que soit le
@@ -93,6 +102,7 @@ func buildLayerIndex(infos map[string]layerInfo) *LayerIndex {
 	ix := &LayerIndex{
 		chains: map[string][]string{}, size: map[string]int64{}, users: map[string][]string{},
 		approx: map[string]bool{}, fallback: map[string]int64{},
+		unpacked: map[string]int64{}, content: map[string]int64{},
 	}
 	conflict := map[string]bool{}
 	for id, in := range infos {
@@ -123,6 +133,7 @@ func buildLayerIndex(infos map[string]layerInfo) *LayerIndex {
 	for ch := range conflict {
 		delete(ix.size, ch)
 	}
+	var lots []string
 	for id, chains := range ix.chains {
 		var known int64
 		var unknown []string
@@ -134,6 +145,13 @@ func buildLayerIndex(infos map[string]layerInfo) *LayerIndex {
 			}
 		}
 		if len(unknown) == 0 {
+			ix.unpacked[id] = known
+			// Au-delà de 2 % : marge contre un écart d'arrondi du démon, loin
+			// sous la part des blobs compressés (souvent 30 à 100 %).
+			if extra := infos[id].size - known; extra > 0 && extra > known/50 {
+				ix.content[id] = extra
+				ix.contentStore = true
+			}
 			continue
 		}
 		lot := infos[id].size - known
@@ -160,6 +178,15 @@ func buildLayerIndex(infos map[string]layerInfo) *LayerIndex {
 		ix.chains[id] = append(kept, key)
 		ix.size[key] = lot
 		ix.users[key] = []string{id}
+		lots = append(lots, id)
+	}
+	// Avec des blobs compressés, le lot d'une image (sa taille moins ses
+	// couches connues) contient aussi le contenu compressé des couches
+	// qu'elle partage : sa part n'est plus exacte.
+	if ix.contentStore {
+		for _, id := range lots {
+			ix.approx[id] = true
+		}
 	}
 	return ix
 }
@@ -167,7 +194,9 @@ func buildLayerIndex(infos map[string]layerInfo) *LayerIndex {
 // Freed renvoie l'espace libéré par la suppression des images ids : les
 // couches dont toutes les images utilisatrices sont supprimées. exact=false
 // si une image de l'ensemble n'a pas pu être détaillée (sa taille propre est
-// alors comptée).
+// alors comptée), ou avec le stockage containerd : les blobs compressés des
+// couches libérées sont alors estimés au taux de compression moyen des
+// images supprimées (la taille de chaque blob n'est pas exposée par l'API).
 func (ix *LayerIndex) Freed(ids []string) (bytes int64, exact bool) {
 	if ix == nil {
 		return 0, false
@@ -178,12 +207,23 @@ func (ix *LayerIndex) Freed(ids []string) (bytes int64, exact bool) {
 	}
 	exact = true
 	seen := map[string]bool{}
+	var layers, content, unpacked int64
+	defer func() {
+		if ix.contentStore && layers > 0 {
+			exact = false
+			if unpacked > 0 {
+				bytes += int64(float64(layers) * float64(content) / float64(unpacked))
+			}
+		}
+	}()
 	for _, id := range ids {
 		if ix.approx[id] {
 			bytes += ix.fallback[id]
 			exact = false
 			continue
 		}
+		content += ix.content[id]
+		unpacked += ix.unpacked[id]
 		for _, ch := range ix.chains[id] {
 			if seen[ch] {
 				continue
@@ -198,6 +238,7 @@ func (ix *LayerIndex) Freed(ids []string) (bytes int64, exact bool) {
 			}
 			if all {
 				bytes += ix.size[ch]
+				layers += ix.size[ch]
 			}
 		}
 	}

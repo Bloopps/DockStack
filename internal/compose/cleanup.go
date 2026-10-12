@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/distribution/reference"
@@ -228,7 +229,9 @@ func collectStackRefs(stackDir string) (stackRefs, error) {
 			continue
 		}
 		refs.projects[strings.ToLower(proj.Name)] = name
-		for _, svc := range proj.Services {
+		// Services des profils inactifs compris : leur image reste celle d'une
+		// stack du dossier, pas un déchet.
+		for _, svc := range proj.AllServices() {
 			imgs := append([]string{api.GetImageNameOrDefault(svc, proj.Name)}, api.GetDependentImages(svc, proj.Name)...)
 			for _, img := range imgs {
 				k := normalizeImageRef(img)
@@ -263,6 +266,17 @@ func normalizeImageRef(s string) string {
 		return reference.FamiliarString(named)
 	}
 	return reference.FamiliarString(reference.TagNameOnly(named))
+}
+
+// printable retire les caractères de contrôle (échappement, C1…) d'un texte
+// venu d'une étiquette : affiché tel quel, il pourrait piloter le terminal.
+func printable(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s))
 }
 
 func containsStr(xs []string, s string) bool {
@@ -397,7 +411,11 @@ func classifyImage(img image.Summary, refs stackRefs, layers *LayerIndex) Cleanu
 	}
 	approx := layers != nil && !layers.Exact(img.ID)
 	if layers != nil && !approx {
-		size, _ = layers.Freed([]string{img.ID})
+		// Détaillée couche par couche ; reste une estimation avec le
+		// stockage containerd (blobs compressés, cf. LayerIndex.Freed).
+		var exact bool
+		size, exact = layers.Freed([]string{img.ID})
+		approx = !exact
 	}
 	it := CleanupItem{ID: img.ID, Size: size, Count: 1, Approx: approx, Created: time.Unix(img.Created, 0)}
 	var tags []string
@@ -414,12 +432,14 @@ func classifyImage(img image.Summary, refs stackRefs, layers *LayerIndex) Cleanu
 		}
 		// Origine, quand l'image la porte : ancien build d'un service compose
 		// (étiquettes posées par compose), sinon titre OCI.
-		if p, svc := img.Labels[api.ProjectLabel], img.Labels[api.ServiceLabel]; p != "" {
+		// Étiquettes de l'image : écrites par l'auteur de l'image (LABEL d'un
+		// Dockerfile tiré d'un registre), donc nettoyées avant l'affichage.
+		if p, svc := printable(img.Labels[api.ProjectLabel]), printable(img.Labels[api.ServiceLabel]); p != "" {
 			it.Name = "ancien build " + p
 			if svc != "" {
 				it.Name += "/" + svc
 			}
-		} else if title := img.Labels["org.opencontainers.image.title"]; title != "" {
+		} else if title := printable(img.Labels["org.opencontainers.image.title"]); title != "" {
 			it.Name += " · " + title
 		}
 		return it

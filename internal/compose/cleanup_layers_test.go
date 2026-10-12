@@ -110,3 +110,31 @@ func TestLayerIndexFreed(t *testing.T) {
 		t.Error("couche contradictoire partagée : images comptées exactes")
 	}
 }
+
+// Stockage containerd : la taille d'une image compte aussi les blobs
+// compressés de ses couches. L'espace libéré n'est plus « exact » : la part
+// décompressée reste calculée couche par couche, la part compressée est
+// estimée au taux moyen des images supprimées.
+func TestLayerIndexContentStore(t *testing.T) {
+	base, a1, b1 := "sha256:base", "sha256:a1", "sha256:b1"
+	// Couches décompressées : base 2000, a1 100, b1 50 ; blobs compressés à
+	// moitié (base 1000, a1 50, b1 25).
+	infos := map[string]layerInfo{
+		"A": {size: 2100 + 1050, diffIDs: []string{base, a1}, hist: hist("ADD base /", 2000, "RUN a", 100)},
+		"B": {size: 2050 + 1025, diffIDs: []string{base, b1}, hist: hist("ADD base /", 2000, "RUN b", 50)},
+	}
+	ix := buildLayerIndex(infos)
+	if got, exact := ix.Freed([]string{"A"}); got != 150 || exact {
+		t.Errorf("Freed(A) = %d (exact %v), want 150 estimé (100 + 50 compressés)", got, exact)
+	}
+	if got, exact := ix.Freed([]string{"A", "B"}); got != 3225 || exact {
+		t.Errorf("Freed(A, B) = %d (exact %v), want 3225 estimé", got, exact)
+	}
+	// Un écart minime (arrondi du démon) ne fait pas basculer en estimation.
+	infos = map[string]layerInfo{
+		"A": {size: 2101, diffIDs: []string{base, a1}, hist: hist("ADD base /", 2000, "RUN a", 100)},
+	}
+	if got, exact := buildLayerIndex(infos).Freed([]string{"A"}); got != 2100 || !exact {
+		t.Errorf("écart de 1 octet : %d (exact %v), want 2100 exact", got, exact)
+	}
+}

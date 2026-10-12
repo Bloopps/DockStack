@@ -274,7 +274,7 @@ func TestLiveLayersFreedExact(t *testing.T) {
 	}
 	only2, _ := rep.Layers.Freed([]string{p2})
 	two, _ := rep.Layers.Freed([]string{p2, p3})
-	all, _ := rep.Layers.Freed([]string{p1, p2, p3})
+	all, exact := rep.Layers.Freed([]string{p1, p2, p3})
 	t.Logf("prévu : P2 seule %d o, P2+P3 %d o, les trois %d o", only2, two, all)
 	if !(only2 > 1<<20-1 && two > only2 && all > two+8<<20-1) {
 		t.Errorf("prévisions incohérentes : %d, %d, %d", only2, two, all)
@@ -294,9 +294,13 @@ func TestLiveLayersFreedExact(t *testing.T) {
 		}
 	}
 	freed := before - total()
-	t.Logf("libéré mesuré par le démon : %d o ; prévu : %d o", freed, all)
-	if freed != all {
+	t.Logf("libéré mesuré par le démon : %d o ; prévu : %d o (exact %v)", freed, all, exact)
+	switch {
+	case exact && freed != all:
 		t.Errorf("écart entre prévu (%d) et libéré (%d)", all, freed)
+	case !exact && (all < freed*85/100 || all > freed*115/100):
+		// Stockage containerd : la part compressée est estimée.
+		t.Errorf("estimation hors de ±15 %% : prévu %d, libéré %d", all, freed)
 	}
 }
 
@@ -324,7 +328,9 @@ func TestLiveUsageImagesExact(t *testing.T) {
 	second := time.Since(t0)
 	t.Logf("libérable exact %s (exact %v) ; 1re mesure %v, suivante %v (cache)", human(u2.ImagesReclaimable), u2.ImagesExact,
 		first.Round(time.Millisecond), second.Round(time.Millisecond))
-	if !u1.ImagesExact || u1.ImagesReclaimable != u2.ImagesReclaimable {
+	// Exact avec le stockage classique ; estimé avec containerd (blobs
+	// compressés), mais stable d'une mesure à l'autre dans les deux cas.
+	if u1.ImagesExact != u2.ImagesExact || u1.ImagesReclaimable != u2.ImagesReclaimable {
 		t.Errorf("mesures : %+v puis %+v", u1, u2)
 	}
 	rep, err := c.AnalyzeCleanup(ctx, t.TempDir())

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/moby/moby/api/types/build"
@@ -191,6 +192,9 @@ networks:
 services:
   api:
     build: .
+  adminer:
+    image: adminer:4
+    profiles: [debug]
 `)
 	write("casse/compose.yaml", "services: [pas, valide\n")
 
@@ -203,6 +207,10 @@ services:
 	}
 	if got := refs.images["monprojet-api:latest"]; !slices.Equal(got, []string{"app"}) {
 		t.Errorf("image par défaut d'un service construit : %v (images %v)", got, refs.images)
+	}
+	// Service d'un profil inactif : son image reste celle de la stack.
+	if got := refs.images["adminer:4"]; !slices.Equal(got, []string{"app"}) {
+		t.Errorf("image d'un profil inactif : %v (images %v)", got, refs.images)
 	}
 	if got := refs.externalNets["traefik_lan"]; !slices.Equal(got, []string{"media/Web Site"}) {
 		t.Errorf("réseau externe : %v", refs.externalNets)
@@ -328,5 +336,49 @@ func TestPruneLive(t *testing.T) {
 	run(PruneImagesAll)
 	if q := d.Query("/images/prune"); !strings.Contains(q, "false") {
 		t.Errorf("image prune -a : %q", q)
+	}
+}
+
+// Avant l'API 1.42, /volumes/prune sans filtre supprime aussi les volumes
+// nommés (données des stacks arrêtées) : la commande est refusée sans même
+// appeler le démon, au lieu d'effacer ce que la page annonçait épargner.
+func TestPruneVolumesOldAPIRefused(t *testing.T) {
+	for v, want := range map[string]bool{"1.41": false, "1.40": false, "1.42": true, "1.53": true, "": false} {
+		if got := volumePruneAnonymousOnly(v); got != want {
+			t.Errorf("volumePruneAnonymousOnly(%q) = %v, want %v", v, got, want)
+		}
+	}
+
+	t.Setenv("DOCKER_API_VERSION", "1.41") // client figé sur l'API de Docker 20.10
+	c, d := fakeDaemonClient(t)
+	var stackErr error
+	for ev := range c.PruneLive(context.Background(), PruneVolumes) {
+		if ev.AllDone {
+			break
+		}
+		if ev.StackDone {
+			stackErr = ev.Err
+		}
+	}
+	if n := d.Hits("/volumes/prune"); n != 0 {
+		t.Errorf("/volumes/prune appelé %d fois avec l'API 1.41, want 0", n)
+	}
+	if stackErr == nil || !strings.Contains(stackErr.Error(), "volumes nommés") {
+		t.Errorf("erreur = %v, want un refus qui explique le risque", stackErr)
+	}
+}
+
+// L'étiquette d'une image vient de son auteur (LABEL d'un Dockerfile tiré
+// d'un registre) : ses caractères de contrôle ne doivent pas atteindre le
+// terminal par la page de nettoyage.
+func TestClassifyImageLabelSanitized(t *testing.T) {
+	img := image.Summary{ID: "sha256:" + sha("x"), RepoTags: []string{"<none>:<none>"},
+		Labels: map[string]string{"org.opencontainers.image.title": "app\x1b]52;c;ZXZpbA==\x07\u009b"}}
+	it := classifyImage(img, stackRefs{}, nil)
+	if strings.ContainsFunc(it.Name, unicode.IsControl) {
+		t.Errorf("nom avec caractères de contrôle : %q", it.Name)
+	}
+	if !strings.Contains(it.Name, "app") {
+		t.Errorf("titre perdu : %q", it.Name)
 	}
 }

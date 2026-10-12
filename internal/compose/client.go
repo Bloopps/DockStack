@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
 	dockercli "github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
@@ -319,7 +320,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 	// attribuerait les mêmes conteneurs aux deux stacks.
 	baseCount := make(map[string]int, len(files))
 	for _, f := range files {
-		baseCount[strings.ToLower(filepath.Base(filepath.Dir(f)))]++
+		baseCount[defaultProjectName(filepath.Dir(f))]++
 	}
 
 	stacks := make([]Stack, 0, len(files))
@@ -331,7 +332,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		cnt := dirCounts[cleanDir]
 		svcCounts := dirServices[cleanDir]
 		if cnt.total == 0 {
-			projName := strings.ToLower(filepath.Base(dir))
+			projName := defaultProjectName(dir)
 			wd, deployed := projDir[projName]
 			// Fallback seulement s'il est non ambigu : un seul candidat
 			// avec ce basename, et pas de working_dir connu pointant vers
@@ -343,7 +344,7 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		}
 		project := dirProject[cleanDir]
 		if project == "" {
-			project = strings.ToLower(filepath.Base(dir))
+			project = defaultProjectName(dir)
 		}
 		services := make([]ServiceStatus, 0, len(svcCounts))
 		for name, c := range svcCounts {
@@ -370,6 +371,19 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 		return stacks[i].Name < stacks[j].Name
 	})
 	return stacks, nil
+}
+
+// defaultProjectName : nom de projet que compose donne à une stack sans
+// « name: » ni COMPOSE_PROJECT_NAME, le nom du dossier normalisé (minuscules,
+// caractères hors [a-z0-9_-] retirés). Un simple passage en minuscules ne
+// retrouvait pas le projet d'un dossier « My.App » (projet « myapp ») : ni
+// ses conteneurs par repli, ni ses volumes pour la colonne disque.
+func defaultProjectName(dir string) string {
+	base := filepath.Base(dir)
+	if n := loader.NormalizeProjectName(base); n != "" {
+		return n
+	}
+	return strings.ToLower(base)
 }
 
 // attachOrphans rattache par NOM les conteneurs qui tournent sans label
@@ -486,6 +500,10 @@ func cachedContainerNames(s Stack) (string, map[string]string, error) {
 	namesMu.Unlock()
 	return e.proj, e.cand, e.err
 }
+
+// FilesSignature : signature des fichiers dont dépend le chargement d'une
+// stack (cf. stackFilesSig), pour les caches de la TUI.
+func FilesSignature(s Stack) string { return stackFilesSig(s) }
 
 // stackFilesSig résume ce que loadProject lit sur disque pour une stack :
 // fichier compose, override et .env, avec leur date et leur taille (un
@@ -667,11 +685,7 @@ func (c *Client) upLive(ctx context.Context, stack Stack, ch chan<- ProgressEven
 	if err != nil {
 		return err
 	}
-	opts := api.UpOptions{
-		Create: api.CreateOptions{Recreate: api.RecreateDiverged, Services: stack.Only},
-		Start:  api.StartOptions{Project: proj, Services: stack.Only},
-	}
-	err = c.upWithReadopt(ctx, stack, proj, svc, opts, ch)
+	err = c.upWithReadopt(ctx, stack, proj, svc, upOptions(stack, proj, api.RecreateDiverged), ch)
 	// « already in use » restant après upWithReadopt = le nom est pris par le
 	// conteneur d'un AUTRE projet : ne surtout pas le démarrer à sa place.
 	if err != nil && strings.Contains(err.Error(), "has no container to start") {
@@ -916,10 +930,22 @@ func (c *Client) recreateLive(ctx context.Context, stack Stack, ch chan<- Progre
 	if err != nil {
 		return err
 	}
-	return c.upWithReadopt(ctx, stack, proj, svc, api.UpOptions{
-		Create: api.CreateOptions{Recreate: api.RecreateForce, Services: stack.Only},
+	return c.upWithReadopt(ctx, stack, proj, svc, upOptions(stack, proj, api.RecreateForce), ch)
+}
+
+// upOptions : options d'un up détaché, comme « docker compose up -d » (avec
+// --force-recreate si recreate vaut RecreateForce).
+//
+// Inherit : un conteneur recréé reprend les volumes anonymes de l'ancien,
+// comme la CLI sans --renew-anon-volumes. Laissé à faux (valeur zéro),
+// chaque recréation (config ou image changée, Recreate) repartait sur un
+// volume anonyme vide : une base de données dont l'image déclare VOLUME sans
+// volume nommé redémarrait vide, l'ancien volume restant orphelin.
+func upOptions(stack Stack, proj *types.Project, recreate string) api.UpOptions {
+	return api.UpOptions{
+		Create: api.CreateOptions{Recreate: recreate, Services: stack.Only, Inherit: true},
 		Start:  api.StartOptions{Project: proj, Services: stack.Only},
-	}, ch)
+	}
 }
 
 func (c *Client) pullLive(ctx context.Context, stack Stack, ch chan<- ProgressEvent) error {
@@ -946,6 +972,11 @@ func (c *Client) removeLive(ctx context.Context, stack Stack, ch chan<- Progress
 	if err != nil {
 		return err
 	}
+	// Orphelins watchtower (label projet perdu) : compose ne les voit pas. Ils
+	// sont retirés d'abord, sinon le Remove se terminait « OK » en laissant
+	// le conteneur tourner et le volume qu'il monte en place. Appelé même
+	// sans stack.Orphaned : rien n'est touché s'il n'y en a pas.
+	c.removeProjectOrphans(ctx, stack.Name, proj, ch, "supprimé (orphelin)")
 	return svc.Down(ctx, proj.Name, api.DownOptions{RemoveOrphans: true, Volumes: true})
 }
 

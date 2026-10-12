@@ -3,9 +3,11 @@ package compose
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,5 +191,22 @@ func TestContainerUsagesFromCgroups(t *testing.T) {
 	got := u[testID]
 	if !got.CPUOK || got.CPU <= 0 || got.CPU > 60 || !got.IOOK || got.ReadBps <= 0 {
 		t.Errorf("deuxième lecture : %+v (10 ms de CPU en ≥20 ms)", got)
+	}
+}
+
+// Démon distant : aucun cgroup n'est trouvé ; les échecs périmés sont
+// oubliés au lieu de s'accumuler pour chaque conteneur vu depuis le
+// lancement.
+func TestCgroupMissPruned(t *testing.T) {
+	r := newCgroupReader(cgroupRoot(t), nil)
+	old := time.Now().Add(-2 * cgroupRetry)
+	for i := range cgroupMissMax + 10 {
+		r.miss[fmt.Sprintf("%064d", i)] = old
+	}
+	if _, ok := r.dir(context.Background(), strings.Repeat("f", 64)); ok {
+		t.Fatal("cgroup trouvé dans une hiérarchie vide")
+	}
+	if n := len(r.miss); n != 1 {
+		t.Errorf("%d échecs gardés, want 1 (le seul récent)", n)
 	}
 }

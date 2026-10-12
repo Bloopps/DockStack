@@ -101,10 +101,25 @@ func (r *cgroupReader) dir(ctx context.Context, id string) (string, bool) {
 		r.paths[id] = d
 		delete(r.miss, id)
 	} else {
-		r.miss[id] = time.Now()
+		now := time.Now()
+		r.miss[id] = now
+		// Les échecs périmés sont oubliés : avec un démon distant, chaque
+		// conteneur échoue, et la map gardait tous les ID vus depuis le
+		// lancement (recréations comprises).
+		if len(r.miss) > cgroupMissMax {
+			for k, t := range r.miss {
+				if now.Sub(t) >= cgroupRetry {
+					delete(r.miss, k)
+				}
+			}
+		}
 	}
 	return d, ok
 }
+
+// cgroupMissMax : taille de r.miss au-delà de laquelle les échecs périmés
+// sont purgés.
+const cgroupMissMax = 256
 
 // find : emplacements standard d'abord (pilote systemd, puis cgroupfs), puis
 // le cgroup du processus principal du conteneur. Dans tous les cas le dossier

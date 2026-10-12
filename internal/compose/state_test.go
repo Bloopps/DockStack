@@ -32,3 +32,18 @@ func TestAggregateState(t *testing.T) {
 		})
 	}
 }
+
+// Nom de projet par défaut, comme compose : dossier normalisé.
+func TestDefaultProjectName(t *testing.T) {
+	for dir, want := range map[string]string{
+		"/srv/immich":     "immich",
+		"/srv/My.App":     "myapp",
+		"/srv/Web Site":   "website",
+		"/srv/media_srv":  "media_srv",
+		"/srv/Nextcloud-": "nextcloud-",
+	} {
+		if got := defaultProjectName(dir); got != want {
+			t.Errorf("defaultProjectName(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}

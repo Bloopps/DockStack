@@ -3,6 +3,7 @@ package compose
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -211,5 +212,68 @@ func TestFindComposeFilesUnreadableRoot(t *testing.T) {
 	InvalidateComposeCache()
 	if _, err := findComposeFiles(root); err != nil {
 		t.Fatalf("sous-dossier illisible : %v", err)
+	}
+}
+
+// Parité CLI : COMPOSE_PROFILES (dans le .env, ou l'environnement qui
+// l'emporte) active les services de ces profils, comme « docker compose ».
+// Ignoré, un up depuis dockstack ne démarrait pas ces services.
+func TestLoadProjectComposeProfiles(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	writeFile(t, file, `services:
+  app:
+    image: nginx
+  debug:
+    image: busybox
+    profiles: [debug]
+  tools:
+    image: busybox
+    profiles: [tools]
+`)
+	st := Stack{Name: "p", Dir: dir, ComposeFile: file}
+	services := func() []string {
+		t.Helper()
+		proj, err := loadProject(st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := proj.ServiceNames()
+		slices.Sort(names)
+		return names
+	}
+
+	if got := services(); !slices.Equal(got, []string{"app"}) {
+		t.Errorf("sans profil : %v, want [app]", got)
+	}
+	writeFile(t, filepath.Join(dir, ".env"), "COMPOSE_PROFILES=debug, tools\n")
+	if got := services(); !slices.Equal(got, []string{"app", "debug", "tools"}) {
+		t.Errorf("COMPOSE_PROFILES du .env : %v, want [app debug tools]", got)
+	}
+	t.Setenv("COMPOSE_PROFILES", "tools") // le process l'emporte sur le .env
+	if got := services(); !slices.Equal(got, []string{"app", "tools"}) {
+		t.Errorf("COMPOSE_PROFILES du process : %v, want [app tools]", got)
+	}
+	if ds, err := DeclaredServices(st); err != nil || len(ds) != 2 {
+		t.Errorf("DeclaredServices = %v, %v ; want app et tools", ds, err)
+	}
+}
+
+// La config résolue (vue compose, tab) est celle de « docker compose
+// config » : sans les étiquettes que dockstack pose pour ses actions.
+func TestRenderResolvedConfigNoInternalLabels(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	writeFile(t, file, "services:\n  web:\n    image: nginx:${TAG:-1}\n")
+	writeFile(t, filepath.Join(dir, ".env"), "TAG=2\n")
+	out, err := RenderResolvedConfig(Stack{Name: "p", Dir: dir, ComposeFile: file})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "nginx:2") {
+		t.Errorf("interpolation du .env absente :\n%s", out)
+	}
+	if strings.Contains(out, "com.docker.compose.") {
+		t.Errorf("étiquettes internes dans la config résolue :\n%s", out)
 	}
 }

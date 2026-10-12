@@ -197,6 +197,38 @@ volumes:
 	}
 }
 
+// TestLiveRecreateKeepsAnonymousVolume : un Recreate (comme un up après
+// changement de config) garde les données d'un volume anonyme, comme la CLI.
+// Avant, le conteneur recréé repartait sur un volume anonyme vide.
+func TestLiveRecreateKeepsAnonymousVolume(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	st := probeStack(t, root, "zzdsprobeanon", `services:
+  app:
+    image: `+probeImage+`
+    command: ["sleep", "3600"]
+    volumes: ["/data"]
+`, "")
+	one := []Stack{st}
+	// Remove (down -v) emporte le volume anonyme, que cleanupProbes ne
+	// retrouve pas par son nom.
+	t.Cleanup(func() { runOp(t, c.RemoveManyLive(context.Background(), one, 1)) })
+
+	errs, _ := runOp(t, c.UpManyLive(ctx, one, 1))
+	mustOK(t, "Up", errs)
+	if out, err := dockerCLI("exec", "zzdsprobeanon-app-1", "sh", "-c", "echo garde > /data/f"); err != nil {
+		t.Fatalf("écriture dans le volume : %v (%s)", err, out)
+	}
+
+	errs, _ = runOp(t, c.RecreateManyLive(ctx, one, 1))
+	mustOK(t, "Recreate", errs)
+	out, err := dockerCLI("exec", "zzdsprobeanon-app-1", "cat", "/data/f")
+	if err != nil || out != "garde" {
+		t.Fatalf("après Recreate : %q, %v ; want « garde » (volume anonyme hérité)", out, err)
+	}
+}
+
 // TestLivePullFailure : une image introuvable fait échouer la stack (plus de
 // « OK » vert sur un pull raté).
 func TestLivePullFailure(t *testing.T) {
@@ -230,6 +262,39 @@ func TestLiveProjectNameFromDotEnv(t *testing.T) {
 	mustOK(t, "Down", errs)
 	if p, _ := dockerCLI("ps", "-a", "--filter", "label=com.docker.compose.project=zzdsprobeenv", "-q"); p != "" {
 		t.Fatal("Down n'a pas retiré le projet nommé par .env")
+	}
+}
+
+// TestLiveRemoveOrphaned : Remove sur une stack dont le conteneur a perdu son
+// label projet (watchtower) retire aussi ce conteneur, et donc le volume qu'il
+// tenait : compose ne le voit pas, le volume restait « en cours
+// d'utilisation » et le Remove échouait à moitié.
+func TestLiveRemoveOrphaned(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	probeStack(t, root, "zzdsprobeorphrm",
+		"services:\n  web:\n    image: "+probeImage+"\n    command: [\"sleep\", \"3600\"]\n    volumes: [data:/data]\nvolumes:\n  data: {}\n", "")
+	for _, args := range [][]string{
+		{"volume", "create", "--label", "com.docker.compose.project=zzdsprobeorphrm", "--label", "com.docker.compose.volume=data", "zzdsprobeorphrm_data"},
+		{"run", "-d", "--name", "zzdsprobeorphrm-web-1", "--label", "com.docker.compose.replace=web",
+			"-v", "zzdsprobeorphrm_data:/data", probeImage, "sleep", "3600"},
+	} {
+		if out, err := dockerCLI(args...); err != nil {
+			t.Fatalf("docker %v : %v %s", args, err, out)
+		}
+	}
+	s := stackState(t, c, root, "zzdsprobeorphrm")
+	if !s.Orphaned {
+		t.Fatal("orphelin non rattaché")
+	}
+	errs, _ := runOp(t, c.RemoveManyLive(ctx, []Stack{s}, 1))
+	mustOK(t, "Remove", errs)
+	if id, _ := dockerCLI("ps", "-aq", "--filter", "name=zzdsprobeorphrm-web-1"); id != "" {
+		t.Error("le conteneur orphelin a survécu au Remove")
+	}
+	if v, _ := dockerCLI("volume", "ls", "-q", "--filter", "name=zzdsprobeorphrm_data"); v != "" {
+		t.Error("le volume de la stack a survécu au Remove")
 	}
 }
 
@@ -415,7 +480,7 @@ func TestLiveUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.RootDir == "" || info.Containers == 0 || info.ImagesOK || info.VolumesOK {
+	if info.RootDir == "" || info.Containers != u.Containers || info.ImagesOK || info.VolumesOK {
 		t.Fatalf("Info seul : %+v", info)
 	}
 	img, err := c.Usage(ctx, UsageOptions{Images: true})

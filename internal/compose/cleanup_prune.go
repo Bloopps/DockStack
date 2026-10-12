@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	mobyclient "github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/versions"
 )
 
 // PruneCommand : une commande prune de la CLI.
@@ -43,6 +44,17 @@ func (p PruneCommand) Steps() []PruneCommand {
 		return []PruneCommand{PruneContainers, PruneNetworks, PruneImages, PruneBuilder}
 	}
 	return []PruneCommand{p}
+}
+
+// Erases dit si la commande efface des données : volumes anonymes, ou
+// conteneurs arrêtés (avec ce qu'ils ont écrit hors volumes).
+func (p PruneCommand) Erases() bool {
+	for _, s := range p.Steps() {
+		if s == PruneVolumes || s == PruneContainers {
+			return true
+		}
+	}
+	return false
 }
 
 // stepLabel : libellé d'une étape dans la progression.
@@ -125,6 +137,9 @@ func (c *Client) pruneStep(ctx context.Context, p PruneCommand) (n int, freed in
 		}
 		return len(res.Report.ContainersDeleted), int64(res.Report.SpaceReclaimed), nil
 	case PruneVolumes:
+		if v := api.ClientVersion(); !volumePruneAnonymousOnly(v) {
+			return 0, 0, fmt.Errorf("refusé : avec l'API %s (< %s, Docker 20.10 ou plus ancien), « docker volume prune » supprime aussi les volumes nommés, donc les données des stacks arrêtées", v, volumePruneMinAPI)
+		}
 		res, err := api.VolumePrune(ctx, mobyclient.VolumePruneOptions{})
 		if err != nil {
 			return 0, 0, err
@@ -132,4 +147,17 @@ func (c *Client) pruneStep(ctx context.Context, p PruneCommand) (n int, freed in
 		return len(res.Report.VolumesDeleted), int64(res.Report.SpaceReclaimed), nil
 	}
 	return 0, 0, fmt.Errorf("commande inconnue %d", p)
+}
+
+// volumePruneMinAPI : version d'API à partir de laquelle /volumes/prune ne
+// supprime que les volumes anonymes (sans le filtre all=true).
+const volumePruneMinAPI = "1.42"
+
+// volumePruneAnonymousOnly dit si, avec la version d'API négociée v, un
+// prune des volumes sans filtre épargne les volumes nommés. Avant 1.42 il
+// les supprimait tous : la CLI prévient alors « all volumes », la page
+// promettait « volumes anonymes ». Version inconnue : on ne prend pas le
+// risque.
+func volumePruneAnonymousOnly(v string) bool {
+	return v != "" && versions.GreaterThanOrEqualTo(v, volumePruneMinAPI)
 }

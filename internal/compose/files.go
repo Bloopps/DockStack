@@ -219,7 +219,9 @@ func fileExists(path string) bool {
 // l'équivalent de `docker compose config`. Utilisé par la vue compose de la
 // TUI pour basculer entre le fichier brut et la config réellement appliquée.
 func RenderResolvedConfig(stack Stack) (string, error) {
-	proj, err := loadProject(stack)
+	// Sans les étiquettes internes que loadProject ajoute pour les actions :
+	// elles n'apparaissent pas dans « docker compose config ».
+	proj, err := loadProjectModel(stack)
 	if err != nil {
 		return "", err
 	}
@@ -271,6 +273,30 @@ func loadScopedProjectReport(stack *Stack) (proj *composetypes.Project, dropped 
 }
 
 func loadProject(stack Stack) (*composetypes.Project, error) {
+	proj, err := loadProjectModel(stack)
+	if err != nil {
+		return nil, err
+	}
+	addComposeLabels(proj)
+	return proj, nil
+}
+
+// composeProfiles : profils actifs d'après COMPOSE_PROFILES (process ou
+// .env), comme cli.WithDefaultProfiles de la CLI : liste séparée par des
+// virgules, espaces retirés.
+func composeProfiles(env map[string]string) []string {
+	var out []string
+	for _, p := range strings.Split(env["COMPOSE_PROFILES"], ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// loadProjectModel charge le projet tel que la CLI le voit (interpolation,
+// override, profils), sans les étiquettes posées par addComposeLabels.
+func loadProjectModel(stack Stack) (*composetypes.Project, error) {
 	// Fallback project name: directory basename, normalized to what Docker accepts.
 	// SetProjectName with imperativelySet=false lets a name: field in the compose
 	// file still override this fallback.
@@ -325,6 +351,10 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		loader.WithDiscardEnvFiles,
 		func(o *loader.Options) {
 			o.SkipValidation = true
+			// Parité CLI : les services d'un profil activé par COMPOSE_PROFILES
+			// (souvent posé dans le .env) font partie du projet. Sans ça, un up
+			// ne les démarrait pas et la vue services ne les proposait pas.
+			o.Profiles = composeProfiles(env)
 			// Parité CLI : COMPOSE_PROJECT_NAME (process ou .env) l'emporte même
 			// sur le name: du fichier ; sinon le basename sert de repli.
 			if n := env["COMPOSE_PROJECT_NAME"]; n != "" {
@@ -354,6 +384,12 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 			proj.ComposeFiles[i] = cf.Filename
 		}
 	}
+	return proj, nil
+}
+
+// addComposeLabels pose les étiquettes que compose ajoute lui-même aux
+// services avant de créer leurs conteneurs.
+func addComposeLabels(proj *composetypes.Project) {
 	// Set the compose labels that the compose v5 service normally adds via
 	// postProcessProject (internal). Without this, containers created through
 	// our loadProject+Up path lack project/service/working_dir labels.
@@ -368,7 +404,6 @@ func loadProject(stack Stack) (*composetypes.Project, error) {
 		svc.CustomLabels[composeapi.OneoffLabel] = "False"
 		proj.Services[name] = svc
 	}
-	return proj, nil
 }
 
 // DeclaredService : un service déclaré dans le compose et ses dépendances
