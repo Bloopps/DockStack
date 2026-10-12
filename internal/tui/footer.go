@@ -17,30 +17,10 @@ type footerKey = struct{ key, desc string }
 // info (position dans la liste, heure du rafraîchissement…) s'aligne tout à
 // droite s'il tient.
 func renderBar(left, right []footerKey, width int, info string) string {
-	chip := func(k footerKey) string {
-		return styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
-	}
-	join := func(ks []footerKey) string {
-		parts := make([]string, len(ks))
-		for i, k := range ks {
-			parts[i] = chip(k)
-		}
-		return strings.Join(parts, styleFooterSep.String())
-	}
-	build := func(l []footerKey) string {
-		line := "  " + join(l)
-		if len(right) > 0 {
-			if len(l) > 0 {
-				line += styleFooterBlockSep
-			}
-			line += join(right)
-		}
-		return line
-	}
-	line := build(left)
+	line := buildBar(left, right)
 	for width > 0 && lipgloss.Width(line) > width && len(left) > 0 {
 		left = left[:len(left)-1]
-		line = build(left)
+		line = buildBar(left, right)
 	}
 	if info != "" {
 		ind := styleDim.Render(info)
@@ -53,6 +33,53 @@ func renderBar(left, right []footerKey, width int, info string) string {
 	}
 	return line
 }
+
+// buildBar assemble la ligne de renderBar, sans la couper. Une touche sans
+// description (« ↑↓ pgup/pgdn ») se passe d'elle et de son espace.
+func buildBar(left, right []footerKey) string {
+	chip := func(k footerKey) string {
+		if k.desc == "" {
+			return styleFooterKey.Render(k.key)
+		}
+		return styleFooterKey.Render(k.key) + " " + styleFooterDesc.Render(k.desc)
+	}
+	join := func(ks []footerKey) string {
+		parts := make([]string, len(ks))
+		for i, k := range ks {
+			parts[i] = chip(k)
+		}
+		return strings.Join(parts, styleFooterSep.String())
+	}
+	line := "  " + join(left)
+	if len(right) > 0 {
+		if len(left) > 0 {
+			line += styleFooterBlockSep
+		}
+		line += join(right)
+	}
+	return line
+}
+
+// renderBarFit : renderBar avec plusieurs jeux de touches de gauche, du
+// plus complet au plus court. Le premier qui tient en entier est retenu,
+// sinon le dernier, coupé par la fin comme d'habitude : un pied étroit
+// garde ainsi des touches choisies plutôt que les premières de la liste.
+func renderBarFit(lefts [][]footerKey, right []footerKey, width int, info string) string {
+	for _, l := range lefts[:len(lefts)-1] {
+		if lipgloss.Width(buildBar(l, right)) <= width {
+			return renderBar(l, right, width, info)
+		}
+	}
+	return renderBar(lefts[len(lefts)-1], right, width, info)
+}
+
+// Touches de défilement des vues à lire (logs, compose) ; scrollKeyShort,
+// sans description, sert aux pieds étroits (cf. renderBarFit).
+var (
+	scrollKey      = footerKey{"↑↓ pgup/pgdn", "défiler"}
+	scrollKeyShort = footerKey{"↑↓ pgup/pgdn", ""}
+	edgeKey        = footerKey{"g/G", "haut/bas"}
+)
 
 // listFooter : pied de page de la liste. Il sert à naviguer : les actions sur
 // la stack sont dans le volet de droite (selon son état), pas répétées ici —
@@ -94,7 +121,10 @@ func (m Model) listFooter() (left, right []footerKey) {
 			[]footerKey{esc, help}
 	}
 	right = []footerKey{help, {"q", "quitter"}}
-	common := []footerKey{{"/", "filtre"}, {"b", "captures"}, {"o", "dossier"}}
+	// Pas de o : l'en-tête rappelle « o changer » à côté du dossier, à
+	// toutes les largeurs. n y gagne sa place : la page Nettoyage n'était
+	// annoncée nulle part.
+	common := []footerKey{{"/", "filtre"}, {"b", "captures"}, {"n", "nettoyage"}}
 	row, ok := m.cursorRow()
 	switch {
 	case ok && row.header:
@@ -103,10 +133,15 @@ func (m Model) listFooter() (left, right []footerKey) {
 			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}}, left...)
 		}
 	case ok && row.isStack():
-		left = []footerKey{{"↩", "actions"}, {"␣", "cocher"}}
+		left = []footerKey{{"↩", "actions"}}
 		if !m.previewVisible() {
-			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}}, left...)
+			// Volet masqué : les actions courantes, mais APRÈS ↩, seule porte
+			// vers Stop, Recreate, Pull, Compose et Remove. renderBar coupe
+			// par la fin : devant, elles le poussaient hors de l'écran en
+			// 80 colonnes, là même où le volet qui les rappelle manque.
+			left = append(left, footerKey{"u", "up"}, footerKey{"d", "down"}, footerKey{"r", "restart"}, footerKey{"l", "logs"})
 		}
+		left = append(left, footerKey{"␣", "cocher"})
 	}
 	if m.previewVisible() && ok && row.isStack() {
 		label := "compose"

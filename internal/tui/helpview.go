@@ -8,9 +8,9 @@ import (
 )
 
 // renderHelpView affiche l'aide sur height lignes. Si elle dépasse (terminal
-// bas ou étroit, une seule colonne), elle défile avec ↑↓ et la dernière ligne
-// indique ce qui reste caché : couper la fin masquait les captures et la règle
-// de sortie.
+// bas ou étroit, une seule colonne), elle défile (↑↓, pgup/pgdn, g/G) et la
+// dernière ligne indique ce qui reste caché : couper la fin masquait les
+// captures et la règle de sortie.
 func renderHelpView(m Model, height int) string {
 	lines := strings.Split(helpBox(m), "\n")
 	if len(lines) <= height || height < 2 {
@@ -85,9 +85,15 @@ func helpBox(m Model) string {
 		"  " + k("b") + "  ouvrir" + d("  (c capturer, ↩ relancer, i à l'identique)"),
 		"  " + d("n nommer · * épingler (jamais supprimée) · del supprimer"),
 	}
+	cleanup := []string{
+		title("Nettoyage", "  (n)"),
+		"  " + k("␣") + "  cocher   " + k("→ ←") + "  déplier / replier   " + k("R") + "  réanalyser",
+		"  " + k("↩") + "  nettoyer la sélection" + d("  (sur une commande prune : la lancer)"),
+	}
 	general := []string{
 		title("Général", ""),
 		"  " + k("q") + "  quitter" + d("  (2 frappes, partout)") + "  " + k("esc") + "  retour  " + k("?") + "  aide",
+		"  " + k("pgup pgdn") + "  page   " + k("g G") + "  haut / bas" + d("  (listes, logs, compose…)"),
 	}
 
 	join := func(blocks ...[]string) string {
@@ -101,13 +107,13 @@ func helpBox(m Model) string {
 		return strings.Join(out, "\n")
 	}
 	left := join(actions, services, selection)
-	right := join(groups, list, captures, general)
+	right := join(groups, list, captures, cleanup, general)
 
 	var body string
 	if lipgloss.Width(left)+lipgloss.Width(right)+14 <= m.width {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "      ", right)
 	} else {
-		body = join(actions, services, selection, groups, list, captures, general)
+		body = join(actions, services, selection, groups, list, captures, cleanup, general)
 	}
 
 	box := lipgloss.NewStyle().

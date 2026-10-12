@@ -497,3 +497,41 @@ func TestLogsResizeKeepsBottom(t *testing.T) {
 		t.Errorf("après redimensionnement : défilement %d, want %d", m.logScroll, want)
 	}
 }
+
+// pgup recule d'une page et met le suivi en pause ; pgdown jusqu'en bas le
+// relance. Lignes repliées, la page compte des lignes d'écran : un saut fixe
+// en lignes de log sautait du texte jamais affiché.
+func TestLogsPageKeys(t *testing.T) {
+	m := openLogs(t, stack("app", "", 1, 1, 0), 120, 36)
+	m = logBatch(m, webLogs(500))
+	bottom, p := m.logsMaxScroll(), page(m.logsHeight())
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if !m.logPaused || m.logScroll != bottom-p {
+		t.Fatalf("pgup : défilement %d (pause=%v), want %d en pause", m.logScroll, m.logPaused, bottom-p)
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.logPaused || m.logScroll != bottom {
+		t.Fatalf("pgdown jusqu'en bas : défilement %d (pause=%v), want %d en direct", m.logScroll, m.logPaused, bottom)
+	}
+
+	// Repliées : chaque ligne tient sur 3 lignes d'écran.
+	long := make([]compose.LogEntry, 200)
+	for i := range long {
+		long[i] = compose.LogEntry{Name: "web-1", Line: fmt.Sprintf("%03d %s", i, strings.Repeat("mot ", 60))}
+	}
+	m = openLogs(t, stack("app", "", 1, 1, 0), 120, 36)
+	m = logBatch(m, long)
+	m = logKeys(m, "w", "g")
+	rows := m.logRowCount(m.logLines[0])
+	if rows < 2 {
+		t.Fatalf("ligne repliée sur %d ligne(s) d'écran, want plusieurs", rows)
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if want := p / rows; m.logScroll != want {
+		t.Errorf("pgdown replié : %d lignes de log, want %d (%d lignes d'écran chacune)", m.logScroll, want, rows)
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	if m.logScroll != 0 {
+		t.Errorf("pgup replié : défilement %d, want 0", m.logScroll)
+	}
+}

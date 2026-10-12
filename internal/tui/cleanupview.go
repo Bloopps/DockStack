@@ -579,6 +579,10 @@ func (m Model) handleCleanupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cleanupCursor = max(m.cleanupCursor-1, 0)
 	case "down", "j":
 		m.cleanupCursor = min(m.cleanupCursor+1, max(len(nav)-1, 0))
+	case "pgup":
+		m.cleanupCursor = max(m.cleanupCursor-page(m.cleanupListH()), 0)
+	case "pgdown":
+		m.cleanupCursor = min(m.cleanupCursor+page(m.cleanupListH()), max(len(nav)-1, 0))
 	case "g", "home":
 		m.cleanupCursor = 0
 	case "G", "end":
@@ -726,6 +730,21 @@ func renderCleanup(m Model, height int) string {
 	head := append([]string{titleLine}, m.cleanupBilan(w)...)
 	head = append(head, styleDim.Render(strings.Repeat("─", max(min(w-4, 72), 1))), selLine)
 	return strings.Join(append(head, m.cleanupList(w, max(height-len(head), 3), true)...), "\n")
+}
+
+// cleanupListH : hauteur de la sélection dans renderCleanup (à suivre si
+// la mise en page change), pour le pas de pgup/pgdown. Le pas compte des
+// lignes navigables : les notes et titres de section le rallongent un peu
+// à l'écran, la fenêtre suit le curseur.
+func (m Model) cleanupListH() int {
+	h := m.bodyHeight()
+	switch {
+	case m.cleanupRep == nil:
+		return h
+	case m.width >= cleanupWideMin:
+		return max(h-2, 3) // titre et ligne Sélection
+	}
+	return max(h-3-len(m.cleanupBilan(m.width)), 3) // titre, bilan, séparateur et Sélection
 }
 
 // Disposition large : à partir de cleanupWideMin colonnes, le bilan
@@ -1047,12 +1066,13 @@ func cleanupLine(plain string, selected bool, w int) string {
 
 // cleanupFooter : pied de page de la page.
 func (m Model) cleanupFooter() string {
-	back := []footerKey{{"esc", "retour"}}
 	// Pendant l'analyse, rien à faire qu'attendre ou sortir (R relance
-	// encore l'analyse, sans qu'il faille le proposer).
+	// encore l'analyse, sans qu'il faille le proposer). Ensuite, ? rappelle
+	// les touches de la page, plus nombreuses que le pied.
 	if m.cleanupLoading {
-		return renderBar(nil, back, m.width, "")
+		return renderBar(nil, []footerKey{{"esc", "retour"}}, m.width, "")
 	}
+	back := []footerKey{{"esc", "retour"}, {"?", "aide"}}
 	if m.cleanupRep == nil {
 		return renderBar([]footerKey{{"R", "réanalyser"}}, back, m.width, "")
 	}

@@ -22,13 +22,8 @@ func renderDirPicker(m Model) string {
 
 	// Fenêtre qui suit le curseur : un dossier aux centaines de
 	// sous-dossiers (/usr/lib, un home chargé) poussait le curseur et le pied
-	// de page hors de l'écran. 5 lignes fixes (titre, chemin, 2 blancs, pied),
-	// 2 de plus pour l'erreur éventuelle.
-	rowsH := m.height - 5
-	if m.dirErr != nil {
-		rowsH -= 2
-	}
-	rowsH = max(rowsH, 1)
+	// de page hors de l'écran.
+	rowsH := m.dirRowsH()
 	off := 0
 	if m.dirCursor >= rowsH {
 		off = m.dirCursor - rowsH + 1
@@ -81,4 +76,14 @@ func renderDirPicker(m Model) string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, sub, "", body, "", hint)
+}
+
+// dirRowsH : lignes de la liste des dossiers. 5 lignes fixes (titre,
+// chemin, 2 blancs, pied), 2 de plus pour l'erreur éventuelle.
+func (m Model) dirRowsH() int {
+	rowsH := m.height - 5
+	if m.dirErr != nil {
+		rowsH -= 2
+	}
+	return max(rowsH, 1)
 }

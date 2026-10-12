@@ -234,10 +234,10 @@ func (m *Model) syncLogScroll() {
 	m.logScroll = max(min(m.logScroll, m.logsMaxScroll()), 0)
 }
 
-// scrollLogs déplace la vue (↑↓ j k, g G home end), puis applique la règle
-// du suivi : la vue suit le direct tant qu'elle est en bas, et se met en
-// pause dès qu'on la quitte. Redescendre jusqu'en bas (↓ ou G) relance le
-// suivi. Touches ignorées : rien ne change.
+// scrollLogs déplace la vue (↑↓ j k, pgup pgdown, g G home end), puis
+// applique la règle du suivi : la vue suit le direct tant qu'elle est en
+// bas, et se met en pause dès qu'on la quitte. Redescendre jusqu'en bas (↓,
+// pgdown ou G) relance le suivi. Touches ignorées : rien ne change.
 func (m *Model) scrollLogs(key string) {
 	bottom := m.logsMaxScroll()
 	switch key {
@@ -245,6 +245,10 @@ func (m *Model) scrollLogs(key string) {
 		m.logScroll = max(m.logScroll-1, 0)
 	case "down", "j":
 		m.logScroll = min(m.logScroll+1, bottom)
+	case "pgup":
+		m.logScroll = max(m.logScroll-m.logPage(-1), 0)
+	case "pgdown":
+		m.logScroll = min(m.logScroll+m.logPage(1), bottom)
 	case "g", "home":
 		m.logScroll = 0
 	case "G", "end":
@@ -257,6 +261,28 @@ func (m *Model) scrollLogs(key string) {
 		m.logPauseAt = len(m.logLines)
 	}
 	m.logPaused = paused
+}
+
+// logPage : nombre de lignes de log d'une page (cf. page), vers le bas
+// (dir = 1) ou vers le haut (dir = -1) depuis la ligne du haut de l'écran.
+// Repliées, elles occupent plusieurs lignes d'écran : on les compte jusqu'à
+// remplir la page, sinon pgdown sauterait du texte jamais affiché.
+func (m Model) logPage(dir int) int {
+	p := page(m.logsHeight())
+	if !m.logWrap {
+		return p
+	}
+	n, rows := 0, 0
+	for i := m.logScroll; i >= 0 && i < m.logCount(); i += dir {
+		if dir < 0 && i == m.logScroll {
+			continue // vers le haut, la page commence au-dessus de l'écran
+		}
+		if rows += m.logRowCount(m.logLines[m.logIndex(i)]); rows > p && n > 0 {
+			break
+		}
+		n++
+	}
+	return max(n, 1)
 }
 
 // logPrefixW : largeur de la colonne des noms, bornée au tiers de l'écran
@@ -391,9 +417,9 @@ func (m Model) logsFooter() string {
 		return quitWarning()
 	}
 	if m.logFiltering {
-		return renderBar([]footerKey{{"↩", "valider"}, {"esc", "effacer"}, {"↑↓", "défiler"}}, nil, m.width, "")
+		return renderBar([]footerKey{{"↩", "valider"}, {"esc", "effacer"}, {"↑↓ pgup/pgdn", "défiler"}}, nil, m.width, "")
 	}
-	nav := footerKey{"g/G", "haut/bas"}
+	nav := edgeKey
 	if m.logPaused && !m.logEnded {
 		nav = footerKey{"G", "suivre"}
 	}
@@ -401,15 +427,18 @@ func (m Model) logsFooter() string {
 	if m.logWrap {
 		wrap = footerKey{"w", "tronquer"}
 	}
-	// esc efface d'abord le filtre. En 80 colonnes, le pied perd « / filtre »
-	// (la touche est la même partout) mais garde w, qui rend le message
-	// lisible.
+	// esc efface d'abord le filtre. Le pied perd d'abord « / filtre » (la
+	// touche est la même partout), puis, en 80 colonnes, les descriptions du
+	// défilement et g/G, mais garde w, qui rend le message lisible.
 	back := footerKey{"esc", "retour"}
 	if m.logFilter != "" {
 		back = footerKey{"esc", "effacer"}
 	}
-	return renderBar([]footerKey{{"↑↓", "défiler"}, nav, wrap, {"/", "filtre"}},
-		[]footerKey{back, {"q", "quitter"}}, m.width, "")
+	return renderBarFit([][]footerKey{
+		{scrollKey, nav, wrap, {"/", "filtre"}},
+		{scrollKey, nav, wrap},
+		{scrollKeyShort, wrap, nav},
+	}, []footerKey{back, {"?", "aide"}, {"q", "quitter"}}, m.width, "")
 }
 
 func renderLogsView(m Model) string {

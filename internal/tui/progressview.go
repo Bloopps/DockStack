@@ -120,7 +120,7 @@ func (ps *progressState) apply(ev compose.ProgressEvent) {
 // progressBodyHeight is the number of content rows available between the header
 // and the footer. The footer is always a single line in this view.
 func (m Model) progressBodyHeight() int {
-	bodyH := m.height - headerHeight(m.metrics.NCores, m.width) - 1 - 3 // 1 = footer, 3 = title + blank + separator
+	bodyH := m.height - m.headerLines() - 1 - 3 // 1 = footer, 3 = title + blank + separator
 	if bodyH < 1 {
 		bodyH = 1
 	}
@@ -342,7 +342,7 @@ func (m Model) renderResourceLine(r *resourceProgress, stackDone bool, now time.
 }
 
 func renderProgressView(m Model) string {
-	header := renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width)
+	header := m.headerBlock()
 	bodyH := m.progressBodyHeight()
 
 	var footer string
@@ -412,7 +412,7 @@ func renderProgressView(m Model) string {
 	// négatif et ferait paniquer strings.Repeat (viewContent ne garde que 0).
 	sep := styleDim.Render(strings.Repeat("─", max(m.width-2, 0)))
 	body := title + "\n" + sep + "\n" + strings.Join(visible, "\n") + belowHint
-	body = fitHeight(body, m.height-headerHeight(m.metrics.NCores, m.width)-1)
+	body = fitHeight(body, m.height-m.headerLines()-1)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }

@@ -212,8 +212,6 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "ctrl+c", "q":
 		return m.armOrQuit()
-	case "?":
-		m.view, m.helpScroll = viewHelp, 0
 	case "/":
 		m.svcFiltering = true
 	case "esc":

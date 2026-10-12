@@ -235,8 +235,9 @@ func TestSanitizeExpandsTabs(t *testing.T) {
 }
 
 // Changer de dossier doit se découvrir sans connaître l'outil : l'en-tête
-// rappelle « o changer » à côté du dossier, à toutes les largeurs, et le pied
-// de page garde « o dossier » dès 120 colonnes (il tombait sous ~220).
+// rappelle « o changer » à côté du dossier, à toutes les largeurs. Le pied
+// de page ne répète plus o : sa place va à « n nettoyage », annoncé dès
+// 120 colonnes.
 func TestChangeDirDiscoverable(t *testing.T) {
 	for _, w := range []int{80, 100, 120, 140, 160, 200} {
 		m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
@@ -246,8 +247,12 @@ func TestChangeDirDiscoverable(t *testing.T) {
 		if !strings.Contains(lines[0], "o changer") {
 			t.Errorf("w=%d : en-tête sans rappel de o : %q", w, lines[0])
 		}
-		if foot := lines[len(lines)-1]; w >= 120 && !strings.Contains(foot, "o  dossier") {
-			t.Errorf("w=%d : « o dossier » absent du pied de page : %q", w, foot)
+		foot := lines[len(lines)-1]
+		if strings.Contains(foot, "o  dossier") {
+			t.Errorf("w=%d : « o dossier » répété dans le pied de page : %q", w, foot)
+		}
+		if w >= 120 && !strings.Contains(foot, "n  nettoyage") {
+			t.Errorf("w=%d : « n nettoyage » absent du pied de page : %q", w, foot)
 		}
 	}
 }

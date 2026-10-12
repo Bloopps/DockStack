@@ -81,6 +81,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "down":
 			m.moveCursor(1)
 			return m, nil
+		case "pgup", "pgdown":
+			m.pageCursor(msg.String())
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.filter, cmd = m.filter.Update(msg)
@@ -110,8 +113,6 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if len(m.selected) > 0 {
 			m.selected = make(map[string]bool)
 		}
-	case "?":
-		m.view, m.helpScroll = viewHelp, 0
 	case "/":
 		m.filtering = true
 		m.filter.Focus()
@@ -120,6 +121,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 	case "down", "j":
 		m.moveCursor(1)
+	case "pgup", "pgdown":
+		m.pageCursor(msg.String())
 	case "g", "home":
 		m.cursorToEdge(false)
 	case "G", "end":
@@ -275,6 +278,19 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, loadDirCmd(start)
 	}
 	return m, nil
+}
+
+// pageCursor déplace le curseur de la liste d'une page (pgup, pgdown), pas
+// à pas : moveCursor saute les lignes que ↑↓ sautent, et s'arrête aux bords.
+// Une ligne de moins pour les titres des colonnes.
+func (m *Model) pageCursor(key string) {
+	d := 1
+	if key == "pgup" {
+		d = -1
+	}
+	for range page(m.bodyHeight() - 1) {
+		m.moveCursor(d)
+	}
 }
 
 // toggleInactive affiche/masque les stacks qui ne tournent pas (arrêtées ou
@@ -578,7 +594,7 @@ func (m Model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if r := []rune(m.logFilter); len(r) > 0 {
 				m.setLogFilter(string(r[:len(r)-1]))
 			}
-		case "up", "down":
+		case "up", "down", "pgup", "pgdown":
 			m.scrollLogs(key)
 		default:
 			if t := msg.Key().Text; t != "" {
@@ -628,9 +644,13 @@ func (m Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.composeScroll < m.composeMaxScroll() {
 			m.composeScroll++
 		}
-	case "g":
+	case "pgup":
+		m.composeScroll = max(m.composeScroll-page(m.composeHeight()), 0)
+	case "pgdown":
+		m.composeScroll = min(m.composeScroll+page(m.composeHeight()), m.composeMaxScroll())
+	case "g", "home":
 		m.composeScroll = 0
-	case "G":
+	case "G", "end":
 		m.composeScroll = m.composeMaxScroll()
 	case "tab":
 		// Bascule brut ↔ résolu et recharge ; le curseur repart en haut car le
@@ -669,6 +689,12 @@ func (m Model) handleBackupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.actionCursor < len(m.backups)-1 {
 			m.actionCursor++
 		}
+	case "pgup":
+		// Titre, ligne vide et bordures du cadre autour de la liste (cf.
+		// renderBackupView).
+		m.actionCursor = max(m.actionCursor-page(m.bodyHeight()-4), 0)
+	case "pgdown":
+		m.actionCursor = max(min(m.actionCursor+page(m.bodyHeight()-4), len(m.backups)-1), 0)
 	case "esc":
 		m.view = viewList
 	case "c":
@@ -877,6 +903,12 @@ func (m Model) handleRestorePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.restoreCursor < n-1 {
 			m.restoreCursor++
 		}
+	case "pgup":
+		// En-tête de 4 lignes et repères au-dessus et en dessous (cf.
+		// renderRestorePick).
+		m.restoreCursor = max(m.restoreCursor-page(m.bodyHeight()-6), 0)
+	case "pgdown":
+		m.restoreCursor = max(min(m.restoreCursor+page(m.bodyHeight()-6), n-1), 0)
 	case "g", "home":
 		m.restoreCursor = 0
 	case "G", "end":
@@ -968,6 +1000,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.dirCursor < len(m.dirEntries)-1 {
 			m.dirCursor++
 		}
+	case "pgup":
+		m.dirCursor = max(m.dirCursor-page(m.dirRowsH()), 0)
+	case "pgdown":
+		m.dirCursor = max(min(m.dirCursor+page(m.dirRowsH()), len(m.dirEntries)-1), 0)
 	case "g", "home":
 		m.dirCursor = 0
 	case "G", "end":

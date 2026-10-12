@@ -244,8 +244,10 @@ type Model struct {
 	statusKind statusKind
 	statusSeq  int
 
-	// Défilement de l'aide (?) quand elle dépasse la hauteur de l'écran.
+	// Défilement de l'aide (?) quand elle dépasse la hauteur de l'écran, et
+	// vue où la fermer (elle s'ouvre de partout).
 	helpScroll int
+	helpReturn view
 
 	// Quitter en deux frappes (q/ctrl+c) ; quitSeq invalide les timers de
 	// désarmement périmés.
@@ -793,7 +795,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Aussi pendant le premier chargement et une attente affichée en barre
 		// de statut (prévision d'un up) : figés, ils laissaient croire à un
 		// blocage.
-		if m.spinning || (m.view == viewProgress && !m.progressDone) || (m.view == viewCleanup && m.cleanupLoading) ||
+		// L'analyse du nettoyage anime son spinner même sous l'aide (la
+		// chaîne de ticks rompue, il restait figé au retour) ; leaveCleanup
+		// remet cleanupLoading à zéro en quittant la page.
+		if m.spinning || (m.view == viewProgress && !m.progressDone) || m.cleanupLoading ||
 			m.loading || (m.statusKind == statusBusy && m.status != "") {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
@@ -891,6 +896,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.progressScroll == 0 {
 				m.progressManualScroll = false
 			}
+		case "pgup":
+			m.progressScroll = min(m.progressScroll+page(m.progressBodyHeight()), m.progressMaxScroll())
+			m.progressManualScroll = m.progressScroll > 0
+		case "pgdown":
+			m.progressScroll = max(m.progressScroll-page(m.progressBodyHeight()), 0)
+			m.progressManualScroll = m.progressScroll > 0
 		case "g", "home":
 			// Haut, comme partout ailleurs (g descendait en bas ici).
 			m.progressScroll = m.progressMaxScroll()
@@ -952,26 +963,44 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// t ouvre le sélecteur de thème depuis la liste, mode services compris,
-	// et depuis l'aide. T aussi (verrouillage des majuscules), comme Q. Pas
-	// pendant une saisie : c'est alors une lettre du filtre.
-	if k := msg.String(); (k == "t" || k == "T") && (m.view == viewList || m.view == viewHelp) && !m.typing() {
+	// et depuis l'aide ouverte sur la liste (le sélecteur revient à la
+	// liste : ouvert depuis l'aide des logs, il aurait laissé leur flux
+	// tourner). T aussi (verrouillage des majuscules), comme Q. Pas pendant
+	// une saisie : c'est alors une lettre du filtre.
+	if k := msg.String(); (k == "t" || k == "T") && (m.view == viewList || (m.view == viewHelp && m.helpReturn == viewList)) && !m.typing() {
 		m.quitArmed = false
 		return m.openThemePicker()
 	}
-	// L'aide défile (↑↓) si elle dépasse l'écran et se ferme sur toute autre
-	// touche (avant l'intercept global de r).
+	// L'aide défile si elle dépasse l'écran. q arme la sortie comme partout
+	// (deux frappes : en la fermant, il en fallait trois), et toute autre
+	// touche la ferme, avant l'intercept global de r : on revient à la vue
+	// d'où on l'a ouverte.
 	if m.view == viewHelp {
-		switch msg.String() {
+		key := msg.String()
+		if key != "q" && key != "ctrl+c" {
+			m.quitArmed = false
+		}
+		step := page(m.bodyHeight() - 1) // la dernière ligne dit ce qui reste caché
+		switch key {
+		case "q", "ctrl+c":
+			return m.armOrQuit()
 		case "up", "k":
 			m.helpScroll = max(m.helpScroll-1, 0)
 		case "down", "j":
 			m.helpScroll = min(m.helpScroll+1, m.helpMaxScroll())
 		case "pgup":
-			m.helpScroll = max(m.helpScroll-m.bodyHeight()/2, 0)
+			m.helpScroll = max(m.helpScroll-step, 0)
 		case "pgdown", "space":
-			m.helpScroll = min(m.helpScroll+m.bodyHeight()/2, m.helpMaxScroll())
+			m.helpScroll = min(m.helpScroll+step, m.helpMaxScroll())
+		case "g", "home":
+			m.helpScroll = 0
+		case "G", "end":
+			m.helpScroll = m.helpMaxScroll()
 		default:
-			m.view = viewList
+			m.view = m.helpReturn
+			if m.view == viewLogs {
+				m.syncLogScroll() // le terminal a pu changer de taille entre-temps
+			}
 		}
 		return m, nil
 	}
@@ -1002,6 +1031,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.manualR = true
 			return m, m.loadStacksCmd()
 		}
+	}
+	// ? ouvre l'aide depuis toutes les vues : seules la liste et les
+	// services la proposaient, pas la page Nettoyage, la plus riche en
+	// touches propres. Sauf pendant une saisie, où c'est une lettre, et dans
+	// une confirmation, qui attend sa réponse ; la progression, qui garde la
+	// main, ne passe pas par ici.
+	if msg.String() == "?" && !m.typing() && m.view != viewConfirm {
+		m.helpReturn, m.view, m.helpScroll = m.view, viewHelp, 0
+		return m, nil
 	}
 	// q quitte partout (deux frappes), esc revient : règle unique pour toutes
 	// les vues. La liste et le mode services traitent q eux-mêmes (filtres
@@ -1070,7 +1108,7 @@ func (m Model) viewContent() string {
 		return renderComposeView(m)
 	}
 
-	header := newBlock(renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width))
+	header := newBlock(m.headerBlock())
 
 	footerH := 1
 	bodyH := m.height - len(header.lines) - footerH
@@ -1586,7 +1624,7 @@ func (m Model) renderFooter() string {
 			left = append(left, footerKey{"↩", "relancer"}, footerKey{"i", "à l'identique"},
 				footerKey{"n", "nommer"}, footerKey{"*", "épingler"}, footerKey{"⌫", "supprimer"})
 		}
-		return renderBar(left, back, m.width, "")
+		return renderBar(left, append(back, footerKey{"?", "aide"}), m.width, "")
 	case viewAction:
 		return renderBar([]footerKey{{"↑↓", "choisir"}, {"↩ / lettre", "valider"}}, back, m.width, "")
 	case viewRestorePick:
@@ -1606,9 +1644,9 @@ func (m Model) renderFooter() string {
 	case viewHelp:
 		var left []footerKey
 		if m.helpMaxScroll() > 0 {
-			left = []footerKey{{"↑↓", "défiler"}}
+			left = []footerKey{{"↑↓", "défiler"}, {"pgup/pgdn", "page"}, {"g/G", "haut/bas"}}
 		}
-		return renderBar(left, []footerKey{{"esc", "fermer"}}, m.width, "")
+		return renderBar(left, []footerKey{{"esc", "fermer"}, {"q", "quitter"}}, m.width, "")
 	case viewList:
 		// Tout à droite : position dans la liste. L'heure de la dernière
 		// liste est dans l'en-tête, où elle tient à toutes les largeurs (ici,
@@ -1770,7 +1808,54 @@ func (m Model) typing() bool {
 
 // bodyHeight : hauteur du corps des vues sous l'en-tête (footer d'une ligne).
 func (m Model) bodyHeight() int {
-	return max(m.height-headerHeight(m.metrics.NCores, m.width)-1, 0)
+	return max(m.height-m.headerLines()-1, 0)
+}
+
+// fullHeader : le tableau de bord complet (CPU, RAM, Docker) ne sert qu'à
+// la liste, et au sélecteur de thème dont il est l'aperçu en direct (cf.
+// themeview.go). Ailleurs (aide, nettoyage, captures, panneau d'actions,
+// confirmation, progression), il prenait 8 lignes ou plus sans rapport avec
+// la tâche : l'aide et le nettoyage s'y retrouvaient coupés, le panneau
+// d'actions perdait l'état et les services.
+func (m Model) fullHeader() bool {
+	return m.view == viewList || m.view == viewTheme
+}
+
+// viewTitles : nom des vues à en-tête réduit, à droite du dossier.
+var viewTitles = map[view]string{
+	viewHelp:        "Aide",
+	viewConfirm:     "Confirmation",
+	viewAction:      "Actions",
+	viewBackup:      "Captures d'état",
+	viewRestorePick: "Relance d'une capture",
+	viewCleanup:     "Nettoyage",
+	viewProgress:    "Opération",
+}
+
+// headerBlock : en-tête de la vue courante, complet ou réduit à une ligne
+// de titre et au séparateur (cf. fullHeader).
+func (m Model) headerBlock() string {
+	if m.fullHeader() {
+		return renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width)
+	}
+	return renderTitleBar(m.cfg.StackDir, viewTitles[m.view], m.width)
+}
+
+// headerLines : hauteur de headerBlock, sans le construire (cf.
+// headerHeight). bodyHeight et progressBodyHeight en dépendent : elle doit
+// rester celle de l'en-tête réellement rendu, sinon le défilement de l'aide
+// ou d'une confirmation se décale.
+func (m Model) headerLines() int {
+	if m.fullHeader() {
+		return headerHeight(m.metrics.NCores, m.width)
+	}
+	return titleBarLines
+}
+
+// page : pas de pgup/pgdown pour une fenêtre de h lignes. Deux lignes de
+// recouvrement gardent le contexte d'une page à l'autre.
+func page(h int) int {
+	return max(h-2, 1)
 }
 
 // armOrQuit applique la sortie en deux frappes : la première arme (désarmée

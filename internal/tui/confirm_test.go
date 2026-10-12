@@ -12,20 +12,20 @@ import (
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
-// longConfirm : confirmation de 12 lignes ouverte en 80x24, où le cadre n'en
-// montre que quelques-unes.
+// longConfirm : confirmation de 30 lignes ouverte en 80x24, où le cadre n'en
+// montre qu'une partie (l'en-tête réduit lui laisse 21 lignes).
 func longConfirm(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel([]compose.Stack{stack("app", "", 1, 1, 0)})
 	m.width, m.height, m.loading = 80, 24, false
-	names := make([]string, 12)
+	names := make([]string, 30)
 	for i := range names {
 		names[i] = fmt.Sprintf("■ arrêter stack-%02d", i)
 	}
 	next, _ := m.askConfirm("Mettre à l'identique", "", names, nil)
 	m = next.(Model)
 	if m.confirmMaxScroll() == 0 {
-		t.Fatalf("la liste de 12 lignes devait déborder en 80x24")
+		t.Fatalf("la liste de 30 lignes devait déborder en 80x24")
 	}
 	return m
 }
@@ -37,7 +37,7 @@ func longConfirm(t *testing.T) Model {
 func TestConfirmListScrolls(t *testing.T) {
 	m := longConfirm(t)
 	screen := ansi.Strip(m.viewContent())
-	if !strings.Contains(screen, "stack-00") || strings.Contains(screen, "stack-11") || strings.Contains(screen, "au-dessus") {
+	if !strings.Contains(screen, "stack-00") || strings.Contains(screen, "stack-29") || strings.Contains(screen, "au-dessus") {
 		t.Fatalf("ouverture : début de liste attendu, sans repère du haut :\n%s", screen)
 	}
 	if !strings.Contains(screen, "en dessous (↓ pour lire)") {
@@ -65,7 +65,7 @@ func TestConfirmListScrolls(t *testing.T) {
 		t.Errorf("↓ en fin de liste : défilement = %d, want borné à %d", m.confirmScroll, end)
 	}
 	screen = ansi.Strip(m.viewContent())
-	if !strings.Contains(screen, "stack-11") || strings.Contains(screen, "en dessous") || !strings.Contains(screen, "au-dessus") {
+	if !strings.Contains(screen, "stack-29") || strings.Contains(screen, "en dessous") || !strings.Contains(screen, "au-dessus") {
 		t.Errorf("fin de liste : dernière ligne et repère du haut attendus :\n%s", screen)
 	}
 	// La ligne des touches reste dans le cadre, à l'écran.

@@ -59,8 +59,9 @@ func TestHeaderFooterFitWidth(t *testing.T) {
 
 // TestListFooterContext : le pied de page de la liste sert à naviguer. Les
 // actions sur la stack sont dans le volet de droite ; elles ne reviennent dans
-// le pied de page que si le volet est masqué faute de largeur. Il ne change
-// qu'avec le mode (sélection).
+// le pied de page que si le volet est masqué faute de largeur, après
+// « ↩ actions », qui reste visible en 80 colonnes. Il ne change qu'avec le
+// mode (sélection).
 func TestListFooterContext(t *testing.T) {
 	m := newTestModel([]compose.Stack{
 		stack("solo", "solo", 1, 1, 0),
@@ -71,7 +72,7 @@ func TestListFooterContext(t *testing.T) {
 	m.invalidateRows()
 	has := func(f, s string) bool { return strings.Contains(ansi.Strip(f), s) }
 
-	for _, w := range []int{400, 90} { // volet visible, puis masqué
+	for _, w := range []int{400, 90, 80} { // volet visible, puis masqué
 		m.width = w
 		for i, r := range m.listRows() {
 			m.cursor = i
@@ -84,6 +85,9 @@ func TestListFooterContext(t *testing.T) {
 			case r.isStack():
 				if !has(f, "actions") {
 					t.Errorf("w=%d stack : « ↩ actions » absent : %q", w, ansi.Strip(f))
+				}
+				if lw := lipgloss.Width(f); lw > w {
+					t.Errorf("w=%d stack : pied de %d colonnes", w, lw)
 				}
 				if got := has(f, "restart"); got != (w < minPreviewTermWidth) {
 					t.Errorf("w=%d stack : actions dans le pied de page = %v, want %v", w, got, w < minPreviewTermWidth)
@@ -248,6 +252,69 @@ func TestServiceFooterPinsExit(t *testing.T) {
 		}
 		if lipgloss.Width(f) > w {
 			t.Errorf("w=%d : footer de %d colonnes", w, lipgloss.Width(f))
+		}
+	}
+}
+
+// Hors de la liste et du sélecteur de thème (dont l'en-tête est l'aperçu),
+// l'en-tête se réduit au titre, au dossier et au nom de la vue : l'aide, le
+// nettoyage ou le panneau d'actions récupèrent les 8 lignes et plus du
+// tableau de bord. La hauteur annoncée (bodyHeight, progressBodyHeight)
+// reste celle de l'en-tête rendu.
+func TestReducedHeaderOutsideList(t *testing.T) {
+	s := capStack("immich", svc("immich-server", 1), svc("machine-learning", 1), svc("redis", 1), svc("database", 1))
+	for _, sz := range [][2]int{{80, 24}, {120, 36}} {
+		m := newTestModel([]compose.Stack{s})
+		m.cfg.StackDir = "/srv/stacks"
+		m.width, m.height, m.loading = sz[0], sz[1], false
+		m.metrics.NCores = 8
+		m.client = &fakeClient{cleanup: sampleCleanup()}
+		views := map[string]func(Model) Model{
+			"Aide":            func(m Model) Model { m.view = viewHelp; return m },
+			"Captures d'état": func(m Model) Model { m.view = viewBackup; return m },
+			"Actions":         func(m Model) Model { m.view = viewAction; return m },
+			"Nettoyage":       func(m Model) Model { return drive(t, m, keyMsg("n"), 0) },
+			"Confirmation": func(m Model) Model {
+				out, _ := m.askConfirm("Down — immich", "", []string{"immich"}, nil)
+				return out.(Model)
+			},
+			"Opération": func(m Model) Model {
+				m.view, m.progress, m.progressTitle = viewProgress, newProgressState(), "Up: immich"
+				return m
+			},
+		}
+		for title, set := range views {
+			m := set(m)
+			out := ansi.Strip(m.viewContent())
+			lines := strings.Split(out, "\n")
+			if len(lines) != m.height {
+				t.Errorf("%dx%d %s : %d lignes, want %d", sz[0], sz[1], title, len(lines), m.height)
+			}
+			if !strings.Contains(lines[0], "/srv/stacks") || !strings.HasSuffix(strings.TrimSpace(lines[0]), title) || strings.Contains(lines[0], "o changer") {
+				t.Errorf("%dx%d %s : ligne de titre %q", sz[0], sz[1], title, lines[0])
+			}
+			if !strings.HasPrefix(lines[1], "───") || strings.Contains(out, "Swap") {
+				t.Errorf("%dx%d %s : tableau de bord encore affiché :\n%s", sz[0], sz[1], title, out)
+			}
+			if m.headerLines() != 2 || m.bodyHeight() != m.height-3 {
+				t.Errorf("%s : headerLines %d, bodyHeight %d, want 2 et %d", title, m.headerLines(), m.bodyHeight(), m.height-3)
+			}
+		}
+		// Le panneau d'actions retrouve l'état et les services en 80x24.
+		m.view = viewAction
+		if out := ansi.Strip(m.viewContent()); !strings.Contains(out, "machine-learning") || !strings.Contains(out, "Retour") {
+			t.Errorf("%dx%d : panneau d'actions sans les services :\n%s", sz[0], sz[1], out)
+		}
+		m.view = viewProgress
+		if got, want := m.progressBodyHeight(), m.height-2-1-3; got != want {
+			t.Errorf("progressBodyHeight = %d, want %d", got, want)
+		}
+		// La liste et le thème gardent le tableau de bord complet.
+		for _, v := range []view{viewList, viewTheme} {
+			m.view = v
+			if m.headerLines() != headerHeight(m.metrics.NCores, m.width) || !strings.Contains(ansi.Strip(m.headerBlock()), "CPU") {
+				t.Errorf("vue %v : en-tête complet attendu", v)
+			}
 		}
 	}
 }

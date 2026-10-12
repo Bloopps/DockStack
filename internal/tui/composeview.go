@@ -74,8 +74,13 @@ func renderComposeView(m Model) string {
 	if m.composeMouseOff {
 		mouse = footerKey{"m", "molette"}
 	}
-	hint := renderBar([]footerKey{{"↑↓", "défiler"}, {"g/G", "haut/bas"}, {"tab", "brut/résolu"}, mouse},
-		[]footerKey{{"esc", "retour"}, {"q", "quitter"}}, m.width, "")
+	// Sur un pied étroit, g/G et les descriptions du défilement cèdent
+	// avant tab, la seule touche qui change ce qui est affiché.
+	hint := renderBarFit([][]footerKey{
+		{scrollKey, edgeKey, {"tab", "brut/résolu"}, mouse},
+		{{"↑↓ pgup/pgdn g/G", "défiler"}, {"tab", "brut/résolu"}, mouse},
+		{scrollKeyShort, {"tab", "brut/résolu"}, mouse},
+	}, []footerKey{{"esc", "retour"}, {"?", "aide"}, {"q", "quitter"}}, m.width, "")
 	if m.quitArmed {
 		hint = quitWarning()
 	}

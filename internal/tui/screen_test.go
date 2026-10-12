@@ -19,7 +19,7 @@ import (
 // Style.Width/Height, JoinHorizontal et JoinVertical. Référence de
 // TestScreenMatchesLipgloss.
 func lipglossScreen(m Model) string {
-	header := renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width)
+	header := m.headerBlock()
 	bodyH := max(m.height-lipgloss.Height(header)-1, 0)
 	var body string
 	switch m.view {

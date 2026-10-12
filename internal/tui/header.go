@@ -14,15 +14,18 @@ import (
 
 const (
 	metricsHistoryLen = 60 // samples kept (≈2 min at the 2s tick)
-	avgSparkWidth     = 12 // trend width for CPU avg / RAM
-	// Largeur des jauges principales (CPU avg, RAM, Disk). Plus large = plus de
-	// cases pleines = plus de finesse sans recourir à un glyphe partiel (qui
-	// casserait la netteté). 20 cases ⇒ 5 % par case.
+	// Largeur des jauges principales du gabarit large (CPU, RAM, Swap,
+	// Disque). Plus large = plus de cases pleines = plus de finesse sans
+	// recourir à un glyphe partiel (qui casserait la netteté). 20 cases ⇒
+	// 5 % par case.
 	mainBarW = 20
-	// En dessous de wideHeaderMinWidth colonnes, les jauges repassent à
-	// narrowBarW cases pour que les lignes RAM/Disk tiennent.
-	wideHeaderMinWidth = 110
-	narrowBarW         = 8
+	// En dessous de compactHeaderMinWidth colonnes, l'en-tête tient en
+	// narrowHeaderLines lignes : jauges de narrowBarW cases et tendance CPU
+	// sur narrowSparkW échantillons, pour que les quatre ressources tiennent
+	// sur une ligne de 80 colonnes.
+	narrowHeaderLines = 4
+	narrowBarW        = 5
+	narrowSparkW      = 6
 	// À partir de compactHeaderMinWidth colonnes, l'en-tête passe en deux
 	// colonnes (ressources | cœurs), plus lisible et plus court.
 	compactHeaderMinWidth = 120
@@ -158,140 +161,109 @@ func fmtRate(kbs int) string {
 }
 
 func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *compose.DockerUsage, width int) string {
-	L := styleCyan
-	sep := styleSep
-
-	// ── Ligne 1 : titre │ chemin │ stacks │ heure ──────────────────────────
-	title := styleGreen.Bold(true).Render("🐳 Docker Stack Manager")
+	// ── Ligne 1 : titre │ chemin │ heure ──────────────────────────────────
 	// Le dossier scanné et la touche pour en changer, côte à côte : sans ce
 	// rappel, un nouvel utilisateur ne sait pas comment quitter un mauvais
-	// dossier (le raccourci o ne tient pas toujours dans le pied de page).
+	// dossier (le pied de page ne propose plus o, l'en-tête le rappelle à
+	// toutes les largeurs).
 	change := styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
 	// L'état des stacks est sur la ligne Docker (dockerLine), avec les
 	// conteneurs : un seul endroit pour « est-ce que tout tourne ? ».
-	clock := freshnessText(sc, time.Now(), width)
-	// Un chemin long cède la place (début coupé, la fin est la plus parlante)
-	// plutôt que l'heure et « o changer », que la coupe de fin de ligne
-	// emportait en premier.
-	dir := sc.Dir
-	if room := width - lipgloss.Width(title+sep+L.Render("📂")+" "+change+sep+clock); lipgloss.Width(dir) > room && room >= 8 {
-		dir = ansi.TruncateLeft(dir, lipgloss.Width(dir)-room+1, "…")
-	}
-	path := L.Render("📂") + " " + dir + change
-	line1 := title + sep + path + sep + clock
+	line1 := headerLine1(sc.Dir, change, freshnessText(sc, time.Now(), width), width)
 
 	if width >= compactHeaderMinWidth {
 		return renderCompactHeader(m, du, sc, line1, width)
 	}
-
-	// Jauges larges seulement si la place le permet : à 20 cases, les lignes
-	// RAM/Disk dépassent ~95 colonnes et leur fin (Uptime, Load) serait coupée.
-	barW := mainBarW
-	if width < wideHeaderMinWidth {
-		barW = narrowBarW
-	}
-
-	// ── Ligne 2 : CPU avg + grille par cœur ───────────────────────────────
-	cpuBar := bar(m.CPUPercent, barW)
-	cpuPct := colorForPct(m.CPUPercent).Render(fmt.Sprintf("%3d%%", m.CPUPercent))
-	cpuLabel := L.Render("CPU")
-	cpuSpark := colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, avgSparkWidth))
-	// Label first so the aggregate line reads as a heading and isn't mistaken for a
-	// 9th core: the per-core grid cells below start with a bare bar, this one starts
-	// with text.
-	line2 := fmt.Sprintf("  %s avg %s %s  %s (%d cores)", cpuLabel, cpuBar, cpuPct, cpuSpark, m.NCores)
-
-	coreGrid := renderCoreGrid(m.CPUCores, width)
-
-	// ── Ligne 3 : RAM │ Swap │ Uptime ─────────────────────────────────────
-	memBar := bar(m.MemPercent, barW)
-	memPct := colorForPct(m.MemPercent).Render(fmt.Sprintf("%3d%%", m.MemPercent))
-	swapCol := swapStyle(m)
-	line3 := fmt.Sprintf("  %s %s  %s %.1fG/%.1fG%s%s %s %.1fG/%.1fG%s%s %s",
-		memBar, memPct,
-		L.Render("RAM"), m.MemUsedGB, m.MemTotalGB,
-		sep,
-		L.Render("Swap"), swapCol.Render(fmt.Sprintf("%3d%%", m.SwapPercent)),
-		m.SwapUsedGB, m.SwapTotalGB,
-		sep,
-		L.Render("Actif"), m.Uptime,
-	)
-
-	// ── Ligne 4 : Disk │ IO │ Load ────────────────────────────────────────
-	diskBar := bar(m.DiskPercent, barW)
-	diskPct := colorForPct(m.DiskPercent).Render(fmt.Sprintf("%3d%%", m.DiskPercent))
-
-	ioRCol := ioColor(m.DiskReadKBs)
-	ioWCol := ioColor(m.DiskWriteKBs)
-	ioStr := fmt.Sprintf("%s %s↓%s %s/s %s↑%s %s/s",
-		L.Render("IO"),
-		styleCyan.Render(""), ioRCol.Render(fmtRate(m.DiskReadKBs)),
-		styleCyan.Render(""),
-		styleMagenta.Render(""), ioWCol.Render(fmtRate(m.DiskWriteKBs)),
-		styleMagenta.Render(""),
-	)
-
-	l1c, l5c, l15c := loadColor(m.Load1, m.NCores), loadColor(m.Load5, m.NCores), loadColor(m.Load15, m.NCores)
-	loadStr := fmt.Sprintf("%s 1m:%s 5m:%s 15m:%s",
-		L.Render("Charge"),
-		l1c.Render(m.Load1), l5c.Render(m.Load5), l15c.Render(m.Load15),
-	)
-
-	line4 := fmt.Sprintf("  %s %s  %s %dG/%dG%s%s%s%s",
-		diskBar, diskPct,
-		L.Render("Disk"), m.DiskUsedGB, m.DiskTotalGB,
-		sep, ioStr, sep, loadStr,
-	)
-
-	// Inner separator (dashed) delimits the CPU block from the system-resource
-	// block; the outer divider (solid) separates the whole header from the list.
-	innerSep := styleDim.Render(strings.Repeat("┈", width))
-	divider := styleDim.Render(strings.Repeat("─", width))
-
-	parts := []string{line1, "", line2}
-	if coreGrid != "" {
-		parts = append(parts, coreGrid)
-	}
-	parts = append(parts, innerSep, line3, line4, dockerLine(du, sc), divider)
-	// Filet de sécurité : le moteur de rendu coupe au bord de l'écran, autant
-	// couper nous-mêmes proprement (chemin long, terminal très étroit).
-	// Ligne par ligne : la grille des cœurs est un bloc multi-lignes.
-	lines := strings.Split(strings.Join(parts, "\n"), "\n")
-	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, width, "…")
-	}
-	return strings.Join(lines, "\n")
+	return renderNarrowHeader(m, hist, sc, du, line1, width)
 }
 
-// coreGridCols renvoie le nombre de colonnes de la grille par cœur pour n
-// cœurs et une largeur de terminal donnés. Partagé entre renderCoreGrid et
-// headerHeight pour que la hauteur calculée reste exacte.
-func coreGridCols(n, termW int) int {
-	const barW = 8
-	const indent = 2
-	labelW := len(fmt.Sprintf("%d", n-1))
-	cellW := labelW + 1 + barW + 1 + 4 + 3 // "NN ████████ 100%" + " │ "
+// headerLine1 : « 🐳 Docker Stack Manager │ 📂 dossier[afterDir] │ tail ».
+// Un chemin long cède la place (début coupé, la fin est la plus parlante)
+// plutôt que ce qui le suit (l'heure, « o changer », le nom de la vue), que
+// la coupe de fin de ligne emportait en premier. Le chemin est assaini : un
+// retour à la ligne dans un nom de dossier décalerait tout l'écran.
+func headerLine1(dir, afterDir, tail string, width int) string {
+	title := styleGreen.Bold(true).Render("🐳 Docker Stack Manager")
+	folder := styleCyan.Render("📂") + " "
+	dir = sanitizeText(dir)
+	if room := width - lipgloss.Width(title+styleSep+folder+afterDir+styleSep+tail); lipgloss.Width(dir) > room && room >= 8 {
+		dir = ansi.TruncateLeft(dir, lipgloss.Width(dir)-room+1, "…")
+	}
+	return title + styleSep + folder + dir + afterDir + styleSep + tail
+}
 
-	cols := (termW - indent) / cellW
-	if cols > 8 {
-		cols = 8
+// titleBarLines : hauteur de renderTitleBar.
+const titleBarLines = 2
+
+// renderTitleBar : en-tête réduit des vues autres que la liste et le
+// sélecteur de thème (cf. Model.headerBlock) : titre, dossier et nom de la
+// vue, puis le séparateur. Pas de « o changer » : o n'agit que dans la liste.
+func renderTitleBar(dir, section string, width int) string {
+	tail := styleBold.Render(section)
+	line := styleGreen.Bold(true).Render("🐳 Docker Stack Manager") + styleSep + tail
+	if dir != "" {
+		line = headerLine1(dir, "", tail, width)
 	}
-	if colsTarget := (n + 1) / 2; cols > colsTarget {
-		cols = colsTarget
+	return ansi.Truncate(line, max(width, 0), "…") + "\n" + styleDim.Render(strings.Repeat("─", max(width, 0)))
+}
+
+// renderNarrowHeader : en-tête sous compactHeaderMinWidth colonnes, en
+// narrowHeaderLines lignes quel que soit le nombre de cœurs : titre,
+// ressources, Docker, séparateur. La grille par cœur et la ligne vide en
+// faisaient 10 sur 24 en 80 colonnes avec 8 cœurs (16 avec 32) ; la
+// tendance CPU suffit ici, le détail par cœur reste dans le gabarit large.
+// IO, charge et taille des images s'ajoutent quand la ligne a la place
+// (dès ~100 colonnes).
+func renderNarrowHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *compose.DockerUsage, line1 string, width int) string {
+	L := styleCyan
+	// Libellé devant la jauge, valeur derrière : « CPU █████  23% ».
+	gauge := func(label string, p int, st lipgloss.Style) string {
+		return L.Render(label) + " " + bar(p, narrowBarW) + st.Render(fmt.Sprintf(" %3d%%", p))
 	}
-	if cols < 1 {
-		cols = 1
+	res := "  " + gauge("CPU", m.CPUPercent, colorForPct(m.CPUPercent)) + " " +
+		colorForPct(m.CPUPercent).Render(sparkline(hist.cpu, narrowSparkW)) +
+		"  " + gauge("RAM", m.MemPercent, colorForPct(m.MemPercent)) +
+		// Swap sans jauge : sa valeur seule, neutre tant que la RAM n'est
+		// pas sous pression (cf. swapStyle).
+		"  " + L.Render("Swap") + swapStyle(m).Render(fmt.Sprintf(" %3d%%", m.SwapPercent)) +
+		"  " + gauge("Disque", m.DiskPercent, colorForPct(m.DiskPercent))
+
+	// Mesures facultatives. La place de l'IO est réservée à sa largeur
+	// maximale (débits de six caractères) : sinon la mesure apparaîtrait
+	// et disparaîtrait au gré du débit.
+	ioFmt := "  %s ↓%s/s ↑%s/s"
+	io := fmt.Sprintf(ioFmt, L.Render("IO"),
+		ioColor(m.DiskReadKBs).Render(fmtRate(m.DiskReadKBs)), ioColor(m.DiskWriteKBs).Render(fmtRate(m.DiskWriteKBs)))
+	if lipgloss.Width(res)+lipgloss.Width(fmt.Sprintf(ioFmt, "IO", "1023Ko", "1023Ko")) <= width {
+		res += io
 	}
-	if cols > n {
-		cols = n
+	load := fmt.Sprintf("  %s %s %s %s", L.Render("Charge"), loadColor(m.Load1, m.NCores).Render(m.Load1),
+		loadColor(m.Load5, m.NCores).Render(m.Load5), loadColor(m.Load15, m.NCores).Render(m.Load15))
+	if lipgloss.Width(res+load) <= width {
+		res += load
 	}
-	return cols
+
+	dot := styleDim.Render(" · ")
+	v := dockerValues(du, sc)
+	docker := "  " + L.Render("Stacks") + " " + v.stacks + dot + L.Render("Conteneurs") + " " + v.ctrs
+	if images := dot + L.Render("Images") + " " + v.images; lipgloss.Width(docker+images) <= width {
+		docker += images
+	}
+
+	lines := []string{line1, res, docker, styleDim.Render(strings.Repeat("─", max(width, 0)))}
+	// Filet de sécurité : le moteur de rendu coupe au bord de l'écran, autant
+	// couper nous-mêmes proprement (chemin long, terminal très étroit).
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, max(width, 0), "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // headerHeight renvoie la hauteur (en lignes) de renderHeader sans le
 // construire : mesurer le header en le rendant coûte un rendu stylé complet,
 // que progressBodyHeight déclencherait à chaque frappe/molette. Doit rester
-// aligné sur la structure assemblée à la fin de renderHeader.
+// aligné sur la structure assemblée par renderCompactHeader et
+// renderNarrowHeader.
 func headerHeight(nCores, width int) int {
 	if width >= compactHeaderMinWidth {
 		rows, _, dockerCol := compactLayout(nCores, width)
@@ -301,51 +273,7 @@ func headerHeight(nCores, width int) int {
 		}
 		return h
 	}
-	h := 8 // ligne1, vide, CPU avg, séparateur interne, RAM, Disk, Docker, divider
-	if nCores > 0 {
-		cols := coreGridCols(nCores, width)
-		h += (nCores + cols - 1) / cols
-	}
-	return h
-}
-
-// renderCoreGrid renders per-core CPU bars in a multi-column grid. Per-core uses
-// static bars (not sparklines) so the grid reads cleanly at a glance; trend
-// sparklines are reserved for the aggregate CPU/RAM lines.
-func renderCoreGrid(cores []int, termW int) string {
-	n := len(cores)
-	if n == 0 {
-		return ""
-	}
-
-	const barW = 8
-	// Each core is numbered (faint) so it can't be mistaken for the aggregate
-	// "CPU avg" line above. labelW keeps the numbers right-aligned for 1/2-digit
-	// core counts.
-	labelW := len(fmt.Sprintf("%d", n-1))
-	cols := coreGridCols(n, termW)
-
-	sep := styleMagenta.Render(" │")
-
-	var sb strings.Builder
-	for i, pct := range cores {
-		col := i % cols
-		if col == 0 {
-			sb.WriteString("  ")
-		} else {
-			sb.WriteString(sep + " ")
-		}
-
-		num := styleDim.Render(fmt.Sprintf("%*d", labelW, i))
-		b := bar(pct, barW)
-		pctStr := colorForPct(pct).Render(fmt.Sprintf("%3d%%", pct))
-		sb.WriteString(fmt.Sprintf("%s %s %s", num, b, pctStr))
-
-		if col == cols-1 && i < n-1 {
-			sb.WriteByte('\n')
-		}
-	}
-	return sb.String()
+	return narrowHeaderLines
 }
 
 func ioColor(kbs int) lipgloss.Style {
@@ -622,18 +550,17 @@ func fmtBytes(b int64) string {
 	return fmt.Sprintf("%d Mo", b>>20)
 }
 
-// dockerItems : paires libellé/valeur de l'état Docker. En colonne (col),
-// une paire par ligne avec libellés alignés ; sinon libellés courts pour la
-// ligne de repli.
-func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
-	item := func(label, value string) string {
-		if col {
-			return styleCyan.Render(fmt.Sprintf("%-11s", label)) + value
-		}
-		return styleCyan.Render(label) + " " + value
-	}
+// dockerVals : valeurs de l'état Docker, déjà stylées. Les précisions
+// (conteneurs hors stack, espace libérable des images) sont à part : la
+// ligne Docker de l'en-tête étroit s'en passe, faute de place.
+type dockerVals struct {
+	stacks, ctrs, ctrsNote, images, imagesNote, volumes string
+}
+
+func dockerValues(du *compose.DockerUsage, sc StackCounts) dockerVals {
 	wait := styleDim.Render("…")
 	ctrs, images, volumes := wait, wait, wait
+	var ctrsNote, imagesNote string
 	stacks := stacksSummary(sc)
 	if sc.Stale {
 		// Dernière lecture en échec : les compteurs d'avant, affichés comme
@@ -673,7 +600,7 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 			if stopped := (du.Containers - du.Running) - (sc.CtrTotal - sc.CtrRunning); stopped > 0 {
 				note += fmt.Sprintf(" (%d arrêté%s)", stopped, plural(stopped))
 			}
-			ctrs += styleDim.Render(note)
+			ctrsNote = styleDim.Render(note)
 		}
 		if du.ImagesOK {
 			images = fmtBytes(du.ImagesSize)
@@ -684,18 +611,32 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 				if !du.ImagesExact {
 					approx = "≈ "
 				}
-				images += styleDim.Render(" (" + approx + fmtBytes(du.ImagesReclaimable) + " libres)")
+				imagesNote = styleDim.Render(" (" + approx + fmtBytes(du.ImagesReclaimable) + " libres)")
 			}
 		}
 		if du.VolumesOK {
 			volumes = fmtBytes(du.VolumesSize)
 		}
 	}
+	return dockerVals{stacks: stacks, ctrs: ctrs, ctrsNote: ctrsNote, images: images, imagesNote: imagesNote, volumes: volumes}
+}
+
+// dockerItems : paires libellé/valeur de l'état Docker. En colonne (col),
+// une paire par ligne avec libellés alignés ; sinon libellés courts pour la
+// ligne de repli.
+func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
+	item := func(label, value string) string {
+		if col {
+			return styleCyan.Render(fmt.Sprintf("%-11s", label)) + value
+		}
+		return styleCyan.Render(label) + " " + value
+	}
+	v := dockerValues(du, sc)
 	return []string{
-		item("Stacks", stacks),
-		item("Conteneurs", ctrs),
-		item("Images", images),
-		item("Volumes", volumes),
+		item("Stacks", v.stacks),
+		item("Conteneurs", v.ctrs+v.ctrsNote),
+		item("Images", v.images+v.imagesNote),
+		item("Volumes", v.volumes),
 	}
 }
 

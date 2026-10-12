@@ -75,3 +75,27 @@ func TestComposeViewMissingFile(t *testing.T) {
 		t.Fatalf("stack sans fichier : vue ouverte, contenu vide, sans erreur ; eu err=%v lines=%d", m.composeErr, len(m.composeLines))
 	}
 }
+
+// Le compose plein écran défile aussi par page (pgup, pgdown), et home/end
+// valent g/G, comme dans les autres vues.
+func TestComposePageAndEdgeKeys(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("app", "", 1, 1, 0)})
+	m.width, m.height = 80, 24
+	m.view, m.composeLines = viewCompose, strings.Split(strings.Repeat("x: 1\n", 100), "\n")
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if want := page(m.composeHeight()); m.composeScroll != want {
+		t.Fatalf("pgdown : défilement %d, want %d", m.composeScroll, want)
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if m.composeScroll != m.composeMaxScroll() {
+		t.Errorf("end : défilement %d, want %d", m.composeScroll, m.composeMaxScroll())
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.composeScroll != m.composeMaxScroll() {
+		t.Errorf("pgdown en bas : défilement %d, want borné à %d", m.composeScroll, m.composeMaxScroll())
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyHome})
+	if m.composeScroll != 0 {
+		t.Errorf("home : défilement %d, want 0", m.composeScroll)
+	}
+}
