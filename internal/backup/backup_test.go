@@ -191,3 +191,25 @@ func TestSaveCreatesDirNoTemp(t *testing.T) {
 		t.Errorf("List = %d capture(s), want 1", len(snaps))
 	}
 }
+
+// TestListNoDuplicateLocalUTC : fuseau local nommé UTC (cas des serveurs, et
+// de la CI) ; la date relue du JSON est en UTC, celle du texte en heure
+// locale : même instant, Location différentes. Le fichier « dernier état »
+// ressortait comme une seconde capture.
+func TestListNoDuplicateLocalUTC(t *testing.T) {
+	prev := time.Local
+	time.Local = time.FixedZone("UTC", 0)
+	t.Cleanup(func() { time.Local = prev })
+
+	dir := t.TempDir()
+	if _, err := Save(dir, "/srv/stacks", names("a", "b")); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	snaps, err := List(dir)
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("List = %d capture(s), %v, want 1 (active_stacks est un doublon)", len(snaps), err)
+	}
+	if snaps[0].Legacy {
+		t.Error("la capture gardée doit être la v2, pas le fichier texte")
+	}
+}

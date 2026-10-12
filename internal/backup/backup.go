@@ -110,13 +110,18 @@ func List(configDir string) ([]Snapshot, error) {
 	// Le fichier texte `active_stacks` (dernier état) duplique la capture la
 	// plus récente : il est écarté dès qu'une autre capture porte sa date. Les
 	// autres captures ne sont jamais écartées, même à date égale.
-	seen := make(map[time.Time]bool, len(snaps))
+	// Clé en secondes Unix, pas en time.Time : la date du JSON (relue en UTC
+	// quand le fuseau local est UTC) et celle du texte (heure locale) sont le
+	// même instant avec deux Location différentes, donc deux clés de map
+	// distinctes. Sur un serveur en UTC, la dernière capture apparaissait en
+	// double.
+	seen := make(map[int64]bool, len(snaps))
 	out := snaps[:0]
 	for _, s := range snaps {
-		if s.Path == base(configDir) && seen[s.Date] {
+		if s.Path == base(configDir) && seen[s.Date.Unix()] {
 			continue
 		}
-		seen[s.Date] = true
+		seen[s.Date.Unix()] = true
 		out = append(out, s)
 	}
 	return out, nil
@@ -197,11 +202,9 @@ func Save(configDir, stackDir string, entries []Entry) (pruned int, err error) {
 		return 0, writeErr(configDir, err)
 	}
 	f := fileV2{Version: 2, Created: now, StackDir: stackDir, Stacks: entries}
-	path, err := writeV2(configDir, f)
-	if err != nil {
+	if _, err := writeV2(configDir, f); err != nil {
 		return 0, err
 	}
-	_ = path
 
 	// Fichier « dernier état » pour les scripts externes (format texte).
 	names := make([]string, len(entries))
