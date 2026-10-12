@@ -31,8 +31,36 @@ suppriment des projets jetables `zzdsprobe*` avec l'image `busybox`, sans
 toucher aux stacks existantes.
 
 ```bash
-go test -tags integration -count=1 ./internal/compose/
+go test -tags integration -count=1 ./internal/compose/ ./internal/tui/
 ```
+
+`./internal/tui/` contient `TestLiveJourney` : le parcours de l'interface
+sur les vraies stacks du dossier configuré, en lecture seule (actions et logs
+simulés, `HOME` isolé).
+
+### Tests longs et mesures
+
+| Variable / commande | Effet |
+|---|---|
+| `DOCKSTACK_MONKEY=200 go test -run 'TestMonkey' ./internal/tui/` | frappes aléatoires sur 200 graines au lieu de 12 (≈ 6 min) |
+| `go test -short ./...` | saute les tests du faux démon qui tombe (≈ 30 s) |
+| `DOCKSTACK_MEASURE=1 go test -tags integration -run TestMeasure -v ./internal/tui/` | mesures longues : logs en suivi, contre-pression d'un pull (projets `zzdsprobe*`, images jetables supprimées après) |
+| `DOCKSTACK_MEASURE_PROF=<dossier>` | ajoute un profil CPU des mesures de logs |
+
+### Fuzzing
+
+Les graines de chaque cible tournent avec `go test` ordinaire, donc en CI.
+Pour fuzzer réellement (une cible à la fois) :
+
+```bash
+go test -run XXX -fuzz '^FuzzScanComposeDir$' -fuzztime 3m ./internal/compose/
+```
+
+| Paquet | Cibles |
+|---|---|
+| `internal/compose` | `FuzzScanComposeDir`, `FuzzLoadProjectDotEnv`, `FuzzCgroupParsers` |
+| `internal/tui` | `FuzzSortByState`, `FuzzDiffCapture`, `FuzzCaptureFile` |
+| `internal/theme` | `FuzzParse`, `FuzzSchemeReadable` |
 
 ## Style de code
 
