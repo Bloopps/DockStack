@@ -15,12 +15,15 @@ type dockerService interface {
 	ListStacks(ctx context.Context, stackDir string) ([]compose.Stack, error)
 	SubscribeEvents(ctx context.Context) <-chan compose.DockerEvent
 	LogsAsync(ctx context.Context, stack compose.Stack) (<-chan compose.LogEntry, error)
-	Usage(ctx context.Context, withVolumes bool) (compose.DockerUsage, error)
+	Usage(ctx context.Context, opts compose.UsageOptions) (compose.DockerUsage, error)
 	// Consommation CPU/RAM des conteneurs donnés (ceux des lignes à l'écran).
 	ContainerUsages(ctx context.Context, ids []string) (map[string]compose.ContainerUsage, error)
 
 	// Prévision des services en marche qu'un up recréerait (avant confirmation).
 	PlanUp(ctx context.Context, stack compose.Stack) ([]compose.Recreation, error)
+	AnalyzeCleanup(ctx context.Context, stackDir string) (compose.CleanupReport, error)
+	CleanupLive(ctx context.Context, items []compose.CleanupItem) <-chan compose.ProgressEvent
+	PruneLive(ctx context.Context, p compose.PruneCommand) <-chan compose.ProgressEvent
 
 	// Actions groupées streamées vers la vue de progression : un canal
 	// d'événements par opération, fermé par la sentinelle AllDone.

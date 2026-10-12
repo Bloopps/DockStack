@@ -147,8 +147,12 @@ func renderBackupView(m Model, height int) string {
 
 	// La feature capture la LISTE des stacks en marche, pas leurs données —
 	// l'expliquer d'emblée évite le contresens « sauvegarde de volumes ».
-	title := "  " + styleBold.Render("💾 Captures d'état") +
-		styleDim.Render("  ·  mémorise quelles stacks (et services) tournent, pas leurs données")
+	title := "  " + styleBold.Render("💾 Captures d'état")
+	// Le rappel ne s'affiche que s'il tient : en 80 colonnes la ligne en
+	// faisait 90 et le terminal la coupait.
+	if note := "  ·  mémorise quelles stacks (et services) tournent, pas leurs données"; lipgloss.Width(title)+lipgloss.Width(note) <= m.width {
+		title += styleDim.Render(note)
+	}
 	if m.captureLabeling {
 		title = "  " + styleBold.Render("✎ Nom de la capture : ") + m.captureLabel + styleCyan.Render("▏") +
 			styleDim.Render("   ↩ valider · esc annuler")

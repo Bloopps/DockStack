@@ -246,6 +246,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.captureSeen = true // le bandeau « stacks à relancer » a fait son office
 		m.actionCursor = 0
 		return m, loadBackups(m.cfg.ConfigDir())
+	case "n":
+		return m.openCleanup()
 	case "o":
 		start := m.cfg.StackDir
 		if start == "" {
@@ -925,6 +927,16 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		entry := m.dirEntries[m.dirCursor]
 		switch entry {
 		case "[*] Choisir ce dossier":
+			if m.dirPath != m.cfg.StackDir {
+				// Les stacks affichées et la sélection (par nom relatif)
+				// désignaient l'ancien dossier : un nom identique dans le
+				// nouveau aurait hérité de la coche.
+				m.stacks = nil
+				m.selected = make(map[string]bool)
+				m.svcFocus = false
+				m.cursor = 0
+				m.invalidateRows()
+			}
 			m.cfg.StackDir = m.dirPath
 			m.view = viewList
 			m.loading = true

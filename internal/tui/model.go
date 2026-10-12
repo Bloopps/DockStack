@@ -6,11 +6,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
@@ -38,6 +40,7 @@ const (
 	viewRestorePick
 	viewCompose
 	viewTheme
+	viewCleanup
 )
 
 // ---- message types ----
@@ -45,7 +48,16 @@ const (
 type tickMsg time.Time
 type metricsMsg monitor.Metrics
 type clientReadyMsg struct{ client dockerService }
-type stacksLoadedMsg []compose.Stack
+
+// stacksLoadedMsg : résultat d'un chargement de la liste. dir et at (départ
+// du chargement) permettent d'écarter un résultat périmé : chargement lancé
+// avant un changement de dossier, ou doublé par un chargement plus récent.
+type stacksLoadedMsg struct {
+	stacks []compose.Stack
+	err    error
+	dir    string
+	at     time.Time
+}
 type backupsLoadedMsg []backup.Snapshot
 type opDoneMsg struct {
 	err    error
@@ -134,6 +146,7 @@ type Model struct {
 	composeMouseOff bool
 
 	lastRefresh time.Time // dernier chargement des stacks (affiché au footer)
+	stacksAt    time.Time // départ du chargement affiché (cf. stacksLoadedMsg)
 	manualR     bool      // refresh déclenché par R : confirmer la fin par un statut
 
 	// Flux d'événements Docker (start/stop/die/health_status…), qui pilote le
@@ -213,6 +226,33 @@ type Model struct {
 	progressConfirmCancel bool // armed by a first esc/q while running; the next confirms
 	progressCancelling    bool // cancel() fired, waiting for the stream to drain
 
+	// Page « Nettoyage » (cleanupview.go). cleanupSeq écarte le résultat
+	// d'une analyse abandonnée (page quittée, R).
+	cleanupRep     *compose.CleanupReport
+	cleanupErr     error
+	cleanupLoading bool
+	cleanupSeq     int
+	cleanupCancel  context.CancelFunc
+	cleanupCursor  int
+	cleanupSel     map[string]bool
+	cleanupOpen    map[compose.CleanupKind]bool
+	// Nettoyage lancé : rapport d'avant et espace prévu, pour annoncer
+	// l'espace réellement libéré à la réanalyse qui suit.
+	cleanupBefore  *compose.CleanupReport
+	cleanupPlanned int64
+	cleanupApprox  bool // l'espace prévu est une estimation
+	cleanupResult  string
+
+	// progressReturn : vue rouverte en quittant la progression (la liste,
+	// ou la page de nettoyage qui se réanalyse).
+	progressReturn view
+
+	// planSeq numérote la dernière prévision d'up demandée. Il avance à
+	// chaque nouvelle demande et à chaque changement de vue au clavier : une
+	// réponse arrivée après un aller-retour dans l'aide, ou doublée par un
+	// second u, est écartée au lieu de lancer l'up sans nouvelle frappe.
+	planSeq int
+
 	// Confirmation (destructive actions)
 	confirmLabel   string
 	confirmWarning string
@@ -226,10 +266,12 @@ type Model struct {
 
 	// Occupation Docker de l'en-tête (nil tant qu'inconnue). usageBusy évite
 	// d'empiler des requêtes si le démon est lent ; volumesAt date la
-	// dernière mesure des volumes (coûteuse, espacée).
-	usage     *compose.DockerUsage
-	usageBusy bool
-	volumesAt time.Time
+	// dernière mesure des volumes (coûteuse, espacée). imagesStale : un
+	// événement a pu changer les images depuis leur dernière mesure.
+	usage       *compose.DockerUsage
+	usageBusy   bool
+	volumesAt   time.Time
+	imagesStale bool
 
 	// Consommation CPU/RAM par conteneur (ID), lue pour les lignes à l'écran
 	// (cf. stats.go). statsBusy évite d'empiler les lectures.
@@ -342,24 +384,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cfg.StackDir == "" {
 			m.loading = false
 			m.view = viewDirPicker
-			m.usageBusy = true
+			usage := m.startUsage()
 			return m, tea.Batch(loadDirCmd("/"), subscribeDockerEvents(m.client),
-				fetchUsage(m.client, true), tickUsage())
+				usage, tickUsage())
 		}
 		// La liste est l'écran d'accueil ; les stacks se chargent en arrière-plan
 		m.view = viewList
-		m.usageBusy = true
+		usage := m.startUsage()
 		return m, tea.Batch(m.loadStacksCmd(), subscribeDockerEvents(m.client),
-			fetchUsage(m.client, true), tickUsage())
+			usage, tickUsage())
 
 	case stacksLoadedMsg:
+		// Résultat périmé : un autre dossier (changé entre-temps), ou un
+		// chargement parti avant celui déjà affiché. L'appliquer montrerait
+		// des stacks d'un autre dossier, sur lesquelles les actions porteraient.
+		if msg.dir != m.cfg.StackDir || msg.at.Before(m.stacksAt) {
+			return m, nil
+		}
+		m.stacksAt = msg.at
+		if msg.err != nil {
+			m.err = msg.err
+			m.loading = false
+			m.refreshing = false
+			m.manualR = false
+			return m, nil
+		}
 		// Restaure la position du curseur par identité de ligne (stack ou
 		// en-tête de groupe) : les indices bougent à chaque re-tri/refresh.
 		anchor := m.cursorAnchor()
 		// Ne pas toucher à m.spinning : il appartient aux opérations backup
 		// (startOp/opDoneMsg) ; un refresh auto qui aboutit pendant une
 		// capture/restauration effacerait son spinner avant la fin.
-		m.stacks = sortByState([]compose.Stack(msg))
+		m.stacks = sortByState(msg.stacks)
 		m.invalidateRows()
 		// Un chargement réussi efface l'erreur précédente : sans ça, un raté
 		// transitoire (ex: daemon redémarré) laisserait l'écran d'erreur
@@ -379,7 +435,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usageMsg:
 		m.usageBusy = false
 		if msg.err != nil {
-			return m, nil // on garde la dernière mesure ; nouvel essai au tick
+			// On garde la dernière mesure ; nouvel essai au tick, images
+			// comprises si elles étaient demandées.
+			if msg.opts.Images {
+				m.imagesStale = true
+			}
+			return m, nil
 		}
 		u := msg.usage
 		if u.VolumesOK {
@@ -388,6 +449,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.VolumesSize, u.VolumesOK = m.usage.VolumesSize, true
 			u.VolumesByProject = m.usage.VolumesByProject
 			u.LayersByProject = m.usage.LayersByProject
+		}
+		if !u.ImagesOK && m.usage != nil && m.usage.ImagesOK {
+			u.ImagesSize, u.ImagesReclaimable, u.ImagesOK = m.usage.ImagesSize, m.usage.ImagesReclaimable, true
+			u.ImagesExact = m.usage.ImagesExact
 		}
 		if u.RootDir != "" && (m.usage == nil || m.usage.RootDir != u.RootDir) {
 			monitor.SetDiskPath(u.RootDir)
@@ -404,8 +469,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.client == nil || m.usageBusy {
 			return m, tickUsage()
 		}
-		m.usageBusy = true
-		return m, tea.Batch(fetchUsage(m.client, time.Since(m.volumesAt) >= volumesInterval), tickUsage())
+		usage := m.startUsage()
+		return m, tea.Batch(usage, tickUsage())
+
+	case imagesRefreshMsg:
+		// Mesure en cours : imagesStale reste levé, le prochain tick s'en
+		// chargera.
+		if m.client == nil || m.usageBusy || !m.imagesStale {
+			return m, nil
+		}
+		usage := m.startUsage()
+		return m, usage
 
 	case backupsLoadedMsg:
 		m.backups = []backup.Snapshot(msg)
@@ -456,38 +530,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.seq != m.progressSeq {
 			return m, nil
 		}
-		if m.progress != nil {
-			m.progress.apply(msg.ev)
-		}
-		if msg.ev.StackDone {
-			m.progressTotal++
-			if msg.ev.Err == nil {
-				m.progressOk++
+		for _, ev := range msg.evs {
+			if m.progress != nil {
+				m.progress.apply(ev)
 			}
+			if ev.StackDone {
+				m.progressTotal++
+				if ev.Err == nil {
+					m.progressOk++
+				}
+			}
+		}
+		if msg.done {
+			return m.progressFinished()
 		}
 		return m, readProgressCmd(m.progressCh, msg.seq)
 
 	case planUpMsg:
 		return m.handlePlanUp(msg)
 
+	case cleanupLoadedMsg:
+		return m.handleCleanupLoaded(msg)
+
 	case progressAllDoneMsg:
 		if msg.seq != m.progressSeq {
 			return m, nil
 		}
-		m.progressDone = true
-		m.progressCh = nil
-		if m.progressCancel != nil {
-			m.progressCancel()
-			m.progressCancel = nil
-		}
-		return m, m.loadStacksCmd()
+		return m.progressFinished()
 
 	case logLinesMsg:
 		if msg.seq != m.logSeq {
 			return m, nil // session de logs périmée : ne pas réarmer la lecture
 		}
 		for _, entry := range msg.entries {
-			line := fmt.Sprintf("[%s] %s", sanitizeLogLine(entry.Name), sanitizeLogLine(entry.Line))
+			line := "[" + sanitizeLogLine(entry.Name) + "] " + sanitizeLogLine(entry.Line)
 			m.logLines = append(m.logLines, line)
 		}
 		// Plafond glissant : le suivi est continu (Follow), sans limite la
@@ -540,7 +616,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dockerEventMsg:
 		cmds := []tea.Cmd{readDockerEventCmd(m.eventsCh)}
-		if compose.IsRelevantDockerEvent(msg.Action) {
+		ev := compose.DockerEvent(msg)
+		if compose.ImagesChanged(ev) && !m.imagesStale {
+			m.imagesStale = true
+			cmds = append(cmds, refreshImagesIn(imagesDelay))
+		}
+		if compose.IsRelevantDockerEvent(ev) {
 			m.refreshGen++
 			if !m.refreshPending {
 				m.refreshPending = true
@@ -622,7 +703,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		// Keep the spinner animating both for footer ops (m.spinning) and for the
 		// live progress view while at least one task is still running.
-		if m.spinning || (m.view == viewProgress && !m.progressDone) {
+		if m.spinning || (m.view == viewProgress && !m.progressDone) || (m.view == viewCleanup && m.cleanupLoading) {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -665,8 +746,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case tea.PasteMsg:
+		return m.handlePaste(msg.Content)
+
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		// Changer de vue abandonne la prévision d'up en cours (voir planSeq),
+		// sauf si c'est cette frappe même qui l'a demandée.
+		from, seq := m.view, m.planSeq
+		next, cmd := m.handleKey(msg)
+		if nm, ok := next.(Model); ok && nm.view != from && nm.planSeq == seq {
+			nm.planSeq++
+			if nm.status == planStatus {
+				nm.status = ""
+			}
+			return nm, cmd
+		}
+		return next, cmd
 	}
 
 	return m, nil
@@ -712,6 +807,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "ctrl+c":
 			if m.progressDone {
 				m.leaveProgressView()
+				if m.view == viewCleanup {
+					return m.startCleanupAnalysis()
+				}
 				break
 			}
 			// Opération en cours : premier esc arme la confirmation, le second annule.
@@ -728,6 +826,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.progressDone {
 				m.leaveProgressView()
+				if m.view == viewCleanup {
+					return m.startCleanupAnalysis()
+				}
 			}
 		default:
 			// Toute autre touche désarme la confirmation d'annulation.
@@ -772,7 +873,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// R = reload global (r est réservé à Restart dans la liste). Si l'init
 	// Docker a échoué, R retente la connexion au lieu de ne rien faire.
-	if msg.String() == "R" && !m.typing() {
+	if msg.String() == "R" && !m.typing() && m.view != viewCleanup {
 		if m.client == nil {
 			m.loading = true
 			m.err = nil
@@ -810,6 +911,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleComposeKey(msg)
 	case viewTheme:
 		return m.handleThemeKey(msg)
+	case viewCleanup:
+		return m.handleCleanupKey(msg)
 	}
 	return m, nil
 }
@@ -850,11 +953,10 @@ func (m Model) viewContent() string {
 		return renderComposeView(m)
 	}
 
-	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.usage, m.width)
+	header := newBlock(renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width))
 
-	headerH := lipgloss.Height(header)
 	footerH := 1
-	bodyH := m.height - headerH - footerH
+	bodyH := m.height - len(header.lines) - footerH
 	if bodyH < 0 {
 		bodyH = 0
 	}
@@ -873,11 +975,13 @@ func (m Model) viewContent() string {
 		body = renderBackupView(m, bodyH)
 	case viewTheme:
 		body = renderThemePicker(m, bodyH)
+	case viewCleanup:
+		body = renderCleanup(m, bodyH)
 	default:
 		if m.loading {
 			body = styleDim.Render("\n  Chargement...")
 		} else if m.err != nil {
-			body = renderError(m.err)
+			body = renderError(m.err, m.width)
 		} else {
 			// Bandeau éventuel : une ligne prise sur la hauteur de la liste.
 			banner := m.captureBanner()
@@ -885,31 +989,18 @@ func (m Model) viewContent() string {
 			if banner != "" {
 				listH--
 			}
-			body = m.listBody(listH)
+			list := m.listBlock(listH)
 			if banner != "" {
-				body = banner + "\n" + body
+				list.prepend(newBlock(banner))
 			}
+			list.fit(bodyH)
+			return stackBlocks(header, list, newBlock(m.renderFooter()))
 		}
 	}
 
-	footer := m.renderFooter()
-	return lipgloss.JoinVertical(lipgloss.Left, header, fitHeight(body, bodyH), footer)
-}
-
-// listBody rend la liste des stacks (avec le volet de détail si visible) sur
-// bodyH lignes.
-func (m Model) listBody(bodyH int) string {
-	if !m.previewVisible() {
-		return renderStackList(m, bodyH, m.width)
-	}
-	// Liste à gauche (largeur réduite), aperçu à droite. On force la largeur du
-	// bloc liste pour que le volet s'aligne quelle que soit la longueur des
-	// lignes affichées.
-	paneW := m.previewWidth()
-	listW := m.width - paneW
-	list := lipgloss.NewStyle().Width(listW).Height(bodyH).
-		Render(renderStackList(m, bodyH, listW))
-	return lipgloss.JoinHorizontal(lipgloss.Top, list, renderPreviewPane(m, bodyH, paneW))
+	b := newBlock(body)
+	b.fit(bodyH)
+	return stackBlocks(header, b, newBlock(m.renderFooter()))
 }
 
 // captureBanner : rappel, au-dessus de la liste, des stacks de la dernière
@@ -938,8 +1029,11 @@ func (m Model) captureBanner() string {
 }
 
 // fitHeight complète (ou coupe) s à exactement h lignes : sans ça, une vue
-// plus courte que l'écran remonte le footer au milieu de l'écran.
+// plus courte que l'écran remonte le footer au milieu de l'écran. Une hauteur
+// négative (terminal moins haut que l'en-tête) vaut 0 : la vue de progression
+// paniquait, et l'application quittait en pleine opération.
 func fitHeight(s string, h int) string {
+	h = max(h, 0)
 	lines := strings.Split(s, "\n")
 	if len(lines) > h {
 		lines = lines[:h]
@@ -950,16 +1044,22 @@ func fitHeight(s string, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderError(err error) string {
+// renderError : écran d'erreur de la liste. width sert à replier le message,
+// souvent long (« failed to connect to the docker API at … »), que le
+// terminal coupait sinon en bout de ligne.
+func renderError(err error, width int) string {
 	msg := err.Error()
-	// « permission denied » seul viserait aussi un dossier de stacks illisible.
-	if strings.Contains(msg, "docker.sock") || (strings.Contains(msg, "permission denied") && strings.Contains(msg, "docker")) {
-		box := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(activeScheme.Danger).
-			Padding(0, 2).
-			MarginLeft(2)
-
+	// « permission denied » seul viserait aussi un dossier de stacks illisible,
+	// et « docker » n'importe où un chemin comme /srv/docker : on reconnaît
+	// les messages du client Docker (« … connect to the docker API at … »,
+	// « … connect to the Docker daemon socket … »).
+	lower := strings.ToLower(msg)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeScheme.Danger).
+		Padding(0, 2).
+		MarginLeft(2)
+	if strings.Contains(lower, "permission denied") && strings.Contains(lower, "connect to the docker") {
 		content := strings.Join([]string{
 			styleRed.Bold(true).Render("Accès Docker refusé"),
 			"",
@@ -971,7 +1071,88 @@ func renderError(err error) string {
 
 		return "\n" + box.Render(content)
 	}
-	return styleRed.Render(fmt.Sprintf("\n  Erreur: %v", err))
+	// Démon arrêté, tombé en cours de route ou muet. Avant, la seule présence
+	// de « docker.sock » dans le message (démon arrêté, ou flux coupé : EOF)
+	// affichait « Accès Docker refusé » et le conseil de rejoindre le groupe
+	// docker, sans le message lui-même.
+	if daemonUnreachable(lower) {
+		inner := max(width-8, 20)
+		rows := []string{
+			styleRed.Bold(true).Render("Démon Docker injoignable"),
+			"",
+			styleDim.Render("Démarrer le daemon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
+			styleDim.Render("puis R pour réessayer"),
+			"",
+		}
+		for _, l := range wordWrap(msg, inner) {
+			rows = append(rows, styleDim.Render(l))
+		}
+		return "\n" + box.Render(strings.Join(rows, "\n"))
+	}
+	lines := wordWrap("Erreur: "+msg, max(width-4, 20))
+	return styleRed.Render("\n  " + strings.Join(lines, "\n  "))
+}
+
+// pasteMax borne un collage : les champs de saisie sont courts (le filtre de
+// la liste plafonne à 64 caractères), et un long collage repassé caractère
+// par caractère refiltrerait la liste à chaque fois.
+const pasteMax = 64
+
+// handlePaste insère un texte collé (bracketed paste, actif par défaut dans
+// bubbletea v2) dans le champ en cours de saisie. Avant, le message était
+// ignoré et coller ne faisait rien. Hors saisie, le collage est ignoré : il
+// ne doit jamais devenir une suite de raccourcis (u, d, r…).
+func (m Model) handlePaste(text string) (tea.Model, tea.Cmd) {
+	if !m.typing() {
+		return m, nil
+	}
+	// Une seule ligne : sauts de ligne et tabulations deviennent des espaces,
+	// les autres caractères de contrôle (séquences d'échappement) disparaissent.
+	var b strings.Builder
+	n := 0
+	for _, r := range text {
+		if n >= pasteMax {
+			break
+		}
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			r = ' '
+		case unicode.IsControl(r):
+			continue
+		}
+		b.WriteRune(r)
+		n++
+	}
+	clean := b.String()
+	if m.filtering {
+		// Le champ du filtre gère lui-même le collage (et son plafond).
+		var cmd tea.Cmd
+		m.filter, cmd = m.filter.Update(tea.PasteMsg{Content: clean})
+		m.invalidateRows()
+		m.cursor = 0
+		return m, cmd
+	}
+	var next tea.Model = m
+	for _, r := range clean {
+		mm, ok := next.(Model)
+		if !ok || !mm.typing() {
+			break
+		}
+		next, _ = mm.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return next, nil
+}
+
+// daemonUnreachable reconnaît, dans un message en minuscules, les erreurs de
+// connexion du client Docker (démon arrêté, connexion coupée) et la prise de
+// contact sans réponse de compose.New.
+func daemonUnreachable(lower string) bool {
+	for _, k := range []string{"cannot connect to the docker daemon", "failed to connect to the docker api", "error during connect", "le démon docker ne répond pas"} {
+		if strings.Contains(lower, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Model) setStatus(s string, isErr bool) {
@@ -981,6 +1162,25 @@ func (m *Model) setStatus(s string, isErr bool) {
 
 func (m Model) logsHeight() int {
 	return m.height - 3
+}
+
+// progressFinished : fin de l'opération en cours (sentinelle AllDone lue).
+func (m Model) progressFinished() (tea.Model, tea.Cmd) {
+	m.progressDone = true
+	m.progressCh = nil
+	if m.progressCancel != nil {
+		m.progressCancel()
+		m.progressCancel = nil
+	}
+	return m, m.loadStacksCmd()
+}
+
+// headerCounts : compteurs de l'en-tête, marqués inconnus tant qu'aucune
+// liste n'a pu être lue.
+func (m Model) headerCounts() StackCounts {
+	sc := m.stackCounts()
+	sc.Unknown = len(m.stacks) == 0 && (m.loading || m.err != nil)
+	return sc
 }
 
 func (m Model) stackCounts() StackCounts {
@@ -1097,6 +1297,8 @@ func (m Model) renderFooter() string {
 	case viewTheme:
 		left, right, info := m.themeFooter()
 		return renderBar(left, right, m.width, info)
+	case viewCleanup:
+		return m.cleanupFooter()
 	case viewHelp:
 		var left []footerKey
 		if m.helpMaxScroll() > 0 {
@@ -1125,11 +1327,10 @@ func truncate(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max-1]) + "…"
+	// Largeur affichée, pas nombre de caractères : un caractère large (CJK,
+	// emoji) occupe deux colonnes, et un nom qui en contenait sortait deux
+	// fois trop large.
+	return ansi.Truncate(s, max, "…")
 }
 
 // ansiCSI repère les séquences ANSI/CSI (couleurs, déplacement du curseur,
@@ -1155,7 +1356,11 @@ func sanitizeLogLine(s string) string {
 	if i := strings.LastIndexByte(s, '\r'); i >= 0 && i < len(s)-1 {
 		s = s[i+1:]
 	}
-	s = ansiCSI.ReplaceAllString(s, "")
+	// L'expression régulière ne sert que s'il y a une séquence d'échappement :
+	// c'est rare, et elle coûtait autant que tout le reste pour chaque ligne.
+	if strings.IndexByte(s, 0x1b) >= 0 {
+		s = ansiCSI.ReplaceAllString(s, "")
+	}
 	s = strings.Map(func(r rune) rune {
 		if r == '\t' {
 			return r
@@ -1311,7 +1516,8 @@ func (m Model) startOp(label string, op tea.Cmd) (tea.Model, tea.Cmd) {
 // gros pull peut accumuler des dizaines de milliers de ressources dans
 // progressState, inutile de les retenir une fois de retour sur la liste.
 func (m *Model) leaveProgressView() {
-	m.view = viewList
+	m.view = m.progressReturn
+	m.progressReturn = viewList
 	m.progress = nil
 }
 
@@ -1329,6 +1535,7 @@ func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-cha
 	m.spinning = false
 	m.status = ""
 	m.view = viewProgress
+	m.progressReturn = viewList
 	m.progressCh = ch
 	m.progressSeq++ // nouvelle op : périme les messages en vol de la précédente
 	return m, tea.Batch(readProgressCmd(ch, m.progressSeq), m.spinner.Tick)
@@ -1340,4 +1547,17 @@ func (m Model) filterBar() string {
 		return ""
 	}
 	return m.filter.View()
+}
+
+// startUsage lance une mesure d'occupation : volumes (et images) quand leur
+// cadence est échue, images aussi quand un événement a pu les changer ou
+// qu'elles sont encore inconnues. L'appelant vérifie client et usageBusy.
+func (m *Model) startUsage() tea.Cmd {
+	opts := compose.UsageOptions{Volumes: time.Since(m.volumesAt) >= volumesInterval}
+	opts.Images = opts.Volumes || m.imagesStale || m.usage == nil || !m.usage.ImagesOK
+	if opts.Images {
+		m.imagesStale = false
+	}
+	m.usageBusy = true
+	return fetchUsage(m.client, opts)
 }

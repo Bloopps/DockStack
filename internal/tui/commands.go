@@ -21,22 +21,47 @@ import (
 // opération précédente est ignoré au lieu d'être appliqué à l'état de la
 // suivante — sans ça, deux pompes pourraient lire le même canal et mélanger
 // les flux de deux opérations.
+//
+// Un message porte un lot d'événements : bubbletea recalcule la vue après
+// chaque message, et un pull émet des milliers d'événements de couches. À un
+// rendu par événement (≈ 0,8 ms), la vue plafonnait vers 1 300 événements/s
+// en occupant un cœur entier.
 type progressEventMsg struct {
-	ev  compose.ProgressEvent
+	evs []compose.ProgressEvent
 	seq int
+	// done : la sentinelle AllDone a été lue après ces événements.
+	done bool
 }
 type progressAllDoneMsg struct{ seq int }
 
-// readProgressCmd lit le prochain événement du flux. Le canal vit dans le
-// Model (pas de variable globale) : chaque opération a son propre flux.
-// La fin est signalée par la sentinelle AllDone (le canal n'est pas fermé).
+// progressBatchMax borne un lot, comme logBatchMax pour les logs.
+const progressBatchMax = 256
+
+// readProgressCmd lit le prochain événement du flux (lecture bloquante), puis
+// ceux déjà disponibles, sans attendre, jusqu'à progressBatchMax. Le canal vit
+// dans le Model (pas de variable globale) : chaque opération a son propre
+// flux. La fin est signalée par la sentinelle AllDone (le canal n'est pas
+// fermé).
 func readProgressCmd(ch <-chan compose.ProgressEvent, seq int) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok || ev.AllDone {
 			return progressAllDoneMsg{seq: seq}
 		}
-		return progressEventMsg{ev: ev, seq: seq}
+		msg := progressEventMsg{evs: []compose.ProgressEvent{ev}, seq: seq}
+		for len(msg.evs) < progressBatchMax {
+			select {
+			case ev, ok := <-ch:
+				if !ok || ev.AllDone {
+					msg.done = true
+					return msg
+				}
+				msg.evs = append(msg.evs, ev)
+			default:
+				return msg
+			}
+		}
+		return msg
 	}
 }
 
@@ -131,9 +156,10 @@ func loadStacks(client dockerService, stackDir string, exclude []string) tea.Cmd
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), loadStacksTimeout)
 		defer cancel()
+		at := time.Now()
 		stacks, err := client.ListStacks(ctx, stackDir)
 		if err != nil {
-			return fatalErrMsg(err)
+			return stacksLoadedMsg{err: err, dir: stackDir, at: at}
 		}
 		if len(exclude) > 0 {
 			ex := config.Config{Exclude: exclude}
@@ -145,7 +171,7 @@ func loadStacks(client dockerService, stackDir string, exclude []string) tea.Cmd
 			}
 			stacks = kept
 		}
-		return stacksLoadedMsg(stacks)
+		return stacksLoadedMsg{stacks: stacks, dir: stackDir, at: at}
 	}
 }
 
@@ -241,28 +267,41 @@ func chainLive(ctx context.Context, phases []livePhase) <-chan compose.ProgressE
 
 // ---- occupation Docker (en-tête) ----
 
-// usageInterval : compteurs et images (≈150 ms côté démon) ;
+// usageInterval : compteurs de conteneurs (≈7 ms côté démon).
 // volumesInterval : la taille des volumes oblige le démon à parcourir leurs
-// données (≈1,5 s ici, bien plus sur de gros volumes) — on l'espace.
+// données (≈1,5 s ici, bien plus sur de gros volumes) — on l'espace. La
+// taille des images (≈115 ms) n'est relue que sur événement (imagesDelay
+// après le premier), et à la même cadence que les volumes en filet.
 const (
 	usageInterval   = 30 * time.Second
 	volumesInterval = 10 * time.Minute
 	usageTimeout    = 2 * time.Minute
+	imagesDelay     = 2 * time.Second
 )
 
 type usageMsg struct {
+	opts  compose.UsageOptions // mesures demandées
 	usage compose.DockerUsage
 	err   error
 }
 type usageTickMsg struct{}
 
-func fetchUsage(client dockerService, withVolumes bool) tea.Cmd {
+// imagesRefreshMsg : relecture des images après un événement qui les touche.
+type imagesRefreshMsg struct{}
+
+func fetchUsage(client dockerService, opts compose.UsageOptions) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), usageTimeout)
 		defer cancel()
-		u, err := client.Usage(ctx, withVolumes)
-		return usageMsg{usage: u, err: err}
+		u, err := client.Usage(ctx, opts)
+		return usageMsg{opts: opts, usage: u, err: err}
 	}
+}
+
+// refreshImagesIn programme la relecture des images. Le délai regroupe les
+// rafales (un up de 30 services crée 30 conteneurs).
+func refreshImagesIn(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return imagesRefreshMsg{} })
 }
 
 func tickUsage() tea.Cmd {
@@ -297,17 +336,28 @@ func startLogs(ctx context.Context, client dockerService, stack compose.Stack, s
 
 // logBatchMax borne le nombre de lignes regroupées en un seul message : assez
 // pour amortir les rafales sans rendre le rendu saccadé ni bloquer la lecture.
-const logBatchMax = 256
+const logBatchMax = compose.LogBuffer
+
+// logFrame : durée pendant laquelle un lot attend les lignes suivantes. Une
+// image à 20 images/s : bubbletea recalcule toute la vue après chaque
+// message, et des lignes arrivant une à une (≈ 500/s pour un conteneur
+// bavard ordinaire) coûtaient un rendu complet chacune, soit 40 % d'un cœur.
+// L'écran n'étant redessiné qu'à cette cadence, l'attente ne se voit pas.
+// Pendant l'attente, la lecture dort au lieu de guetter le canal : chaque
+// ligne aurait sinon réveillé la goroutine de lecture (compose.LogBuffer
+// lignes d'avance tiennent dans le canal).
+const logFrame = 50 * time.Millisecond
 
 func readLogCmd(ch <-chan compose.LogEntry, seq int) tea.Cmd {
 	return func() tea.Msg {
-		// Lecture bloquante de la première ligne, puis on vide ce qui est déjà
-		// disponible sans attendre, pour livrer un lot d'un coup.
+		// Lecture bloquante de la première ligne, puis on laisse les suivantes
+		// s'accumuler pendant une image et on les livre d'un coup.
 		entry, ok := <-ch
 		if !ok {
 			return logDoneMsg{seq: seq}
 		}
-		batch := make([]compose.LogEntry, 1, logBatchMax)
+		time.Sleep(logFrame)
+		batch := make([]compose.LogEntry, 1, min(len(ch)+1, logBatchMax))
 		batch[0] = entry
 		for len(batch) < logBatchMax {
 			select {

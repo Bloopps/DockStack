@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 )
@@ -290,7 +292,7 @@ func (m Model) renderResourceLine(r *resourceProgress, stackDone bool, now time.
 }
 
 func renderProgressView(m Model) string {
-	header := renderHeader(m.metrics, m.history, m.stackCounts(), m.usage, m.width)
+	header := renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width)
 	bodyH := m.progressBodyHeight()
 
 	var footer string
@@ -354,18 +356,32 @@ func wordWrap(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}
 	}
+	// Largeurs en colonnes affichées, pas en octets : un texte accentué se
+	// repliait trop tôt. Un mot plus large que la ligne (référence d'image,
+	// URL d'un registre, chemin) est coupé net au lieu de déborder.
 	var lines []string
-	words := strings.Fields(text)
-	current := ""
-	for _, w := range words {
-		if current == "" {
-			current = w
-		} else if len(current)+1+len(w) <= width {
+	current, curW := "", 0
+	for _, w := range strings.Fields(text) {
+		ww := ansi.StringWidth(w)
+		switch {
+		case current != "" && curW+1+ww <= width:
 			current += " " + w
-		} else {
+			curW += 1 + ww
+			continue
+		case current != "":
 			lines = append(lines, current)
-			current = w
 		}
+		for ww > width {
+			head := ansi.Truncate(w, width, "")
+			if head == "" { // caractère large sur une colonne : on le garde
+				_, size := utf8.DecodeRuneInString(w)
+				head = w[:size]
+			}
+			lines = append(lines, head)
+			w = w[len(head):]
+			ww = ansi.StringWidth(w)
+		}
+		current, curW = w, ww
 	}
 	if current != "" {
 		lines = append(lines, current)

@@ -15,11 +15,24 @@ type dirLoadedMsg struct {
 
 func renderDirPicker(m Model) string {
 	title := styleTitle.Render("📂 Choisir le répertoire des stacks")
-	sub := styleDim.Render(fmt.Sprintf("  Répertoire actuel : %s", m.dirPath))
+	sub := styleDim.Render(truncate(fmt.Sprintf("  Répertoire actuel : %s", m.dirPath), max(m.width, 1)))
 
+	// Fenêtre qui suit le curseur : un dossier aux centaines de
+	// sous-dossiers (/usr/lib, un home chargé) poussait le curseur et le pied
+	// de page hors de l'écran. 5 lignes fixes (titre, chemin, 2 blancs, pied),
+	// 2 de plus pour l'erreur éventuelle.
+	rowsH := m.height - 5
+	if m.dirErr != nil {
+		rowsH -= 2
+	}
+	rowsH = max(rowsH, 1)
+	off := 0
+	if m.dirCursor >= rowsH {
+		off = m.dirCursor - rowsH + 1
+	}
 	var lines []string
-	for i, e := range m.dirEntries {
-		line := "  " + e
+	for i := off; i < len(m.dirEntries) && i < off+rowsH; i++ {
+		line := "  " + truncate(m.dirEntries[i], max(m.width-2, 1))
 		if i == m.dirCursor {
 			pad := m.width - lipgloss.Width(line)
 			if pad < 0 {
@@ -28,6 +41,9 @@ func renderDirPicker(m Model) string {
 			line = styleSelected.Render(line + strings.Repeat(" ", pad))
 		}
 		lines = append(lines, line)
+	}
+	for len(lines) < rowsH {
+		lines = append(lines, "")
 	}
 
 	body := strings.Join(lines, "\n")

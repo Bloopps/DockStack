@@ -34,7 +34,7 @@ func (m Model) askConfirm(label, warning string, names []string, exec func(Model
 	// Annuler ramène d'où l'on vient quand ça a du sens (vue backup),
 	// sinon à la liste.
 	m.confirmReturn = viewList
-	if m.view == viewBackup || m.view == viewRestorePick {
+	if m.view == viewBackup || m.view == viewRestorePick || m.view == viewCleanup {
 		m.confirmReturn = m.view
 	}
 	m.view = viewConfirm
@@ -108,6 +108,9 @@ func (m Model) startOrConfirmGroupUp(stacks []compose.Stack) (tea.Model, tea.Cmd
 	return m.startGroupAction("up", stacks)
 }
 
+// planStatus : statut affiché pendant la prévision d'un up.
+const planStatus = "Analyse des changements…"
+
 // planUpMsg : résultat de la prévision des recréations d'un up.
 type planUpMsg struct {
 	label string
@@ -116,6 +119,7 @@ type planUpMsg struct {
 	err   error
 	run   func(Model) (tea.Model, tea.Cmd)
 	from  view // vue d'où la prévision a été demandée
+	seq   int  // planSeq au moment de la demande
 }
 
 // confirmUpWithPlan prévoit (hors boucle UI) quels services en marche un up
@@ -124,7 +128,9 @@ type planUpMsg struct {
 // raison. Si la prévision échoue, on retombe sur la confirmation générique.
 func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.Stack, run func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
 	client, from := m.client, m.view
-	m.setStatus("Analyse des changements…", false)
+	m.planSeq++
+	seq := m.planSeq
+	m.setStatus(planStatus, false)
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -132,7 +138,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 		for _, s := range stacks {
 			plan, err := client.PlanUp(ctx, s)
 			if err != nil {
-				return planUpMsg{label: label, names: names, err: err, run: run, from: from}
+				return planUpMsg{label: label, names: names, err: err, run: run, from: from, seq: seq}
 			}
 			for _, r := range plan {
 				line := r.Service + " · " + r.Reason
@@ -142,14 +148,20 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 				recs = append(recs, line)
 			}
 		}
-		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from}
+		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from, seq: seq}
 	}
 }
 
 // handlePlanUp applique la décision après la prévision (voir confirmUpWithPlan).
 func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
+	// Demande remplacée par une plus récente (qui porte son propre statut),
+	// ou abandonnée par un changement de vue (statut déjà effacé).
+	if msg.seq != m.planSeq {
+		return m, nil
+	}
 	m.status = ""
-	// Vue changée ou opération lancée entre-temps : la demande est périmée.
+	// Vue changée (même revenue depuis), ou opération lancée entre-temps :
+	// la demande est périmée.
 	if m.view != msg.from || m.opInProgress() {
 		return m, nil
 	}
@@ -183,12 +195,18 @@ const confirmMaxNames = 8
 func renderConfirmView(m Model, height int) string {
 	inner := panelWidth + 4
 	divider := styleDim.Render(strings.Repeat("─", inner))
+	// Largeur utile dans le cadre (bordure, marges intérieures et marge
+	// gauche : 8 colonnes) : un nom de stack ou de service très long
+	// débordait de l'écran, et le terminal coupait le cadre.
+	room := max(m.width-8, 20)
 
 	rows := []string{
-		styleYellow.Bold(true).Render("⚠ Confirmer : ") + stylePanelTitle.Render(m.confirmLabel),
+		styleYellow.Bold(true).Render("⚠ Confirmer : ") + stylePanelTitle.Render(truncate(m.confirmLabel, max(room-14, 6))),
 	}
 	if m.confirmWarning != "" {
-		rows = append(rows, styleRed.Render(m.confirmWarning))
+		for _, l := range wordWrap(m.confirmWarning, room) {
+			rows = append(rows, styleRed.Render(l))
+		}
 	}
 	rows = append(rows, divider)
 
@@ -202,7 +220,7 @@ func renderConfirmView(m Model, height int) string {
 		names = names[:maxNames]
 	}
 	for _, n := range names {
-		rows = append(rows, "  "+styleDim.Render(n))
+		rows = append(rows, "  "+styleDim.Render(truncate(n, room-2)))
 	}
 	if extra > 0 {
 		rows = append(rows, "  "+styleDim.Render(fmt.Sprintf("… et %d autres", extra)))

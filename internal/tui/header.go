@@ -101,6 +101,9 @@ type StackCounts struct {
 	// Conteneurs rattachés aux stacks (en marche / total) : le compteur du
 	// démon les compte tous, y compris ceux lancés hors compose (docker run).
 	CtrRunning, CtrTotal int
+	// Unknown : la liste n'a pas encore pu être lue (chargement, démon
+	// injoignable). Sans lui, l'en-tête affichait « aucune déployée ».
+	Unknown bool
 }
 
 func colorForPct(pct int) lipgloss.Style {
@@ -354,6 +357,9 @@ func loadColor(load string, ncores int) lipgloss.Style {
 // problème dans sa couleur. Les stacks jamais déployées n'y figurent pas :
 // la liste les résume déjà, et elles gonflaient le total pour rien.
 func stacksSummary(sc StackCounts) string {
+	if sc.Unknown {
+		return styleDim.Render("…")
+	}
 	deployed := sc.Total - sc.NotDep
 	if deployed == 0 {
 		return styleDim.Render("aucune déployée")
@@ -586,9 +592,17 @@ func dockerItems(du *compose.DockerUsage, sc StackCounts, col bool) []string {
 			}
 			ctrs += styleDim.Render(note)
 		}
-		images = fmtBytes(du.ImagesSize)
-		if du.ImagesReclaimable > 0 {
-			images += styleDim.Render(" (" + fmtBytes(du.ImagesReclaimable) + " libres)")
+		if du.ImagesOK {
+			images = fmtBytes(du.ImagesSize)
+			if du.ImagesReclaimable > 0 {
+				// Calcul exact couche par couche (compose.Usage) ; « ≈ » si une
+				// image n'a pas pu être détaillée.
+				approx := ""
+				if !du.ImagesExact {
+					approx = "≈ "
+				}
+				images += styleDim.Render(" (" + approx + fmtBytes(du.ImagesReclaimable) + " libres)")
+			}
 		}
 		if du.VolumesOK {
 			volumes = fmtBytes(du.VolumesSize)

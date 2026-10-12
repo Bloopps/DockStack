@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 )
@@ -396,9 +397,15 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	out = append(out, styleDim.Render(truncate(pos, inner)))
 	switch {
 	case m.svcFiltering:
-		out = append(out, styleCyan.Render("/ ")+m.svcFilter+styleCyan.Render("▏"))
+		// On voit la fin de ce qu'on tape : une saisie plus large que le
+		// volet débordait de l'écran.
+		text := m.svcFilter
+		if w, room := ansi.StringWidth(text), inner-3; w > room {
+			text = "…" + ansi.TruncateLeft(text, w-room+1, "")
+		}
+		out = append(out, styleCyan.Render("/ ")+text+styleCyan.Render("▏"))
 	case m.svcFilter != "":
-		out = append(out, styleDim.Render("/ "+m.svcFilter+"  (esc : effacer)"))
+		out = append(out, styleDim.Render(truncate("/ "+m.svcFilter+"  (esc : effacer)", inner)))
 	default:
 		out = append(out, "")
 	}
