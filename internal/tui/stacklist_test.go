@@ -93,9 +93,12 @@ func TestFilteredStacks(t *testing.T) {
 	}
 }
 
+// Les stacks cochées sont rendues dans l'ordre de la liste. Elles tournent :
+// une stack arrêtée est masquée par défaut, et une stack masquée n'est plus
+// visée (cf. TestHiddenSelectionNotTargeted).
 func TestSelectedStacks(t *testing.T) {
 	m := newTestModel([]compose.Stack{
-		{Name: "a"}, {Name: "b"}, {Name: "c"},
+		stack("a", "", 1, 1, 0), stack("b", "", 1, 1, 0), stack("c", "", 1, 1, 0),
 	})
 	m.selected["a"] = true
 	m.selected["c"] = true

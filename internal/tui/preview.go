@@ -111,11 +111,11 @@ func renderPreviewPane(m Model, height, paneW int) string {
 	case !ok || row.sep || row.more:
 		content = []string{styleDim.Render("(rien à afficher)")}
 	case row.header:
-		content = previewGroup(m, row.group, inner, height, len(m.selectedStacks()))
+		content = previewGroup(m, row.group, inner, height, m.selection())
 	case m.previewCompose:
 		content = previewStack(m, row.stack, inner, height)
 	default:
-		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, len(m.selectedStacks()), m.previewExtraFor(row.stack))
+		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, m.selection(), m.previewExtraFor(row.stack))
 	}
 
 	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste.
@@ -188,7 +188,7 @@ func previewStack(m Model, s compose.Stack, inner, height int) []string {
 // états, puis chaque stack membre avec sa pastille d'état colorée et son
 // compteur conteneurs (x/y). Un dossier regroupe plusieurs stacks ayant chacune
 // son propre compose : pas de fichier unique à prévisualiser, d'où ce bilan.
-func previewGroup(m Model, group string, inner, height, selected int) []string {
+func previewGroup(m Model, group string, inner, height int, sel selState) []string {
 	members := m.groupStacks(group)
 
 	out := []string{
@@ -203,8 +203,8 @@ func previewGroup(m Model, group string, inner, height, selected int) []string {
 	actions := append([]string{"", styleDim.Render("Actions sur tout le dossier")}, keyGrid([]footerKey{
 		{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"←", "replier"},
 	}, inner)...)
-	if selected > 0 {
-		actions = append([]string{""}, selectionActions(selected, inner)...)
+	if sel.any() {
+		actions = append([]string{""}, selectionActions(sel, inner)...)
 	}
 	avail := height - len(out) - len(actions)
 	for i, s := range members {
@@ -364,7 +364,7 @@ func isYamlNumber(t string) bool {
 // previewDetail rend le détail d'une stack : état global, services (les
 // problèmes d'abord), remarque éventuelle, puis les actions possibles adaptées
 // à l'état. C'est la vue par défaut du volet ; tab bascule vers le compose.
-func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height, selected int, ex previewExtra) []string {
+func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceStatus, inner, height int, sel selState, ex previewExtra) []string {
 	dot, dotStyle := stateStyle(s.State())
 	out := []string{dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2))}
 
@@ -426,10 +426,10 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 		acts = []footerKey{{"r", "restart"}, {"s", "stop"}, {"d", "down"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"}}
 	}
 	acts = append(acts, footerKey{"v", "compose"}, footerKey{"→", "services"})
-	if selected > 0 {
+	if sel.any() {
 		// Avec des stacks cochées, u/s/d/r… visent la sélection, pas la stack
 		// affichée : lister ses actions ici induirait en erreur.
-		return append(out, selectionActions(selected, inner)...)
+		return append(out, selectionActions(sel, inner)...)
 	}
 	out = append(out, styleDim.Render("Actions"))
 	out = append(out, keyGrid(acts, inner)...)
@@ -439,13 +439,35 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 }
 
 // selectionActions : bloc d'actions du volet quand des stacks sont cochées —
-// les lettres visent alors la sélection, quelle que soit la ligne affichée.
-func selectionActions(n, inner int) []string {
-	title := styleYellow.Render(fmt.Sprintf("Actions sur les %d stack%s cochée%s", n, plural(n), plural(n)))
-	if n == 1 {
-		title = styleYellow.Render("Actions sur la stack cochée")
+// les lettres visent alors la sélection visible, quelle que soit la ligne
+// affichée. Les cochées masquées (filtre, a) sont signalées à part : elles ne
+// sont pas visées, et si toutes le sont, aucune lettre n'agit.
+func selectionActions(sel selState, inner int) []string {
+	n, h := sel.shown, sel.hidden
+	if n == 0 {
+		// Pas de grille d'actions : les lettres n'agissent ni sur les
+		// masquées ni sur la stack affichée (cf. refuseHiddenSelection).
+		title := fmt.Sprintf("%d stack%s cochée%s, masquée%s", h, plural(h), plural(h), plural(h))
+		hint := "a pour tout afficher · esc pour décocher"
+		if sel.byFilter {
+			title += " par le filtre"
+			hint = "esc efface le filtre pour agir dessus"
+		}
+		return []string{styleYellow.Render(truncate(title, inner)), styleDim.Render(truncate(hint, inner))}
 	}
-	return append([]string{title}, keyGrid([]footerKey{
+	title := fmt.Sprintf("Actions sur les %d stacks cochées", n)
+	if n == 1 {
+		title = "Actions sur la stack cochée"
+	}
+	out := []string{styleYellow.Render(truncate(title, inner))}
+	if h > 0 {
+		note := fmt.Sprintf("(%d autre%s masquée%s par le filtre)", h, plural(h), plural(h))
+		if !sel.byFilter {
+			note = fmt.Sprintf("(%d autre%s masquée%s : a pour tout afficher)", h, plural(h), plural(h))
+		}
+		out = append(out, styleDim.Render(truncate(note, inner)))
+	}
+	return append(out, keyGrid([]footerKey{
 		{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"↩", "toutes"},
 	}, inner)...)
 }

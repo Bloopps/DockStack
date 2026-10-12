@@ -72,6 +72,15 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filtering = false
 			m.filter.Blur()
 			return m, nil
+		case "up":
+			// ↑↓ choisissent parmi les résultats sans quitter la saisie (le
+			// champ, d'une ligne, n'en fait rien : ils ramenaient le curseur
+			// en tête de liste).
+			m.moveCursor(-1)
+			return m, nil
+		case "down":
+			m.moveCursor(1)
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.filter, cmd = m.filter.Update(msg)
@@ -189,6 +198,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// sur le groupe (si le curseur est sur un en-tête), sinon sur la stack
 		// sous le curseur. Ce qui perturbe un service passe par la confirmation.
 		action := map[string]string{"u": "up", "s": "stop", "d": "down", "r": "restart", "c": "recreate"}[msg.String()]
+		if sel := m.selection(); sel.shown == 0 && sel.hidden > 0 {
+			return m.refuseHiddenSelection(sel)
+		}
 		if sel := m.selectedStacks(); len(sel) > 0 {
 			if action == "up" {
 				return m.startOrConfirmGroupUp(sel)
@@ -211,6 +223,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.confirmStackAction(action, stack)
 		}
 	case "p":
+		if sel := m.selection(); sel.shown == 0 && sel.hidden > 0 {
+			return m.refuseHiddenSelection(sel)
+		}
 		if sel := m.selectedStacks(); len(sel) > 0 {
 			return m.startGroupAction("pull", sel)
 		}
@@ -403,10 +418,11 @@ func (m Model) execStackAction() (tea.Model, tea.Cmd) {
 		return m.openComposeView(stack)
 	case "remove":
 		// Destructif : confirmation obligatoire, et Remove supprime aussi
-		// les volumes (down --volumes --remove-orphans).
-		return m.askConfirmDanger("Remove — "+stack.Name,
+		// les volumes (down --volumes --remove-orphans) : l'effet chiffre ce
+		// qui sera effacé.
+		return m.openConfirm("Remove — "+stack.Name,
 			"Supprime conteneurs, réseaux ET volumes (données incluses)",
-			[]string{stack.Name},
+			m.removeEffect(stack), true, nil,
 			func(m Model) (tea.Model, tea.Cmd) { return m.startStackAction("remove", stack) })
 	}
 	// "back" (Retour) : retour à la liste.
@@ -506,8 +522,9 @@ func (m Model) execGroupAction() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// startGroupAction lance une action live sur plusieurs stacks. La sélection
-// n'est vidée qu'ici, donc annuler la confirmation la conserve.
+// startGroupAction lance une action live sur plusieurs stacks. Les stacks
+// visées ne sont décochées qu'ici, donc annuler la confirmation conserve la
+// sélection.
 func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Model, tea.Cmd) {
 	// Verrou d'opération (cf. startStackAction), avant de vider la sélection :
 	// un refus la conserve, comme une annulation de confirmation.
@@ -516,7 +533,11 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 	}
 	client := m.client
 	par := m.cfg.MaxParallel
-	m.selected = make(map[string]bool)
+	// Seules les stacks visées sont décochées : une stack cochée puis
+	// masquée (filtre, a) n'a pas été touchée, elle reste cochée.
+	for _, s := range stacks {
+		delete(m.selected, s.Name)
+	}
 	title := fmt.Sprintf("%s — %d stacks", actionTitle[action], len(stacks))
 	ctx, cancel := context.WithCancel(context.Background())
 

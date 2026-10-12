@@ -66,7 +66,7 @@ func FuzzScanComposeDir(f *testing.F) {
 			if rel != "." {
 				depth = strings.Count(rel, string(filepath.Separator)) + 1
 				n := d.Name()
-				if skipDirsAlways[n] || (depth == 1 && skipDirsRoot[n]) || strings.HasPrefix(n, ".") || depth > maxScanDepth {
+				if skipDirsAlways[n] || (depth == 1 && skipDirsRoot[n]) || strings.HasPrefix(n, ".") || depth > MaxScanDepth {
 					return filepath.SkipDir
 				}
 			}

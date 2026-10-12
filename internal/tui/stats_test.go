@@ -95,7 +95,7 @@ func TestRenderStackLineUsage(t *testing.T) {
 func TestPreviewDetailLight(t *testing.T) {
 	st := usageStack("immich", 3)
 	ex := previewExtra{volumes: 5 << 30, layers: 459 << 20, usage: usageOf(st, 3.2, 412<<20)}
-	out := ansi.Strip(strings.Join(previewDetail("/srv", st, st.Services, 60, 40, 0, ex), "\n"))
+	out := ansi.Strip(strings.Join(previewDetail("/srv", st, st.Services, 60, 40, selState{}, ex), "\n"))
 	for _, want := range []string{"Disque 5.4 Go (volumes 5.0 Go + couches 459 Mo)", "image ", "ports ", "2283→2283", "tab", "plein écran"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q absent :\n%s", want, out)
@@ -115,7 +115,7 @@ func TestPreviewDetailFitsEveryHeight(t *testing.T) {
 		st := usageStack("immich", n)
 		for _, w := range []int{40, 60, 80} {
 			for h := 10; h <= 45; h++ {
-				for _, l := range previewDetail("/srv", st, st.Services, w, h, 0, previewExtra{volumes: 1 << 30}) {
+				for _, l := range previewDetail("/srv", st, st.Services, w, h, selState{}, previewExtra{volumes: 1 << 30}) {
 					if got := ansi.StringWidth(l); got > w {
 						t.Fatalf("n=%d w=%d h=%d : ligne de %d colonnes : %q", n, w, h, got, ansi.Strip(l))
 					}
@@ -124,12 +124,12 @@ func TestPreviewDetailFitsEveryHeight(t *testing.T) {
 		}
 	}
 	st := usageStack("immich", 3)
-	out := ansi.Strip(strings.Join(previewDetail("/srv", st, st.Services, 60, 30, 0, previewExtra{}), "\n"))
+	out := ansi.Strip(strings.Join(previewDetail("/srv", st, st.Services, 60, 30, selState{}, previewExtra{}), "\n"))
 	if strings.Count(out, "ports ") != 3 {
 		t.Errorf("ports attendus pour 3 services :\n%s", out)
 	}
 	st = usageStack("immich", 12)
-	if lines := previewDetail("/srv", st, st.Services, 60, 25, 0, previewExtra{}); len(lines) > 25 {
+	if lines := previewDetail("/srv", st, st.Services, 60, 25, selState{}, previewExtra{}); len(lines) > 25 {
 		t.Errorf("%d lignes pour une hauteur de 25", len(lines))
 	}
 }

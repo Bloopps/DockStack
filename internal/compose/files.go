@@ -48,12 +48,13 @@ var skipDirsRoot = map[string]bool{
 
 const composeFileTTL = 60 * time.Second
 
-// maxScanDepth bounds how many directory levels below the stack root we descend
+// MaxScanDepth bounds how many directory levels below the stack root we descend
 // when looking for compose files. Real stacks live at most a few levels deep
 // (e.g. group/sub-stack/), while deeper hits are almost always compose files
 // buried in source/test trees. This caps the startup scan: at depth 0 = the root
 // itself, so 3 covers root/group/stack layouts without walking entire projects.
-const maxScanDepth = 3
+// Exportée pour l'écran de liste vide, qui dit jusqu'où on cherche.
+const MaxScanDepth = 3
 
 var (
 	cacheMu         sync.Mutex
@@ -101,7 +102,7 @@ func findComposeFiles(root string) ([]string, error) {
 }
 
 // scanComposeDir walks dir depth-first collecting compose files, descending at
-// most maxScanDepth levels below the root (depth 0). Unlike a full WalkDir it does
+// most MaxScanDepth levels below the root (depth 0). Unlike a full WalkDir it does
 // not dive into deep project/source trees, which is what made the startup scan
 // slow (~100ms over a home dir) for no benefit: stacks nested deeper than a few
 // levels are almost always example/buried compose files, not real stack roots.
@@ -132,7 +133,7 @@ func scanComposeDir(dir string, depth int, files *[]string) error {
 	if best != "" {
 		*files = append(*files, filepath.Join(dir, best))
 	}
-	if depth >= maxScanDepth {
+	if depth >= MaxScanDepth {
 		return nil
 	}
 	for _, e := range entries {

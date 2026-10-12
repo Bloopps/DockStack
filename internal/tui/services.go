@@ -306,7 +306,7 @@ func (m Model) serviceAction(action string, stack compose.Stack, targets []compo
 	}
 	switch action {
 	case "stop", "down", "restart", "recreate":
-		return m.askConfirm(label, "", names, run)
+		return m.openConfirm(label, "", actionEffect(action, true), false, names, run)
 	case "up":
 		for _, t := range targets {
 			if t.Running > 0 {

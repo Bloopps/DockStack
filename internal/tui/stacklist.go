@@ -232,20 +232,23 @@ func (m Model) listRows() []listRow {
 		return m.rowsCache.rows
 	}
 	rows := m.buildListRows()
-	// Colonne des noms commune à toutes les lignes (pas seulement aux lignes
-	// visibles) : sinon elle bougerait en faisant défiler.
+	// Colonne des noms commune à toutes les stacks, pas seulement aux lignes
+	// visibles : sinon elle bougerait en faisant défiler. Stacks filtrées et
+	// masquées comprises : calculée sur les seules lignes affichées, elle
+	// changeait dès la première lettre du filtre (ou avec a), et les colonnes
+	// d'état, CPU, RAM et disque sautaient. Membre d'un dossier (décalé) ou
+	// orpheline (« ⟳ ») : deux colonnes de plus.
+	sizes := groupSizes(m.stacks)
 	nameW := 0
-	for _, r := range rows {
-		if r.isStack() {
-			w := lipgloss.Width(r.stack.Name)
-			if r.stack.Orphaned {
-				w += 2
-			}
-			if r.indented {
-				w += 2
-			}
-			nameW = max(nameW, w)
+	for _, s := range m.stacks {
+		w := lipgloss.Width(s.Name)
+		if s.Orphaned {
+			w += 2
 		}
+		if sizes[s.Group] > 1 {
+			w += 2
+		}
+		nameW = max(nameW, w)
 	}
 	m.rowsCache.rows = rows
 	m.rowsCache.nameW = nameW
@@ -465,7 +468,7 @@ func (m Model) visibleStacks() []compose.Stack {
 // ---- rendering ----
 
 func renderStackList(m Model, height, width int) string {
-	filterBar := m.filterBar()
+	filterBar := m.filterBar(width)
 	if filterBar != "" {
 		height--
 	}
@@ -474,14 +477,8 @@ func renderStackList(m Model, height, width int) string {
 		height--
 	}
 
-	stacks := m.filteredStacks()
-	if len(stacks) == 0 {
-		msg := styleYellow.Render("  Aucune stack trouvée.")
-		if m.cfg.StackDir != "" {
-			msg += "\n" + styleDim.Render(fmt.Sprintf("  Répertoire : %s", m.cfg.StackDir))
-			msg += "\n\n" + styleDim.Render("  Appuyer sur ") + styleBold.Render("o") + styleDim.Render(" pour changer de répertoire")
-			msg += "\n" + styleDim.Render("  Appuyer sur ") + styleBold.Render("R") + styleDim.Render(" pour rafraîchir")
-		}
+	if len(m.filteredStacks()) == 0 {
+		msg := emptyListMessage(m.filter.Value(), m.cfg.StackDir, width)
 		if filterBar != "" {
 			return filterBar + "\n" + msg
 		}
@@ -497,25 +494,14 @@ func renderStackList(m Model, height, width int) string {
 		cursor = 0
 	}
 
-	// Window: keep only the visible rows, centered on the cursor. The two
-	// edge lines show how much is hidden so long lists stay navigable.
+	// Fenêtre : seules les lignes visibles, centrées sur le curseur. Une
+	// ligne du bord indique ce qui est caché de ce côté, seulement s'il y en
+	// a (cf. markedWindow) : deux lignes réservées d'office laissaient une
+	// ligne vide en tête ou en fin de liste.
 	start, end := 0, len(rows)
 	moreAbove, moreBelow := 0, 0
 	if height > 0 && len(rows) > height {
-		inner := height - 2
-		if inner < 1 {
-			inner = 1
-		}
-		start = cursor - inner/2
-		if start < 0 {
-			start = 0
-		}
-		if start+inner > len(rows) {
-			start = len(rows) - inner
-		}
-		end = start + inner
-		moreAbove = start
-		moreBelow = len(rows) - end
+		start, end, moreAbove, moreBelow = markedWindow(len(rows), cursor-(height-1)/2, height)
 	}
 
 	// Render pass: style only the windowed rows (at ~600 stacks, styling the
@@ -554,6 +540,31 @@ func renderStackList(m Model, height, width int) string {
 		return filterBar + "\n" + body
 	}
 	return body
+}
+
+// emptyListMessage : liste vide. Un filtre sans résultat ne conseille que ce
+// qui sert pendant la saisie (o ou R y seraient des lettres du filtre) ; un
+// répertoire sans stack rappelle ce qu'est une stack et jusqu'où on la
+// cherche (cf. compose.MaxScanDepth).
+func emptyListMessage(query, dir string, width int) string {
+	room := max(width-2, 10)
+	if query != "" {
+		// Le rappel d'esc passe avant la fin d'une saisie très longue.
+		hint := styleDim.Render("  ·  ") + styleBold.Render("esc") + styleDim.Render(" efface le filtre")
+		head := truncate("  Aucune stack ne contient « "+query+" »", max(width-lipgloss.Width(hint), 10))
+		return truncate(styleYellow.Render(head)+hint, max(width, 1))
+	}
+	if dir == "" {
+		return styleYellow.Render("  Aucune stack trouvée.")
+	}
+	lines := []string{styleYellow.Render(truncate("  Aucune stack dans "+dir, room))}
+	help := fmt.Sprintf("Une stack = un répertoire contenant compose.yaml (ou docker-compose.yml), jusqu'à %d niveaux sous celui-ci.", compose.MaxScanDepth)
+	for _, l := range wordWrap(help, room-2) {
+		lines = append(lines, styleDim.Render("  "+l))
+	}
+	key := func(k, d string) string { return styleBold.Render(k) + styleDim.Render(" "+d) }
+	lines = append(lines, "", "  "+key("o", "choisir un autre répertoire")+styleDim.Render(" · ")+key("R", "relire"))
+	return strings.Join(lines, "\n")
 }
 
 // renderGroupHeader affiche un en-tête de groupe : flèche de repli, nom,

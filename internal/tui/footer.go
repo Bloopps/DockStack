@@ -57,20 +57,41 @@ func renderBar(left, right []footerKey, width int, info string) string {
 // listFooter : pied de page de la liste. Il sert à naviguer : les actions sur
 // la stack sont dans le volet de droite (selon son état), pas répétées ici —
 // sauf si le volet est masqué faute de largeur. Il ne change pas d'une ligne à
-// l'autre, seulement avec le mode (liste, sélection, services).
+// l'autre, seulement avec le mode (liste, saisie du filtre, sélection,
+// services).
 func (m Model) listFooter() (left, right []footerKey) {
 	help := footerKey{"?", "aide"}
+	// Saisie du filtre : les lettres, ␣ et ↩ n'agissent pas sur la liste, on
+	// n'annonce que ce qui marche pendant la saisie (? y est une lettre).
+	if m.filtering {
+		return []footerKey{{"↩", "valider"}, {"↑↓", "choisir"}}, []footerKey{{"esc", "effacer"}}
+	}
 	if m.svcFocus {
 		return []footerKey{{"␣", "cocher"}, {"e", "en défaut"}, {"/", "filtre"}, {"+", "dépendances"}},
 			[]footerKey{{"←", "retour"}, help}
 	}
-	if n := len(m.selectedStacks()); n > 0 {
-		return []footerKey{
-				{fmt.Sprintf("%d", n), "cochée" + plural(n)},
-				{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"},
-				{"↩", "toutes les actions"},
-			},
-			[]footerKey{{"esc", "décocher"}, help}
+	if sel := m.selection(); sel.any() {
+		// Les cochées masquées (filtre, a) sont comptées à part : les
+		// actions ne visent que les visibles, et aucune lettre n'agit si
+		// toutes sont masquées (cf. refuseHiddenSelection).
+		esc := footerKey{"esc", "décocher"}
+		if sel.byFilter {
+			esc = footerKey{"esc", "effacer le filtre"} // esc efface d'abord le filtre
+		}
+		if sel.shown == 0 {
+			left = []footerKey{{fmt.Sprintf("%d", sel.hidden), "cochée" + plural(sel.hidden) + " masquée" + plural(sel.hidden)}}
+			if !sel.byFilter {
+				left = append(left, footerKey{"a", "tout afficher"})
+			}
+			return left, []footerKey{esc, help}
+		}
+		left = []footerKey{{fmt.Sprintf("%d", sel.shown), "cochée" + plural(sel.shown)}}
+		if sel.hidden > 0 {
+			left = append(left, footerKey{fmt.Sprintf("%d", sel.hidden), "masquée" + plural(sel.hidden)})
+		}
+		return append(left, footerKey{"u", "up"}, footerKey{"s", "stop"}, footerKey{"d", "down"},
+				footerKey{"r", "restart"}, footerKey{"↩", "toutes les actions"}),
+			[]footerKey{esc, help}
 	}
 	right = []footerKey{help, {"q", "quitter"}}
 	common := []footerKey{{"/", "filtre"}, {"b", "captures"}, {"o", "dossier"}}

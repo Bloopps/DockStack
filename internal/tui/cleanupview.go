@@ -923,6 +923,38 @@ func windowWithMarks(lines []string, cur, h int) []string {
 	return append(out, below(n-start-inner))
 }
 
+// markedWindow : fenêtre de h lignes d'une liste de n lignes, à partir de la
+// ligne s (bornée pour rester dans la liste). Une ligne du bord cède la place
+// au repère « ··· N au-dessus » ou « ··· N en dessous » seulement s'il reste
+// des lignes cachées de ce côté : réserver toujours deux lignes aux repères
+// laissait une ligne vide en tête ou en fin de liste. Renvoie les lignes à
+// afficher [from, to) et les nombres cachés de chaque côté (0 : pas de
+// repère). Sous 3 lignes, pas de repère : il ne resterait rien à lire.
+//
+// Contrairement à windowWithMarks, la fenêtre suit s ligne à ligne : chaque
+// pas vers le bas montre une ligne de plus en bas (défilement d'une
+// confirmation, curseur centré de la liste des stacks).
+func markedWindow(n, s, h int) (from, to, above, below int) {
+	if n <= h {
+		return 0, n, 0, 0
+	}
+	h = max(h, 1)
+	from = min(max(s, 0), n-h)
+	to = from + h
+	if h < 3 {
+		return from, to, 0, 0
+	}
+	if from > 0 {
+		from++
+		above = from
+	}
+	if to < n {
+		to--
+		below = n - to
+	}
+	return from, to, above, below
+}
+
 // cleanupLine : ligne d'élément, en texte brut sous le curseur (un seul
 // style : des spans imbriqués casseraient le fond inversé).
 func cleanupLine(plain string, selected bool, w int) string {

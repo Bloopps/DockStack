@@ -47,7 +47,7 @@ func helpBox(m Model) string {
 	title := func(s, note string) string { return styleYellow.Render(s) + d(note) }
 
 	actions := []string{
-		title("Actions", "  (sélection si active, sinon stack/dossier courant)"),
+		title("Actions", "  (stacks cochées visibles, sinon stack/dossier courant)"),
 		"  " + k("u") + "  Up      " + k("s") + "  Stop      " + k("d") + "  Down",
 		"  " + k("r") + "  Restart " + k("c") + "  Recreate  " + k("p") + "  Pull",
 		"  " + k("l") + "  Logs" + d("  (") + k("G") + d(" suivre · ") + k("/") + d(" filtrer · ") + k("w") + d(" replier les lignes)"),
@@ -65,6 +65,7 @@ func helpBox(m Model) string {
 		title("Sélection", ""),
 		"  " + k("␣") + "  sélectionner   " + k("ctrl+a") + "  tout (visible)",
 		"  " + k("esc") + "  efface le filtre, puis la sélection",
+		"  " + d("cochée puis masquée (filtre, a) : jamais visée"),
 	}
 	groups := []string{
 		title("Dossiers", "  (sur l'en-tête : ␣ et u/s/d/r/c/p = tout le dossier)"),
@@ -73,7 +74,7 @@ func helpBox(m Model) string {
 	list := []string{
 		title("Liste", ""),
 		"  " + k("↑↓") + " / " + k("j k") + "  naviguer   " + k("g G") + "  haut / bas",
-		"  " + k("/") + "  filtrer" + d("  (↩ fige le filtre, esc l'efface)"),
+		"  " + k("/") + "  filtrer" + d("  (↑↓ choisir, ↩ fige le filtre, esc l'efface)"),
 		"  " + k("v") + "  fichier compose en plein écran" + d("  (") + k("tab") + d(" : dans le volet)"),
 		"  " + k("a") + "  afficher/masquer les stacks arrêtées" + d("  (et non déployées)"),
 		"  " + k("x") + "  exclure du scan" + d("  (réversible dans ~/.dockstack/config.json)"),

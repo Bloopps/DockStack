@@ -296,7 +296,9 @@ type Model struct {
 	// Confirmation (destructive actions)
 	confirmLabel   string
 	confirmWarning string
+	confirmEffect  string // ce que fait l'action (cf. actionEffect), en gris
 	confirmNames   []string
+	confirmScroll  int // première ligne affichée de confirmNames (↑↓ pour relire)
 	confirmExec    func(Model) (tea.Model, tea.Cmd)
 	confirmReturn  view // vue de retour si l'utilisateur annule
 	// confirmDanger : l'action efface des données, seul y la confirme.
@@ -1445,14 +1447,58 @@ func (m Model) filteredStacks() []compose.Stack {
 	return out
 }
 
+// selectedStacks : stacks cochées ET affichées (filtre et a appliqués), celles
+// que visent les actions. Une stack cochée puis masquée n'est jamais visée :
+// une action sans confirmation (p, u sur une stack arrêtée) ne doit pas
+// toucher ce qu'on ne voit pas — la règle du mode services.
 func (m Model) selectedStacks() []compose.Stack {
+	if len(m.selected) == 0 {
+		return nil
+	}
 	var out []compose.Stack
-	for _, s := range m.stacks {
+	for _, s := range m.shownStacks() {
 		if m.selected[s.Name] {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// selState : stacks cochées, visibles (visées par les actions) et masquées.
+type selState struct {
+	shown, hidden int
+	byFilter      bool // masquées par le filtre (esc l'efface), sinon par a
+}
+
+func (s selState) any() bool { return s.shown+s.hidden > 0 }
+
+// selection compte les stacks cochées, visibles ou masquées. Les noms cochés
+// d'une stack disparue depuis (dossier supprimé) ne comptent pas.
+func (m Model) selection() selState {
+	if len(m.selected) == 0 {
+		return selState{}
+	}
+	total := 0
+	for _, s := range m.stacks {
+		if m.selected[s.Name] {
+			total++
+		}
+	}
+	shown := len(m.selectedStacks())
+	return selState{shown: shown, hidden: total - shown, byFilter: m.filter.Value() != ""}
+}
+
+// refuseHiddenSelection : des stacks sont cochées mais toutes masquées. Les
+// lettres d'action ne retombent pas sur la stack sous le curseur : on la
+// croirait visée à la place de la sélection, et p ou u partent sans
+// confirmation.
+func (m Model) refuseHiddenSelection(sel selState) (tea.Model, tea.Cmd) {
+	if sel.byFilter {
+		m.setInfo("Stacks cochées masquées par le filtre : esc pour l'effacer")
+	} else {
+		m.setInfo("Stacks cochées masquées : a pour les afficher, esc pour les décocher")
+	}
+	return m, m.clearStatusIn(4 * time.Second)
 }
 
 func (m Model) renderFooter() string {
@@ -1493,7 +1539,12 @@ func (m Model) renderFooter() string {
 	back := []footerKey{{"esc", "retour"}}
 	switch m.view {
 	case viewConfirm:
-		return renderBar([]footerKey{{m.confirmKeys(), "confirmer"}}, []footerKey{{"n / esc", "annuler"}}, m.width, "")
+		left := []footerKey{{m.confirmKeys(), "confirmer"}}
+		if m.confirmMaxScroll() > 0 {
+			// La liste déborde du cadre : on la relit avant de valider.
+			left = append([]footerKey{{"↑↓", "lire"}}, left...)
+		}
+		return renderBar(left, []footerKey{{"n / esc", "annuler"}}, m.width, "")
 	case viewBackup:
 		if m.captureLabeling {
 			return renderBar([]footerKey{{"↩", "valider"}}, []footerKey{{"esc", "annuler"}}, m.width, "")
@@ -1784,12 +1835,26 @@ func (m Model) startProgressOp(title string, cancel context.CancelFunc, ch <-cha
 	return m, tea.Batch(readProgressCmd(ch, m.progressSeq), m.spinner.Tick)
 }
 
-func (m Model) filterBar() string {
-	// Visible pendant la saisie, et tant qu'un filtre validé reste appliqué.
-	if !m.filtering && m.filter.Value() == "" {
-		return ""
+// filterBar : ligne du filtre au-dessus de la liste, visible pendant la
+// saisie et tant qu'un filtre validé reste appliqué. Figé, il est grisé et
+// compte les stacks retenues : les deux états étaient identiques, et une
+// lettre tapée en croyant encore saisir lançait une action (p : pull sans
+// confirmation).
+func (m Model) filterBar(width int) string {
+	switch {
+	case m.filtering:
+		line := m.filter.View()
+		hint := styleDim.Render("↩ valider · esc effacer")
+		if pad := width - lipgloss.Width(line) - lipgloss.Width(hint) - 2; pad > 0 {
+			line += strings.Repeat(" ", pad) + hint
+		}
+		return line
+	case m.filter.Value() != "":
+		n := len(m.filteredStacks())
+		return styleDim.Render(truncate(fmt.Sprintf("/ %s  (%d stack%s · / modifier · esc effacer)",
+			m.filter.Value(), n, plural(n)), max(width, 1)))
 	}
-	return m.filter.View()
+	return ""
 }
 
 // startUsage lance une mesure d'occupation : volumes (et images) quand leur
