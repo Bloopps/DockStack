@@ -46,7 +46,9 @@ func lipglossScreen(m Model) string {
 			if banner != "" {
 				listH--
 			}
-			if !m.previewVisible() {
+			if !m.previewVisible() && m.svcFocus {
+				body = renderPreviewPane(m, listH, m.width) // services en pleine largeur
+			} else if !m.previewVisible() {
 				body = renderStackList(m, listH, m.width)
 			} else {
 				paneW := m.previewWidth()
@@ -122,7 +124,7 @@ func TestScreenMatchesLipgloss(t *testing.T) {
 		{"sélection", func(m *Model) {
 			m.selected = map[string]bool{m.stacks[0].Name: true, m.stacks[3].Name: true}
 		}},
-		{"services", func(m *Model) { m.svcFocus = true }},
+		{"services", func(m *Model) { m.svcFocus, m.svcStack = true, m.stacks[0].Name }},
 		{"compose", func(m *Model) { m.previewCompose = true }},
 		{"en marche seulement", func(m *Model) { m.cfg.ShowAll = false; m.invalidateRows() }},
 		{"bandeau", func(m *Model) {

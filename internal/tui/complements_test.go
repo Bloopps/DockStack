@@ -198,7 +198,7 @@ func truncateRunes(s string, max int) string {
 // Seuls changent les caractères larges (voulu), les caractères de largeur
 // nulle et les séquences d'échappement, qu'aucun appelant ne passe.
 func TestTruncateSameAsRunesForNarrowText(t *testing.T) {
-	alphabet := []rune("abcXYZ019 -_./:@·…éèàçùÉœ«»─│●○✔✕⚠▶")
+	alphabet := []rune("abcXYZ019 -_./:@·…éèàçùÉœ«»─│●○◐▲■▷✔✕⚠▶")
 	rng := rand.New(rand.NewPCG(1, 2))
 	for range 20000 {
 		n := rng.IntN(40)

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/Bloopps/dockstack/internal/compose"
 )
 
 // renderHelpView affiche l'aide sur height lignes. Si elle dépasse (terminal
@@ -67,6 +69,16 @@ func helpBox(m Model) string {
 		"  " + k("esc") + "  efface le filtre, puis la sélection",
 		"  " + d("cochée puis masquée (filtre, a) : jamais visée"),
 	}
+	// Légende de la liste : une pastille par état (la couleur seule
+	// disparaît sous le curseur), la coche, et ⟳ qui n'était expliqué
+	// nulle part.
+	sym := func(st compose.State, label string) string { return stateDot(st) + " " + label }
+	symbols := []string{
+		title("Symboles", ""),
+		"  " + sym(compose.StateRunning, "en marche") + "   " + sym(compose.StatePartial, "partielle") + "   " + sym(compose.StateUnhealthy, "unhealthy"),
+		"  " + sym(compose.StateStopped, "arrêtée") + "     " + sym(compose.StateUnknown, "non déployée"),
+		"  " + styleYellow.Render("┃") + " cochée      ⟳ recréé hors compose" + d("  (rattaché par nom)"),
+	}
 	groups := []string{
 		title("Dossiers", "  (sur l'en-tête : ␣ et u/s/d/r/c/p = tout le dossier)"),
 		"  " + k("←") + "  replier   " + k("→") + "  déplier   " + k("↩") + "  replier/déplier",
@@ -106,14 +118,16 @@ func helpBox(m Model) string {
 		}
 		return strings.Join(out, "\n")
 	}
-	left := join(actions, services, selection)
+	// Symboles à gauche, la colonne la plus courte : à droite, l'aide ne
+	// tenait plus entière sur un écran large de 30 lignes.
+	left := join(actions, services, selection, symbols)
 	right := join(groups, list, captures, cleanup, general)
 
 	var body string
 	if lipgloss.Width(left)+lipgloss.Width(right)+14 <= m.width {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, "      ", right)
 	} else {
-		body = join(actions, services, selection, groups, list, captures, cleanup, general)
+		body = join(actions, services, selection, groups, list, captures, cleanup, general, symbols)
 	}
 
 	box := lipgloss.NewStyle().

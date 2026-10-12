@@ -5,11 +5,31 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 )
 
-const panelWidth = 34
+// Largeur du panneau (cadre compris) : de quoi loger les entrées, élargie au
+// besoin pour le plus long nom (stack, services, stacks cochées), sans
+// dépasser l'écran. À 34 colonnes fixes, « immich-machine-learning » était
+// coupé alors qu'il restait 43 colonnes libres de chaque côté.
+const (
+	panelMinWidth = 34
+	panelMaxWidth = 56
+)
+
+// panelWidthFor : largeur du panneau pour ces noms sur un terminal de termW
+// colonnes. 14 = cadre et marges (4), retrait et pastille (4), espace et
+// compteur « 10/10 » (6).
+func panelWidthFor(names []string, termW int) int {
+	longest := 0
+	for _, n := range names {
+		longest = max(longest, lipgloss.Width(n))
+	}
+	hi := max(min(panelMaxWidth, termW-4), panelMinWidth)
+	return min(max(longest+14, panelMinWidth), hi)
+}
 
 func renderActionMenu(m Model, height int) string {
 	sel := m.selectedStacks()
@@ -24,9 +44,9 @@ func renderActionMenu(m Model, height int) string {
 	// bruit visuel.
 	var panel string
 	if len(sel) > 0 {
-		panel = buildGroupPanel(sel, m.actionCursor, height)
+		panel = buildGroupPanel(sel, m.actionCursor, height, m.width)
 	} else {
-		panel = buildActionPanel(stack, m.actionCursor, height)
+		panel = buildActionPanel(stack, m.actionCursor, height, m.width)
 	}
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, panel)
 }
@@ -96,14 +116,27 @@ func fitPanel(head, sep, actions []string, cursor int, extraSep string, extra []
 	return append(append(rows, extraSep), extra...)
 }
 
-func buildActionPanel(stack compose.Stack, cursor, height int) string {
+func buildActionPanel(stack compose.Stack, cursor, height, termW int) string {
 	dot, dotStyle := stateStyle(stack.State())
 
-	inner := panelWidth - 4
+	names := []string{stack.Name}
+	if len(stack.Services) > 1 { // listés plus bas
+		for _, svc := range stack.Services {
+			names = append(names, svc.Name)
+		}
+	}
+	width := panelWidthFor(names, termW)
+	inner := width - 4
 	// Tronqué : un nom plus large que le cadre y était replié sur plusieurs
 	// lignes, que fitPanel ne comptait pas (cadre plus haut que l'écran).
 	title := stylePanelTitle.Render(truncate(stack.Name, inner))
-	state := dotStyle.Render(dot) + " " + styleDim.Render(stateLabel(stack))
+	// L'état se lit comme dans le volet (previewDetail) : mêmes mots, même
+	// compteur, et non « Running (4/4) », seul reste d'anglais.
+	state := dotStyle.Render(dot) + " " + dotStyle.Render(stateWord(stack.State()))
+	if stack.Total > 0 {
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", stack.Running, stack.Total))
+	}
+	state = ansi.Truncate(state, inner, "…")
 
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
@@ -117,7 +150,7 @@ func buildActionPanel(stack compose.Stack, cursor, height int) string {
 	}
 	rows := fitPanel([]string{title, state}, []string{divider, ""}, menuLines(stackActions, cursor, inner), cursor,
 		divider, svcs, func(n int) string { return styleDim.Render(fmt.Sprintf("  … +%d services", n)) }, true, height)
-	return stylePanel.Width(panelWidth).Render(strings.Join(rows, "\n"))
+	return stylePanel.Width(width).Render(strings.Join(rows, "\n"))
 }
 
 // renderServiceLine affiche une ligne « ● nom  x/y » pour un service de la
@@ -140,17 +173,24 @@ func renderServiceLine(svc compose.ServiceStatus, width int) string {
 	return "  " + dotStyle.Render(dot) + " " + styleDim.Render(name) + strings.Repeat(" ", pad) + styleDim.Render(count)
 }
 
-func buildGroupPanel(selected []compose.Stack, cursor, height int) string {
-	inner := panelWidth - 4
+func buildGroupPanel(selected []compose.Stack, cursor, height, termW int) string {
+	names := make([]string, len(selected))
+	for i, s := range selected {
+		names[i] = s.Name
+	}
+	width := panelWidthFor(names, termW)
+	inner := width - 4
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
 	title := stylePanelTitle.Render(fmt.Sprintf("%d stacks sélectionnées", len(selected)))
-	names := make([]string, len(selected))
+	lines := make([]string, len(selected))
 	for i, s := range selected {
 		dot, dotStyle := stateStyle(s.State())
-		names[i] = "  " + dotStyle.Render(dot) + " " + styleDim.Render(truncate(s.Name, inner-4))
+		lines[i] = "  " + dotStyle.Render(dot) + " " + styleDim.Render(truncate(s.Name, inner-4))
 	}
+	// Les stacks visées sous le titre, comme les services d'une stack seule :
+	// le bloc complémentaire ne change plus de place d'un panneau à l'autre.
 	rows := fitPanel([]string{title}, []string{divider, ""}, menuLines(groupActions, cursor, inner), cursor,
-		divider, names, func(n int) string { return styleDim.Render(fmt.Sprintf("  … et %d autres", n)) }, false, height)
-	return stylePanel.Width(panelWidth).Render(strings.Join(rows, "\n"))
+		divider, lines, func(n int) string { return styleDim.Render(fmt.Sprintf("  … et %d autres", n)) }, true, height)
+	return stylePanel.Width(width).Render(strings.Join(rows, "\n"))
 }

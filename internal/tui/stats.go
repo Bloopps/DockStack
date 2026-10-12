@@ -297,34 +297,71 @@ func (m Model) previewExtraFor(s compose.Stack) previewExtra {
 	return ex
 }
 
-// stackUsageLine : l'espace disque de la stack sous l'en-tête du volet, avec
+// stackUsageLines : l'espace disque de la stack sous l'en-tête du volet, avec
 // sa décomposition. CPU et RAM sont sur la ligne de la stack dans la liste.
-func stackUsageLine(ex previewExtra, inner int) string {
+// Une ligne si elle tient, sinon deux (total, puis décomposition en grisé) :
+// coupée par la fin, la ligne perdait les couches de 100 à 139 colonnes.
+func stackUsageLines(ex previewExtra, inner int) []string {
 	total := ex.volumes + ex.layers
 	if total <= 0 {
-		return ""
+		return nil
 	}
-	line := styleCyan.Render("Disque") + " " + fmtDisk(total)
+	head := styleCyan.Render("Disque") + " " + fmtDisk(total)
+	var one, two string
 	switch {
 	case ex.volumes > 0 && ex.layers > 0:
-		line += styleDim.Render(" (volumes " + fmtDisk(ex.volumes) + " + couches " + fmtDisk(ex.layers) + ")")
+		one = "volumes " + fmtDisk(ex.volumes) + " + couches " + fmtDisk(ex.layers)
+		two = "volumes " + fmtDisk(ex.volumes) + " · couches " + fmtDisk(ex.layers)
 	case ex.volumes > 0:
-		line += styleDim.Render(" (volumes)")
+		one, two = "volumes", "volumes"
 	default:
-		line += styleDim.Render(" (couches d'écriture)")
+		one, two = "couches d'écriture", "couches d'écriture"
 	}
-	return ansi.Truncate(line, inner, "…")
+	if line := head + styleDim.Render(" ("+one+")"); lipgloss.Width(line) <= inner {
+		return []string{line}
+	}
+	return []string{ansi.Truncate(head, inner, "…"), styleDim.Render(truncate("  "+two, inner))}
+}
+
+// truncImage coupe une référence d'image au milieu : le nom court et le tag,
+// à la fin, sont ce qu'on cherche (« ghcr.io/…/immich-server:release »), à
+// défaut on garde le dernier segment (« …/immich-machine-learning:release »),
+// puis la fin (« …-learning:release »). Coupée par la fin comme le reste, la
+// référence perdait justement son tag.
+func truncImage(ref string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	width := ansi.StringWidth(ref)
+	if width <= w {
+		return ref
+	}
+	i, j := strings.Index(ref, "/"), strings.LastIndex(ref, "/")
+	if i >= 0 && j > i {
+		if short := ref[:i] + "/…" + ref[j:]; ansi.StringWidth(short) <= w {
+			return short
+		}
+	}
+	if j >= 0 {
+		if short := "…" + ref[j:]; ansi.StringWidth(short) <= w {
+			return short
+		}
+	}
+	if w == 1 {
+		return "…"
+	}
+	return "…" + ansi.TruncateLeft(ref, width-(w-1), "")
 }
 
 // renderServiceBlock : les services de la stack, avec autant de détail (image,
-// ports) que la hauteur le permet. Trois niveaux, du plus riche au plus sobre :
-// image et ports sur des lignes à part, les deux sur une seule ligne, puis
-// rien. Si même une ligne par service ne tient pas, les derniers sont résumés
-// (« … +N autres »).
+// ports, état Docker d'un service qui ne tourne pas) que la hauteur le
+// permet. Trois niveaux, du plus riche au plus sobre : une ligne par
+// information, image et ports sur une seule ligne, puis rien. Si même une
+// ligne par service ne tient pas, les derniers sont résumés (« … +N autres »).
 func renderServiceBlock(svcs []compose.ServiceStatus, inner, avail int) []string {
 	stW, nameW := 0, 0
 	for _, sv := range svcs {
-		stW = max(stW, lipgloss.Width(stateWord(sv.State())))
+		stW = max(stW, lipgloss.Width(serviceStateWord(sv.State(), 1)))
 		nameW = max(nameW, lipgloss.Width(sv.Name))
 	}
 	nameW = min(nameW, max(inner-(4+2+stW), 8))
@@ -335,10 +372,17 @@ func renderServiceBlock(svcs []compose.ServiceStatus, inner, avail int) []string
 		switch level {
 		case 3:
 			if sv.Image != "" {
-				out = append(out, ind+styleDim.Render("image ")+truncate(sv.Image, max(inner-len(ind)-6, 1)))
+				out = append(out, ind+styleDim.Render("image ")+truncImage(sv.Image, max(inner-len(ind)-6, 1)))
 			}
 			if sv.Ports != "" {
 				out = append(out, ind+styleDim.Render("ports ")+truncate(sv.Ports, max(inner-len(ind)-6, 1)))
+			}
+			// Code de sortie et ancienneté : « arrêté » seul ne dit pas si
+			// le service a fini normalement (0), planté (1) ou été tué (137).
+			// Le statut est déjà dans la liste : rien de plus à demander au
+			// démon.
+			if st := dockerStatusFR(sv.Status); st != "" && sv.State() != compose.StateRunning {
+				out = append(out, ind+styleDim.Render("état  ")+truncate(st, max(inner-len(ind)-6, 1)))
 			}
 		case 2:
 			text := sv.Image
@@ -347,7 +391,9 @@ func renderServiceBlock(svcs []compose.ServiceStatus, inner, avail int) []string
 				text = sv.Ports
 			case sv.Ports != "":
 				room := inner - len(ind) - lipgloss.Width(sv.Ports) - 3
-				text = truncate(sv.Image, max(room, 8)) + " · " + sv.Ports
+				text = truncImage(sv.Image, max(room, 8)) + " · " + sv.Ports
+			default:
+				text = truncImage(sv.Image, max(inner-len(ind), 1))
 			}
 			if text != "" {
 				out = append(out, ind+styleDim.Render(truncate(text, max(inner-len(ind), 1))))
@@ -380,25 +426,25 @@ func renderServiceBlock(svcs []compose.ServiceStatus, inner, avail int) []string
 		shown = svcs[:max(budget-1, 1)]
 		rest := svcs[len(shown):]
 		hidden = len(rest)
-		hiddenWhat = "services"
+		hiddenWhat = "service" + plural(hidden)
 		same := true
 		for _, r := range rest {
 			same = same && r.State() == rest[0].State()
 		}
 		if same {
-			hiddenWhat = "services " + stateWord(rest[0].State())
+			hiddenWhat += " " + serviceStateWord(rest[0].State(), hidden)
 		}
 	}
 	for _, sv := range shown {
 		d, st := stateStyle(sv.State())
 		name := truncate(sv.Name, nameW)
-		word := stateWord(sv.State())
+		word := serviceStateWord(sv.State(), 1)
 		out = append(out, "  "+st.Render(d)+" "+name+strings.Repeat(" ", max(nameW-lipgloss.Width(name), 0))+
 			"  "+st.Render(word))
 		out = append(out, detail(sv, level)...)
 	}
 	if hidden > 0 {
-		out = append(out, styleDim.Render(fmt.Sprintf("  … +%d autres %s", hidden, hiddenWhat)))
+		out = append(out, styleDim.Render(fmt.Sprintf("  … +%d autre%s %s", hidden, plural(hidden), hiddenWhat)))
 	}
 	return out
 }

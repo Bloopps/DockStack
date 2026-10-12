@@ -88,16 +88,14 @@ func (m Model) focusedStack() (compose.Stack, bool) {
 	return compose.Stack{}, false
 }
 
-// enterServices donne le focus au volet sur la stack sous le curseur.
+// enterServices donne le focus au volet sur la stack sous le curseur. Sous
+// 100 colonnes, le volet des services prend toute la largeur (cf. listBlock) :
+// la liste n'est pas amputée, elle n'est simplement pas affichée.
 func (m Model) enterServices() (tea.Model, tea.Cmd) {
 	s, ok := m.cursorStack()
 	if !ok {
 		m.setInfo("Viser une stack (pas un dossier) pour gérer ses services")
 		return m, m.clearStatusIn(3 * time.Second)
-	}
-	if m.width < minPreviewTermWidth {
-		m.setStatus("Terminal trop étroit pour gérer les services (100 colonnes min.)", true)
-		return m, m.clearStatusIn(4 * time.Second)
 	}
 	m.previewCompose = false
 	m.svcFocus, m.svcStack, m.svcCursor = true, s.Name, 0
@@ -350,7 +348,7 @@ func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDe
 	}
 	out := []string{styleDim.Render(strings.Repeat("─", max(inner, 1)))}
 	if sv.Image != "" {
-		out = append(out, row("image", sv.Image))
+		out = append(out, row("image", truncImage(sv.Image, max(inner-7, 1))))
 	}
 	if sv.Ports != "" {
 		out = append(out, row("ports", sv.Ports))
@@ -361,7 +359,7 @@ func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDe
 		rd, wr := ioCells(sv.IDs, ex.usage)
 		out = append(out, row("io", "↓ "+rd+"/s · ↑ "+wr+"/s"))
 	}
-	status := sv.Status
+	status := dockerStatusFR(sv.Status)
 	if status == "" {
 		status = "aucun conteneur"
 	}
@@ -372,27 +370,37 @@ func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDe
 	return out
 }
 
-// previewServices rend le volet en mode services : en-tête, filtre, fenêtre
-// défilante de services autour du curseur, puis le détail du service courant.
+// previewServices rend le volet en mode services : titre, filtre, zone des
+// services défilant autour du curseur, puis le détail du service courant.
 func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	all := m.stackServices(s)
 	svcs := m.visibleServices(all)
 	dot, dotStyle := stateStyle(s.State())
-	out := []string{
-		dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, inner-2)),
-		dotStyle.Render(stateWord(s.State())),
+	// « ● immich › services » : le focus est ici, et les lettres visent des
+	// services (la ligne de la stack, à gauche, a perdu le fond du curseur).
+	const crumb = " › services"
+	state := dotStyle.Render(stateWord(s.State()))
+	if s.Total > 0 {
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", s.Running, s.Total))
 	}
-	pos := fmt.Sprintf("Services · %d/%d", min(m.svcCursor+1, len(svcs)), len(svcs))
+	out := []string{
+		dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, max(inner-2-lipgloss.Width(crumb), 1))) + styleDim.Render(crumb),
+		state,
+	}
+	// Le titre compte les services ; la position du curseur est à droite du
+	// pied de page (« service 2/4 »). « Services · 2/3 » se lisait comme un
+	// compteur de conteneurs, à côté d'une stack à 2/3 conteneurs en marche.
+	head := fmt.Sprintf("Services (%d)", len(all))
 	if len(svcs) != len(all) {
-		pos += fmt.Sprintf(" sur %d", len(all))
+		head = fmt.Sprintf("Services (%d sur %d)", len(svcs), len(all))
 	}
 	if n := len(m.svcSel); n > 0 {
-		pos += fmt.Sprintf(" · %d coché%s", n, plural(n))
+		head += fmt.Sprintf(" · %d coché%s", n, plural(n))
 	}
 	if m.svcDeps {
-		pos += " · +dépendances"
+		head += " · +dépendances"
 	}
-	out = append(out, styleDim.Render(truncate(pos, inner)))
+	out = append(out, styleDim.Render(truncate(head, inner)))
 	switch {
 	case m.svcFiltering:
 		// On voit la fin de ce qu'on tape : une saisie plus large que le
@@ -431,22 +439,29 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
 		}, inner)...)
 	}
-	avail := max(height-len(out)-len(detail), 1)
+	// Zone des services : la hauteur de TOUS les services (filtre compris),
+	// bornée par la place, puis une ligne vide s'il en reste et le détail
+	// (qui s'ouvre sur un trait). Collé en bas du volet, le détail était à
+	// 10 ou 20 lignes du service qu'il décrit ; placé sous les seuls
+	// services visibles, il bougerait à chaque lettre du filtre.
+	room := height - len(out) - len(detail)
+	zone := min(len(all), max(room, 1))
 	start := 0
-	if len(svcs) > avail {
-		start = min(max(m.svcCursor-avail/2, 0), len(svcs)-avail)
+	if len(svcs) > zone {
+		start = min(max(m.svcCursor-zone/2, 0), len(svcs)-zone)
 	}
 	nameW := 0
 	for _, sv := range svcs {
 		nameW = max(nameW, lipgloss.Width(sv.Name))
 	}
 	nameW = min(nameW, max(inner-18, 8))
-	for i := start; i < len(svcs) && i < start+avail; i++ {
+	top := len(out)
+	for i := start; i < len(svcs) && i < start+zone; i++ {
 		sv := svcs[i]
 		d, st := stateStyle(sv.State())
 		name := truncate(sv.Name, nameW)
 		name += strings.Repeat(" ", max(nameW-lipgloss.Width(name), 0))
-		word := stateWord(sv.State())
+		word := serviceStateWord(sv.State(), 1)
 		if i == m.svcCursor {
 			// Ligne sous le curseur : texte brut dans UN seul style (les spans
 			// stylés imbriqués casseraient le reverse), flèche hors zone.
@@ -466,8 +481,10 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 		}
 		out = append(out, " "+mark+st.Render(d)+" "+name+"  "+st.Render(word))
 	}
-	// Le détail reste collé en bas du volet.
-	for len(out) < height-len(detail) {
+	for len(out) < top+zone {
+		out = append(out, "")
+	}
+	if room > zone {
 		out = append(out, "")
 	}
 	return append(out, detail...)

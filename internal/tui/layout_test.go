@@ -139,7 +139,7 @@ func TestActionPanelMatchesExec(t *testing.T) {
 	s.ComposeFile = ""
 	m := newTestModel([]compose.Stack{s})
 	m.client = &fakeClient{}
-	panel := ansi.Strip(buildActionPanel(s, -1, 100))
+	panel := ansi.Strip(buildActionPanel(s, -1, 100, 120))
 	for _, a := range stackActions {
 		if !strings.Contains(panel, a.label) {
 			t.Errorf("entrée %q absente du panneau", a.label)
@@ -154,6 +154,36 @@ func TestActionPanelMatchesExec(t *testing.T) {
 		if want != 0 && got != want {
 			t.Errorf("entrée %d « %s » : vue %v, want %v", i, a.label, got, want)
 		}
+	}
+}
+
+// Le panneau d'actions dit l'état comme le volet (« ● en marche  4/4
+// conteneurs », plus de « Running (4/4) »), s'élargit pour ne pas couper un
+// long nom de service sans dépasser l'écran, et place les stacks cochées
+// sous le titre, là où sont les services d'une stack seule.
+func TestActionPanelStateWidthAndOrder(t *testing.T) {
+	s := capStack("immich", svc("immich-server", 1), svc("immich-machine-learning", 1), svc("redis", 1), svc("database", 1))
+	panel := ansi.Strip(buildActionPanel(s, 0, 40, 120))
+	if !strings.Contains(panel, "● en marche  4/4 conteneurs") || strings.Contains(panel, "Running") {
+		t.Errorf("état du panneau :\n%s", panel)
+	}
+	if !strings.Contains(panel, "immich-machine-learning ") {
+		t.Errorf("nom de service coupé :\n%s", panel)
+	}
+	if got := ansi.Strip(buildActionPanel(stack("dev", "", 0, 0, 0), 0, 40, 120)); !strings.Contains(got, "○ non déployée") || strings.Contains(got, "conteneurs") {
+		t.Errorf("stack non déployée : pas de compteur :\n%s", got)
+	}
+	for _, termW := range []int{36, 50, 80} {
+		long := capStack("x", svc(strings.Repeat("nom-de-service-", 5), 1), svc("b", 1))
+		if w := lipgloss.Width(buildActionPanel(long, 0, 40, termW)); w > max(termW-4, panelMinWidth) || w > panelMaxWidth {
+			t.Errorf("écran de %d colonnes : panneau de %d colonnes", termW, w)
+		}
+	}
+
+	sel := []compose.Stack{stack("media/jellyfin", "media", 1, 1, 0), stack("media/prowlarr", "media", 1, 1, 0)}
+	group := ansi.Strip(buildGroupPanel(sel, 0, 40, 120))
+	if i, j := strings.Index(group, "media/prowlarr"), strings.Index(group, "Up"); i < 0 || j < 0 || i > j {
+		t.Errorf("stacks cochées attendues sous le titre, avant les actions :\n%s", group)
 	}
 }
 

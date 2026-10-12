@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/config"
@@ -162,7 +163,7 @@ func TestRenderStackLineFits(t *testing.T) {
 	s := compose.Stack{Name: strings.Repeat("tres-long-nom/", 10), Running: 1, Total: 1, Orphaned: true}
 	for _, cursor := range []bool{false, true} {
 		for _, indented := range []bool{false, true} {
-			if w := lipgloss.Width(renderStackLine(s, cursor, true, 40, indented, 200, rowUsage{})); w > 40 {
+			if w := lipgloss.Width(renderStackLine(s, cursor, false, true, 40, indented, 200, rowUsage{})); w > 40 {
 				t.Errorf("cursor=%v indented=%v : largeur %d > 40", cursor, indented, w)
 			}
 		}
@@ -173,11 +174,37 @@ func TestRenderStackLineFits(t *testing.T) {
 // sélectionnée garde son marqueur ┃.
 func TestRenderStackLineCursorShowsSelection(t *testing.T) {
 	s := compose.Stack{Name: "a", Running: 1, Total: 1}
-	if !strings.Contains(renderStackLine(s, true, true, 40, false, 1, rowUsage{}), "┃") {
+	if !strings.Contains(renderStackLine(s, true, false, true, 40, false, 1, rowUsage{}), "┃") {
 		t.Error("marqueur de sélection absent sous le curseur")
 	}
-	if strings.Contains(renderStackLine(s, true, false, 40, false, 1, rowUsage{}), "┃") {
+	if strings.Contains(renderStackLine(s, true, false, false, 40, false, 1, rowUsage{}), "┃") {
 		t.Error("marqueur affiché sur une stack non sélectionnée")
+	}
+}
+
+// Un glyphe par état, et pas seulement une couleur : sous le curseur, la
+// ligne est en texte brut, et l'en-tête d'un dossier replié ou le résumé du
+// volet n'ont pas de mot d'état. Le pire état du dossier se lit donc aussi
+// sur son en-tête surligné.
+func TestStateGlyphsWithoutColor(t *testing.T) {
+	seen := map[string]compose.State{}
+	for _, st := range []compose.State{compose.StateRunning, compose.StatePartial, compose.StateUnhealthy, compose.StateStopped, compose.StateUnknown} {
+		g, _ := stateStyle(st)
+		if prev, dup := seen[g]; dup {
+			t.Errorf("%v et %v partagent le glyphe %q", prev, st, g)
+		}
+		seen[g] = st
+		if w := lipgloss.Width(g); w != 1 {
+			t.Errorf("%q : %d colonnes, want 1", g, w)
+		}
+	}
+	media := []compose.Stack{stack("media/a", "media", 1, 1, 0), stack("media/b", "media", 0, 1, 0), stack("media/c", "media", 1, 2, 0)}
+	row := listRow{header: true, group: "media", size: 3, gc: groupCountsOf(media)["media"]}
+	if got := renderGroupHeader(row, true, 40); !strings.Contains(got, "■") {
+		t.Errorf("en-tête surligné d'un dossier avec une arrêtée : %q, want ■", got)
+	}
+	if got := ansi.Strip(groupRollup(media)); got != "● 1  ◐ 1  ■ 1" {
+		t.Errorf("résumé du dossier : %q", got)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/Bloopps/dockstack/internal/compose"
 	"github.com/Bloopps/dockstack/internal/theme"
 )
 
@@ -378,11 +379,11 @@ func themePreviewColumn(m Model, w, height int) []string {
 	sample := []string{
 		styleDim.Render("Aperçu") + "  " + styleBold.Render(m.themeName),
 		"",
-		styleGreen.Render("●") + " " + styleNameRunning.Render("en marche") + " " + styleCountRunning.Render("2/2") + "   " +
-			styleYellow.Render("●") + " " + styleNamePartial.Render("partielle") + " " + styleCountPartial.Render("1/3"),
-		styleOrange.Render("●") + " " + styleNameUnhealthy.Render("unhealthy") + " " + styleCountUnhealthy.Render("1/1") + "   " +
-			styleRed.Render("●") + " " + styleNameStopped.Render("arrêtée") + " " + styleCountStopped.Render("0/2") + "   " +
-			styleDim.Render("○") + " " + styleNameInactive.Render("non déployée"),
+		stateDot(compose.StateRunning) + " " + styleNameRunning.Render("en marche") + " " + styleCountRunning.Render("2/2") + "   " +
+			stateDot(compose.StatePartial) + " " + styleNamePartial.Render("partielle") + " " + styleCountPartial.Render("1/3"),
+		stateDot(compose.StateUnhealthy) + " " + styleNameUnhealthy.Render("unhealthy") + " " + styleCountUnhealthy.Render("1/1") + "   " +
+			stateDot(compose.StateStopped) + " " + styleNameStopped.Render("arrêtée") + " " + styleCountStopped.Render("0/2") + "   " +
+			stateDot(compose.StateUnknown) + " " + styleNameInactive.Render("non déployée"),
 		styleCursorMark.Render("▶") + styleSelected.Render(" ligne sous le curseur "+strings.Repeat(" ", 6)) + "  " + styleDim.Render("texte secondaire"),
 		"",
 		barText(35, 14, colorForPct(35), "35 %") + "  " + barText(70, 14, colorForPct(70), "70 %") + "  " + barText(92, 14, colorForPct(92), "92 %"),

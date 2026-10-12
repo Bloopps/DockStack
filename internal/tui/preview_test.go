@@ -126,3 +126,19 @@ func TestPreviewDetailManyServices(t *testing.T) {
 		}
 	}
 }
+
+// Une stack à la fois unhealthy et partielle se voit proposer u : up relance
+// le conteneur arrêté sans toucher aux autres. Pas pour une unhealthy dont
+// tout tourne.
+func TestPreviewOffersUpToUnhealthyPartial(t *testing.T) {
+	has := func(s compose.Stack) bool {
+		out := ansi.Strip(strings.Join(previewDetail("/srv", s, nil, 60, 40, selState{}, previewExtra{}), "\n"))
+		return strings.Contains(out, "u up")
+	}
+	if !has(stack("nextcloud", "", 2, 3, 1)) {
+		t.Error("unhealthy 2/3 : u up attendu")
+	}
+	if has(stack("nextcloud", "", 3, 3, 1)) {
+		t.Error("unhealthy 3/3 : rien à relancer, pas de u up")
+	}
+}

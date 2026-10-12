@@ -1760,8 +1760,21 @@ func expandTabs(s string) string {
 }
 
 // listPosition renvoie « i/N » pour la stack sous le curseur (indices dans la
-// liste filtrée complète, repli ignoré pour que N reste stable).
+// liste filtrée complète, repli ignoré pour que N reste stable). En mode
+// services, « service i/N » parmi les services affichés : le titre du volet
+// ne donne plus que leur nombre.
 func (m Model) listPosition() string {
+	if m.svcFocus {
+		s, ok := m.focusedStack()
+		if !ok {
+			return ""
+		}
+		vis := m.visibleServices(m.stackServices(s))
+		if len(vis) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("service %d/%d", min(m.svcCursor+1, len(vis)), len(vis))
+	}
 	all := m.shownStacks()
 	if len(all) == 0 {
 		return ""

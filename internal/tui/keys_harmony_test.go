@@ -191,6 +191,21 @@ func TestHelpDescribesCleanupAndPaging(t *testing.T) {
 	}
 }
 
+// L'aide légende les symboles de la liste : une pastille par état, la
+// coche et ⟳, qui n'était expliqué nulle part.
+func TestHelpLegendsSymbols(t *testing.T) {
+	for _, w := range []int{80, 200} {
+		m := newTestModel(nil)
+		m.width, m.height = w, 50
+		help := ansi.Strip(helpBox(m))
+		for _, want := range []string{"Symboles", "● en marche", "◐ partielle", "▲ unhealthy", "■ arrêtée", "○ non déployée", "┃ cochée", "⟳ recréé hors compose"} {
+			if !strings.Contains(help, want) {
+				t.Errorf("%d colonnes : aide sans %q", w, want)
+			}
+		}
+	}
+}
+
 // pgup et pgdown avancent d'une page dans toutes les vues à liste ou à
 // lire, et reviennent à leur point de départ.
 func TestPageKeys(t *testing.T) {

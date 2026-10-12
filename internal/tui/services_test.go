@@ -179,7 +179,7 @@ func TestServiceFilterScopesActions(t *testing.T) {
 	}
 	m = press(m, "enter")
 	out := ansi.Strip(m.viewContent())
-	if !strings.Contains(out, "1/1 sur 4") || strings.Contains(out, "worker") {
+	if !strings.Contains(out, "Services (1 sur 4)") || !strings.Contains(out, "service 1/1") || strings.Contains(out, "worker") {
 		t.Fatalf("liste filtrée attendue :\n%s", out)
 	}
 	m = press(m, "p") // pull : cibles = cochés ET visibles → db seulement
@@ -222,10 +222,13 @@ func TestServiceDependencies(t *testing.T) {
 	}
 }
 
+// Le titre compte les services ; la position du curseur est à droite du
+// pied de page.
 func TestServiceModeRenderAndEscape(t *testing.T) {
 	m := press(svcTestModel(&fakeClient{}), "right", "space")
 	out := ansi.Strip(m.viewContent())
-	if !strings.Contains(out, "Services · 2/4 · 1 coché") || !strings.Contains(out, "cocher") {
+	if !strings.Contains(out, "web › services") || !strings.Contains(out, "Services (4) · 1 coché") ||
+		!strings.Contains(out, "cocher") || !strings.Contains(out, "service 2/4") {
 		t.Fatalf("rendu du mode services incomplet :\n%s", out)
 	}
 	m = press(m, "esc") // 1er esc : décoche
@@ -278,5 +281,99 @@ func TestDeclaredServicesFollowDotEnv(t *testing.T) {
 	}
 	if n := len(c.declared(s)); n != 2 {
 		t.Errorf("profil activé dans le .env : %d service(s), want 2", n)
+	}
+}
+
+// Sous 100 colonnes, → entre quand même dans les services : le volet prend
+// toute la largeur (il était refusé). Un terminal rétréci en mode services
+// garde les services à l'écran : rendre la seule liste laissait le mode actif
+// mais invisible, et ↓ ne bougeait rien de visible.
+func TestServicesNarrowFullWidth(t *testing.T) {
+	m := svcTestModel(&fakeClient{})
+	m.width, m.height = 80, 24
+	m = press(m, "right")
+	out := ansi.Strip(m.viewContent())
+	if !m.svcFocus || !strings.Contains(out, "web › services") || !strings.Contains(out, "▶ ● app") {
+		t.Fatalf("80 colonnes : services attendus en pleine largeur (focus %v) :\n%s", m.svcFocus, out)
+	}
+
+	m = press(svcTestModel(&fakeClient{}), "right")
+	m, _ = update(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = press(m, "down")
+	out = ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "▶ ● cache") || !strings.Contains(out, "Actions sur cache") {
+		t.Fatalf("120 → 80 colonnes : le service sous le curseur doit rester visible :\n%s", out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(l); w > 80 {
+			t.Fatalf("ligne de %d colonnes : %q", w, l)
+		}
+	}
+	if m = press(m, "left"); m.svcFocus || !strings.Contains(ansi.Strip(m.viewContent()), "web") {
+		t.Error("← doit ramener à la liste")
+	}
+}
+
+// En mode services, seul le service visé garde le fond du curseur : la
+// ligne de la stack, à gauche, perd le sien et prend un ▷ (les deux ▶
+// avaient le même style, rien ne disait laquelle visaient les lettres).
+func TestServiceModeListCursorAway(t *testing.T) {
+	m := press(svcTestModel(&fakeClient{}), "right")
+	list := strings.Split(renderStackList(m, 20, 70), "\n")
+	var row string
+	for _, l := range list {
+		if strings.Contains(ansi.Strip(l), "web") {
+			row = l
+		}
+	}
+	if got := ansi.Strip(row); !strings.Contains(got, "▷") || strings.Contains(got, "▶") {
+		t.Fatalf("ligne de la stack en mode services : %q, want ▷ sans ▶", got)
+	}
+	plain := renderStackLine(m.stacks[0], false, false, false, 70, false, m.rowsCache.nameW, m.rowUsageFor(m.stacks[0]))
+	if strings.Replace(row, styleDim.Render("▷"), " ", 1) != plain {
+		t.Errorf("hors repère, la ligne doit garder son rendu ordinaire (couleurs, sans fond) :\n%q\n%q", row, plain)
+	}
+	if out := ansi.Strip(m.viewContent()); strings.Count(out, "▶") != 1 || !strings.Contains(out, "▶ ● app") {
+		t.Errorf("un seul ▶, celui du service :\n%s", out)
+	}
+}
+
+// Le détail du service suit une zone de la hauteur de tous les services,
+// plus une ligne vide : il ne bouge ni en naviguant ni en filtrant (collé en
+// bas du volet, il était loin du service décrit).
+func TestServiceDetailStaysUnderList(t *testing.T) {
+	m := press(svcTestModel(&fakeClient{}), "right")
+	rule := func(m Model) int {
+		for i, l := range previewServices(m, m.stacks[0], 48, 34) {
+			if strings.HasPrefix(ansi.Strip(l), "──") {
+				return i
+			}
+		}
+		return -1
+	}
+	want := rule(m)
+	// Titre, état, « Services (4) », ligne du filtre, 4 services, ligne vide.
+	if want != 9 {
+		t.Fatalf("détail à la ligne %d, want 9 (juste sous les 4 services)", want)
+	}
+	for _, k := range []string{"down", "down", "down"} {
+		if m = press(m, k); rule(m) != want {
+			t.Errorf("curseur %d : détail à la ligne %d, want %d", m.svcCursor, rule(m), want)
+		}
+	}
+	if m = press(m, "/", "d", "b"); rule(m) != want {
+		t.Errorf("filtre « db » : détail à la ligne %d, want %d", rule(m), want)
+	}
+	// Place comptée : les services passent avant la ligne vide, et le volet
+	// garde sa hauteur.
+	m = press(svcTestModel(&fakeClient{}), "right")
+	lines := previewServices(m, m.stacks[0], 48, 20)
+	if len(lines) != 20 {
+		t.Fatalf("%d lignes pour une hauteur de 20", len(lines))
+	}
+	for i, l := range lines {
+		if strings.HasPrefix(ansi.Strip(l), "──") && (i < 1 || strings.TrimSpace(ansi.Strip(lines[i-1])) == "") {
+			t.Errorf("volet bas : ligne vide avant le détail au lieu d'un service :\n%s", ansi.Strip(strings.Join(lines, "\n")))
+		}
 	}
 }

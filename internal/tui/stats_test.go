@@ -56,8 +56,8 @@ func TestUsageCells(t *testing.T) {
 func TestRenderStackLineUsage(t *testing.T) {
 	a := usageStack("beszel", 2)
 	b := usageStack("immich", 4)
-	lineA := ansi.Strip(renderStackLine(a, false, false, 100, false, 10, rowUsage{cpu: "0.0%", mem: "31 Mo", show: true}))
-	lineB := ansi.Strip(renderStackLine(b, false, false, 100, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true}))
+	lineA := ansi.Strip(renderStackLine(a, false, false, false, 100, false, 10, rowUsage{cpu: "0.0%", mem: "31 Mo", show: true}))
+	lineB := ansi.Strip(renderStackLine(b, false, false, false, 100, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true}))
 	for _, want := range []string{"0.0%", "31 Mo", "en marche"} {
 		if !strings.Contains(lineA, want) {
 			t.Errorf("%q absent de %q", want, lineA)
@@ -68,25 +68,25 @@ func TestRenderStackLineUsage(t *testing.T) {
 		t.Errorf("colonnes désalignées :\n%q\n%q", lineA, lineB)
 	}
 	// En cours de mesure.
-	if got := ansi.Strip(renderStackLine(a, false, false, 100, false, 10, rowUsage{cpu: "…", mem: "…", show: true})); !strings.Contains(got, "…") {
+	if got := ansi.Strip(renderStackLine(a, false, false, false, 100, false, 10, rowUsage{cpu: "…", mem: "…", show: true})); !strings.Contains(got, "…") {
 		t.Errorf("« … » attendu : %q", got)
 	}
 	// Stack arrêtée : pas de colonnes.
 	off := compose.Stack{Name: "off", Total: 2}
-	if got := ansi.Strip(renderStackLine(off, false, false, 100, false, 10, rowUsage{})); strings.Contains(got, "Mo") || strings.Contains(got, "%") {
+	if got := ansi.Strip(renderStackLine(off, false, false, false, 100, false, 10, rowUsage{})); strings.Contains(got, "Mo") || strings.Contains(got, "%") {
 		t.Errorf("stack arrêtée : %q", got)
 	}
 	// Jamais plus large que l'écran, curseur ou non, et l'état est gardé tant
 	// que possible : CPU/RAM partent en premier.
 	for _, w := range []int{20, 30, 40, 50, 60, 80} {
 		for _, cur := range []bool{false, true} {
-			line := renderStackLine(b, cur, false, w, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true})
+			line := renderStackLine(b, cur, false, false, w, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true})
 			if got := ansi.StringWidth(line); got > w {
 				t.Errorf("w=%d cur=%v : %d colonnes : %q", w, cur, got, ansi.Strip(line))
 			}
 		}
 	}
-	if got := ansi.Strip(renderStackLine(b, false, false, 40, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true})); strings.Contains(got, "Go") || !strings.Contains(got, "en marche") {
+	if got := ansi.Strip(renderStackLine(b, false, false, false, 40, false, 10, rowUsage{cpu: "12.5%", mem: "1.2 Go", show: true})); strings.Contains(got, "Go") || !strings.Contains(got, "en marche") {
 		t.Errorf("à 40 colonnes : CPU/RAM abandonnés, état gardé : %q", got)
 	}
 }
@@ -259,14 +259,14 @@ func TestRowColumnsAlignedWithHeader(t *testing.T) {
 		return ansi.StringWidth(line[:i]) + ansi.StringWidth(val)
 	}
 	hdr := ansi.Strip(m.listColumnHeader(120))
-	row := ansi.Strip(renderStackLine(run, false, false, 120, false, nameW, ru))
+	row := ansi.Strip(renderStackLine(run, false, false, false, 120, false, nameW, ru))
 	for label, val := range map[string]string{"CPU": "0.4%", "RAM": "31 Mo", "Disque": "5.0 Go", "Lect/s": "12 Ko", "Écr/s": "1.2 Mo"} {
 		if h, r := colEnd(hdr, label), colEnd(row, val); h != r || h < 0 {
 			t.Errorf("%s : en-tête finit en %d, valeur en %d\n%q\n%q", label, h, r, hdr, row)
 		}
 	}
 	// Stack arrêtée : seulement le disque, dans la même colonne que les autres lignes.
-	stopped := ansi.Strip(renderStackLine(off, false, false, 120, false, nameW, rowUsage{disk: "1.2 Go"}))
+	stopped := ansi.Strip(renderStackLine(off, false, false, false, 120, false, nameW, rowUsage{disk: "1.2 Go"}))
 	if colEnd(stopped, "1.2 Go") != colEnd(row, "5.0 Go") {
 		t.Errorf("disque désaligné :\n%q\n%q", stopped, row)
 	}
@@ -287,7 +287,7 @@ func TestRowColumnsAlignedWithHeader(t *testing.T) {
 		{50, []string{"en marche"}, []string{"31 Mo", "5.0 Go", "0.4%"}},
 		{30, []string{"2/2"}, []string{"en marche", "31 Mo"}},
 	} {
-		line := renderStackLine(run, false, false, tc.width, false, nameW, ru)
+		line := renderStackLine(run, false, false, false, tc.width, false, nameW, ru)
 		if got := ansi.StringWidth(line); got > tc.width {
 			t.Errorf("w=%d : %d colonnes : %q", tc.width, got, ansi.Strip(line))
 		}
@@ -317,7 +317,7 @@ func TestRowColumnsAlignedWithHeader(t *testing.T) {
 	// Curseur ou non, jamais plus large que l'écran.
 	for w := 20; w <= 140; w += 5 {
 		for _, cur := range []bool{false, true} {
-			if got := ansi.StringWidth(renderStackLine(run, cur, false, w, false, nameW, ru)); got > w {
+			if got := ansi.StringWidth(renderStackLine(run, cur, false, false, w, false, nameW, ru)); got > w {
 				t.Errorf("w=%d cur=%v : %d colonnes", w, cur, got)
 			}
 		}
@@ -344,5 +344,76 @@ func TestIOCells(t *testing.T) {
 		if got := fmtIO(bps); got != want {
 			t.Errorf("fmtIO(%v) = %q, veut %q", bps, got, want)
 		}
+	}
+}
+
+// Une référence d'image trop longue est coupée au milieu : le nom court et
+// le tag restent lisibles (coupée par la fin, elle perdait le tag).
+func TestTruncImage(t *testing.T) {
+	for _, tc := range []struct {
+		ref  string
+		w    int
+		want string
+	}{
+		{"redis:6.2-alpine", 40, "redis:6.2-alpine"},
+		{"ghcr.io/immich-app/immich-server:release", 38, "ghcr.io/…/immich-server:release"},
+		{"ghcr.io/immich-app/immich-machine-learning:release", 38, "…/immich-machine-learning:release"},
+		{"ghcr.io/immich-app/immich-machine-learning:release", 20, "…ne-learning:release"},
+		{"tensorchord/pgvecto-rs:pg14-v0.2.0", 20, "…ecto-rs:pg14-v0.2.0"},
+		{"tensorchord/pgvecto-rs:pg14-v0.2.0", 24, "…/pgvecto-rs:pg14-v0.2.0"},
+		{"nextcloud:29-apache", 1, "…"},
+		{"nextcloud:29-apache", 0, ""},
+	} {
+		got := truncImage(tc.ref, tc.w)
+		if got != tc.want {
+			t.Errorf("truncImage(%q, %d) = %q, want %q", tc.ref, tc.w, got, tc.want)
+		}
+		if w := ansi.StringWidth(got); w > max(tc.w, 0) {
+			t.Errorf("truncImage(%q, %d) : %d colonnes", tc.ref, tc.w, w)
+		}
+	}
+}
+
+// La ligne disque du volet passe sur deux lignes plutôt que de perdre les
+// couches quand elle ne tient pas (de 100 à 139 colonnes).
+func TestStackUsageLinesWrap(t *testing.T) {
+	ex := previewExtra{volumes: 18 << 30, layers: 300 << 20}
+	if got := stackUsageLines(ex, 60); len(got) != 1 || ansi.Strip(got[0]) != "Disque 18.3 Go (volumes 18.0 Go + couches 300 Mo)" {
+		t.Errorf("large : %q", got)
+	}
+	got := stackUsageLines(ex, 46)
+	if len(got) != 2 || ansi.Strip(got[0]) != "Disque 18.3 Go" || ansi.Strip(got[1]) != "  volumes 18.0 Go · couches 300 Mo" {
+		t.Errorf("étroit : %q", got)
+	}
+	if got := stackUsageLines(previewExtra{}, 46); got != nil {
+		t.Errorf("sans disque : %q", got)
+	}
+}
+
+// Les services s'accordent au masculin (« cron arrêté », et non « arrêtée »
+// comme une stack) ; un service qui ne tourne pas dit son code de sortie et
+// depuis quand, sans passer par le mode services.
+func TestServiceBlockStateAndExitCode(t *testing.T) {
+	svcs := []compose.ServiceStatus{
+		{Name: "app", Running: 1, Total: 1, Image: "nextcloud:29-apache", Status: "Up 2 days"},
+		{Name: "cron", Total: 1, Image: "nextcloud:29-apache", Status: "Exited (137) 2 hours ago"},
+		{Name: "init", Status: ""},
+	}
+	out := ansi.Strip(strings.Join(renderServiceBlock(svcs, 46, 20), "\n"))
+	for _, want := range []string{"cron  arrêté\n", "état  code 137 · il y a 2 h", "init  non créé"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q absent :\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "arrêtée") || strings.Contains(out, "depuis 2 j") {
+		t.Errorf("accord féminin, ou état d'un service en marche :\n%s", out)
+	}
+
+	var many []compose.ServiceStatus
+	for i := range 6 {
+		many = append(many, compose.ServiceStatus{Name: fmt.Sprintf("s%d", i), Total: 1})
+	}
+	if out := ansi.Strip(strings.Join(renderServiceBlock(many, 46, 4), "\n")); !strings.Contains(out, "… +4 autres services arrêtés") {
+		t.Errorf("résumé des services masqués :\n%s", out)
 	}
 }

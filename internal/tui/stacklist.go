@@ -71,34 +71,31 @@ func sortByState(stacks []compose.Stack) []compose.Stack {
 	return result
 }
 
+// stateStyle : pastille et couleur d'un état. Un glyphe par état, et pas
+// seulement une couleur : sous le curseur la ligne est en texte brut (cf.
+// renderStackLine), et l'en-tête d'un dossier replié ou le résumé du volet
+// n'ont pas de mot d'état pour compenser. ■ reprend l'icône de Stop. Tous ont
+// la largeur « ambiguë » de ● (une colonne) : pas de ▪, dont certains
+// terminaux font un emoji.
 func stateStyle(s compose.State) (string, lipgloss.Style) {
 	switch s {
 	case compose.StateUnhealthy:
-		return "●", styleOrange
+		return "▲", styleOrange
 	case compose.StateRunning:
 		return "●", styleGreen
 	case compose.StatePartial:
-		return "●", styleYellow
+		return "◐", styleYellow
 	case compose.StateStopped:
-		return "●", styleRed
+		return "■", styleRed
 	default:
 		return "○", styleDim
 	}
 }
 
-func stateLabel(stack compose.Stack) string {
-	switch stack.State() {
-	case compose.StateUnhealthy:
-		return fmt.Sprintf("Unhealthy (%d/%d)", stack.Running, stack.Total)
-	case compose.StateRunning:
-		return fmt.Sprintf("Running (%d/%d)", stack.Running, stack.Total)
-	case compose.StatePartial:
-		return fmt.Sprintf("Partial (%d/%d)", stack.Running, stack.Total)
-	case compose.StateStopped:
-		return fmt.Sprintf("Stopped (0/%d)", stack.Total)
-	default:
-		return "Not deployed"
-	}
+// stateDot : pastille d'un état, dans sa couleur.
+func stateDot(s compose.State) string {
+	g, st := stateStyle(s)
+	return st.Render(g)
 }
 
 func groupSizes(stacks []compose.Stack) map[string]int {
@@ -523,9 +520,12 @@ func renderStackList(m Model, height, width int) string {
 		case row.sep:
 			lines = append(lines, styleDim.Render("  "+strings.Repeat("─", max(width-6, 1))))
 		case row.header:
-			lines = append(lines, renderGroupHeader(row, i == cursor, width))
+			lines = append(lines, renderGroupHeader(row, i == cursor && !m.svcFocus, width))
 		default:
-			lines = append(lines, renderStackLine(row.stack, i == cursor, m.selected[row.stack.Name], width, row.indented, m.rowsCache.nameW, m.rowUsageFor(row.stack)))
+			// Mode services : le fond du curseur passe au service visé dans
+			// le volet, la stack n'y garde qu'un repère (cf. renderStackLine).
+			away := m.svcFocus && row.stack.Name == m.svcStack
+			lines = append(lines, renderStackLine(row.stack, i == cursor && !m.svcFocus, away, m.selected[row.stack.Name], width, row.indented, m.rowsCache.nameW, m.rowUsageFor(row.stack)))
 		}
 	}
 	if moreBelow > 0 {
@@ -568,28 +568,27 @@ func emptyListMessage(query, dir string, width int) string {
 }
 
 // renderGroupHeader affiche un en-tête de groupe : flèche de repli, nom,
-// nombre de stacks et une pastille « état global » à la couleur du pire état
-// du dossier (▼ 📁 media (4) ●).
+// nombre de stacks et la pastille du pire état du dossier (▼ 📁 media (4) ■).
+// Replié, c'est la seule trace de l'état de ses stacks : le glyphe la porte
+// aussi sous le curseur, où la couleur disparaît.
 func renderGroupHeader(row listRow, isCursor bool, width int) string {
 	arrow := "▼"
 	if row.folded {
 		arrow = "▶"
 	}
 
-	var dotGlyph string
-	var dotStyle lipgloss.Style
+	worst := compose.StateUnknown // rien de déployé
 	switch {
 	case row.gc.unhealthy > 0:
-		dotGlyph, dotStyle = "●", styleOrange
+		worst = compose.StateUnhealthy
 	case row.gc.stop > 0:
-		dotGlyph, dotStyle = "●", styleRed
+		worst = compose.StateStopped
 	case row.gc.part > 0:
-		dotGlyph, dotStyle = "●", styleYellow
+		worst = compose.StatePartial
 	case row.gc.run > 0:
-		dotGlyph, dotStyle = "●", styleGreen
-	default:
-		dotGlyph, dotStyle = "○", styleDim // rien de déployé
+		worst = compose.StateRunning
 	}
+	dotGlyph, dotStyle := stateStyle(worst)
 
 	text := fmt.Sprintf("%s 📁 %s (%d) ", arrow, row.group, row.size)
 	if isCursor {
@@ -605,7 +604,8 @@ func renderGroupHeader(row listRow, isCursor bool, width int) string {
 	return styleGroup.Render(text) + dotStyle.Render(dotGlyph)
 }
 
-// stateWord : libellé d'état court affiché dans la colonne de droite.
+// stateWord : libellé d'état court d'une stack (colonne de droite, volet,
+// panneau d'actions). « unhealthy », le terme de Docker, n'est pas traduit.
 func stateWord(st compose.State) string {
 	switch st {
 	case compose.StateUnhealthy:
@@ -621,11 +621,33 @@ func stateWord(st compose.State) string {
 	}
 }
 
+// serviceStateWord : état de n services, accordé à « service » (stateWord
+// l'est à « stack » : « cron arrêtée »). Un service sans conteneur est « non
+// créé », comme dans l'avertissement de dépendances (depWarning).
+func serviceStateWord(st compose.State, n int) string {
+	s := plural(n)
+	switch st {
+	case compose.StateUnhealthy:
+		return "unhealthy"
+	case compose.StateRunning:
+		return "en marche"
+	case compose.StatePartial:
+		return "partiel" + s
+	case compose.StateStopped:
+		return "arrêté" + s
+	default:
+		return "non créé" + s
+	}
+}
+
 // renderStackLine rend une ligne de stack : marqueur, pastille, nom, puis le
 // compteur de conteneurs et l'état alignés en colonne juste après le nom le
 // plus long (nameW) — et non collés au bord droit, loin des noms sur un écran
-// large. La ligne sous le curseur est surlignée sur toute la largeur.
-func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, indented bool, nameW int, use rowUsage) string {
+// large. La ligne sous le curseur est surlignée sur toute la largeur. away :
+// la stack est celle du mode services, dont le focus est dans le volet ; elle
+// garde ses couleurs et un ▷ atténué la désigne, pour que seul le service
+// visé par les lettres ait le fond du curseur.
+func renderStackLine(s compose.Stack, isCursor, away, isSelected bool, width int, indented bool, nameW int, use rowUsage) string {
 	dot, dotStyle := stateStyle(s.State())
 
 	var countText string
@@ -755,7 +777,12 @@ func renderStackLine(s compose.Stack, isCursor, isSelected bool, width int, inde
 	if isSelected {
 		marker = styleYellow.Render("┃")
 	}
-	line := indent + marker + " " + dotStyle.Render(dot) + " " + nameStyle.Render(name)
+	mark := marker + " "
+	if away {
+		// Mêmes colonnes que la ligne curseur : flèche puis marque.
+		mark = styleDim.Render("▷") + marker
+	}
+	line := indent + mark + dotStyle.Render(dot) + " " + nameStyle.Render(name)
 	if orphan != "" {
 		// Conteneur(s) rattaché(s) par nom faute de label projet (orphelin
 		// watchtower) : sera ré-adopté au prochain up/recreate.

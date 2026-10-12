@@ -16,7 +16,8 @@ import (
 
 // Largeur de terminal en-dessous de laquelle l'aperçu est masqué même s'il est
 // activé : amputer la liste (compteurs alignés à droite, ~600 stacks) la
-// rendrait illisible sur un écran étroit.
+// rendrait illisible sur un écran étroit. Le mode services, lui, reste
+// possible : son volet prend alors toute la largeur (cf. listBlock).
 const minPreviewTermWidth = 100
 
 // Bornes de largeur du volet d'aperçu : ~40 % de la largeur totale, plafonné
@@ -228,7 +229,9 @@ func previewGroup(m Model, group string, inner, height int, sel selState) []stri
 }
 
 // groupRollup résume les états des stacks d'un groupe en segments colorés
-// (seuls les états présents sont affichés), p. ex. « ● 2  ◐ 1  ○ 3 ».
+// (seuls les états présents sont affichés), p. ex. « ● 2  ◐ 1  ○ 3 ». Les
+// glyphes sont ceux de stateStyle : la couleur seule ne disait pas lequel
+// des « ● » était l'arrêtée.
 func groupRollup(members []compose.Stack) string {
 	var run, part, unhealthy, stop, off int
 	for _, s := range members {
@@ -246,16 +249,17 @@ func groupRollup(members []compose.Stack) string {
 		}
 	}
 	var segs []string
-	add := func(n int, glyph string, st lipgloss.Style) {
+	add := func(n int, st compose.State) {
 		if n > 0 {
-			segs = append(segs, st.Render(fmt.Sprintf("%s %d", glyph, n)))
+			glyph, style := stateStyle(st)
+			segs = append(segs, style.Render(fmt.Sprintf("%s %d", glyph, n)))
 		}
 	}
-	add(unhealthy, "●", styleOrange)
-	add(run, "●", styleGreen)
-	add(part, "●", styleYellow)
-	add(stop, "●", styleRed)
-	add(off, "○", styleDim)
+	add(unhealthy, compose.StateUnhealthy)
+	add(run, compose.StateRunning)
+	add(part, compose.StatePartial)
+	add(stop, compose.StateStopped)
+	add(off, compose.StateUnknown)
 	return strings.Join(segs, "  ")
 }
 
@@ -414,8 +418,8 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 	}
 	out = append(out, "")
 
-	if line := stackUsageLine(ex, inner); line != "" {
-		out = append(out, line, "")
+	if lines := stackUsageLines(ex, inner); len(lines) > 0 {
+		out = append(append(out, lines...), "")
 	}
 
 	if len(services) > 0 {
@@ -450,6 +454,12 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 		acts = []footerKey{{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"l", "logs"}, {"p", "pull"}}
 	case compose.StateUnhealthy:
 		acts = []footerKey{{"l", "logs"}, {"r", "restart"}, {"c", "recreate"}, {"s", "stop"}, {"d", "down"}}
+		if s.Running < s.Total {
+			// Unhealthy ET partielle (l'état unhealthy prime, cf.
+			// aggregateState) : up relance le conteneur arrêté sans
+			// toucher aux autres, comme pour une stack partielle.
+			acts = append([]footerKey{{"u", "up"}}, acts...)
+		}
 	default:
 		acts = []footerKey{{"r", "restart"}, {"s", "stop"}, {"d", "down"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"}}
 	}

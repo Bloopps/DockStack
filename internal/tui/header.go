@@ -339,9 +339,10 @@ func freshnessText(sc StackCounts, now time.Time, width int) string {
 }
 
 // stacksSummary : verdict sur les stacks déployées. « ✔ 15/15 » si tout
-// tourne, sinon « ⚠ 14/15 (● 1 arrêtée) » avec chaque
-// problème dans sa couleur. Les stacks jamais déployées n'y figurent pas :
-// la liste les résume déjà, et elles gonflaient le total pour rien.
+// tourne, sinon « ⚠ 14/15 (■ 1 arrêtée) » avec chaque problème dans sa
+// couleur et sous la pastille de la liste (stateStyle). Les stacks jamais
+// déployées n'y figurent pas : la liste les résume déjà, et elles gonflaient
+// le total pour rien.
 func stacksSummary(sc StackCounts) string {
 	if sc.Unknown {
 		return styleDim.Render("…")
@@ -354,7 +355,7 @@ func stacksSummary(sc StackCounts) string {
 		return styleGreen.Render(fmt.Sprintf("✔ %d/%d", sc.Running, deployed))
 	}
 	var probs []string
-	add := func(n int, st lipgloss.Style, one, many string) {
+	add := func(n int, state compose.State, one, many string) {
 		if n == 0 {
 			return
 		}
@@ -362,11 +363,12 @@ func stacksSummary(sc StackCounts) string {
 		if n == 1 {
 			label = one
 		}
-		probs = append(probs, st.Render(fmt.Sprintf("● %d %s", n, label)))
+		glyph, st := stateStyle(state)
+		probs = append(probs, st.Render(fmt.Sprintf("%s %d %s", glyph, n, label)))
 	}
-	add(sc.Unhealthy, styleOrange, "unhealthy", "unhealthy")
-	add(sc.Partial, styleYellow, "partielle", "partielles")
-	add(sc.Stopped, styleRed, "arrêtée", "arrêtées")
+	add(sc.Unhealthy, compose.StateUnhealthy, "unhealthy", "unhealthy")
+	add(sc.Partial, compose.StatePartial, "partielle", "partielles")
+	add(sc.Stopped, compose.StateStopped, "arrêtée", "arrêtées")
 	return styleYellow.Render(fmt.Sprintf("⚠ %d/%d", sc.Running, deployed)) +
 		" (" + strings.Join(probs, styleDim.Render(" · ")) + ")"
 }

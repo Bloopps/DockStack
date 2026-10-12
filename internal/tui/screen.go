@@ -141,6 +141,13 @@ func stackBlocks(blocks ...block) string {
 // bodyH lignes.
 func (m Model) listBlock(bodyH int) block {
 	if !m.previewVisible() {
+		if m.svcFocus {
+			// Mode services sur écran étroit : le volet prend toute la
+			// largeur. Ne rendre que la liste laissait le mode actif mais
+			// invisible (terminal rétréci) : ↑↓ ne bougeaient rien et u s p l
+			// visaient un service qu'on ne voyait pas. ← ramène à la liste.
+			return newBlock(renderPreviewPane(m, bodyH, m.width))
+		}
 		return newBlock(renderStackList(m, bodyH, m.width))
 	}
 	// Liste à gauche (largeur réduite), aperçu à droite. La liste est
