@@ -1,8 +1,11 @@
 package compose
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/moby/moby/api/types/container"
@@ -117,5 +120,57 @@ func TestIsOrphanCandidate(t *testing.T) {
 		if got := isOrphanCandidate(c.labels); got != c.want {
 			t.Errorf("isOrphanCandidate(%v) = %v, want %v", c.labels, got, c.want)
 		}
+	}
+}
+
+// TestCachedContainerNames : le projet n'est rechargé que si l'un de ses
+// fichiers (compose, override, .env) change, apparaît ou disparaît.
+func TestCachedContainerNames(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	write := func(path, body string, mod time.Time) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t0 := time.Now().Add(-time.Hour)
+	write(file, "services:\n  web:\n    image: busybox\n", t0)
+	st := Stack{Name: "s", Dir: dir, ComposeFile: file}
+
+	name, cand, err := cachedContainerNames(st)
+	if err != nil || cand[filepath.Base(dir)+"-web-1"] != "web" {
+		t.Fatalf("premier chargement : %q %v %v", name, cand, err)
+	}
+	_, again, _ := cachedContainerNames(st)
+	if fmt.Sprintf("%p", again) != fmt.Sprintf("%p", cand) {
+		t.Fatal("fichiers inchangés : le résultat doit venir du cache")
+	}
+
+	// Le compose change (même date, autre taille) : rechargé.
+	write(file, "services:\n  api:\n    image: busybox:1\n", t0)
+	_, cand, _ = cachedContainerNames(st)
+	if cand[filepath.Base(dir)+"-api-1"] != "api" {
+		t.Fatalf("compose modifié non relu : %v", cand)
+	}
+	// Un .env qui apparaît peut renommer le projet.
+	write(filepath.Join(dir, ".env"), "COMPOSE_PROJECT_NAME=autre\n", t0)
+	name, cand, _ = cachedContainerNames(st)
+	if name != "autre" || cand["autre-api-1"] != "api" {
+		t.Fatalf(".env ajouté non pris en compte : %q %v", name, cand)
+	}
+	// Un override qui apparaît ajoute un service.
+	write(filepath.Join(dir, "compose.override.yaml"), "services:\n  extra:\n    image: busybox\n", t0)
+	_, cand, _ = cachedContainerNames(st)
+	if cand["autre-extra-1"] != "extra" {
+		t.Fatalf("override ajouté non pris en compte : %v", cand)
+	}
+	// Une erreur de chargement est mémorisée aussi, jusqu'à correction.
+	write(file, "services: [", t0.Add(time.Minute))
+	if _, _, err := cachedContainerNames(st); err == nil {
+		t.Fatal("compose invalide : erreur attendue")
 	}
 }

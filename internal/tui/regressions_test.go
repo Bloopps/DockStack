@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -382,5 +383,56 @@ func TestPaneNameNotRepeated(t *testing.T) {
 	out := ansi.Strip(strings.Join(previewDetail("/srv", st, nil, 60, 30, 0, previewExtra{}), "\n"))
 	if n := strings.Count(out, "wg-easy"); n != 1 {
 		t.Fatalf("nom affiché %d fois :\n%s", n, out)
+	}
+}
+
+// Un chargement de la liste parti avant un changement de dossier, ou doublé
+// par un chargement plus récent, ne doit pas remplacer la liste affichée.
+func TestStaleStacksLoadIgnored(t *testing.T) {
+	m := New(&config.Config{StackDir: "/nouveau"})
+	now := time.Now()
+	out, _ := m.Update(stacksLoadedMsg{stacks: []compose.Stack{{Name: "neuve"}}, dir: "/nouveau", at: now})
+	m = out.(Model)
+
+	out, _ = m.Update(stacksLoadedMsg{stacks: []compose.Stack{{Name: "ancienne"}}, dir: "/ancien", at: now.Add(time.Second)})
+	if m2 := out.(Model); len(m2.stacks) != 1 || m2.stacks[0].Name != "neuve" {
+		t.Fatalf("chargement d'un autre dossier appliqué : %v", m2.stacks)
+	}
+	out, _ = m.Update(stacksLoadedMsg{stacks: []compose.Stack{{Name: "vieille"}}, dir: "/nouveau", at: now.Add(-time.Second)})
+	if m2 := out.(Model); m2.stacks[0].Name != "neuve" {
+		t.Fatalf("chargement plus ancien appliqué : %v", m2.stacks)
+	}
+	// Une erreur périmée n'affiche pas l'écran d'erreur.
+	out, _ = m.Update(stacksLoadedMsg{err: errors.New("démon injoignable"), dir: "/ancien", at: now.Add(time.Second)})
+	if out.(Model).err != nil {
+		t.Fatal("erreur d'un autre dossier affichée")
+	}
+}
+
+// Une erreur de chargement remet l'indicateur « actualisation… » à zéro : il
+// restait affiché jusqu'au chargement réussi suivant.
+func TestStacksLoadErrorClearsRefreshing(t *testing.T) {
+	m := New(&config.Config{StackDir: "/srv"})
+	m.refreshing, m.manualR = true, true
+	out, _ := m.Update(stacksLoadedMsg{err: errors.New("timeout"), dir: "/srv", at: time.Now()})
+	got := out.(Model)
+	if got.err == nil || got.refreshing || got.manualR || got.loading {
+		t.Fatalf("err=%v refreshing=%v manualR=%v loading=%v", got.err, got.refreshing, got.manualR, got.loading)
+	}
+}
+
+// Changer de dossier efface la sélection : elle est indexée par nom relatif,
+// et une stack de même nom dans le nouveau dossier en aurait hérité.
+func TestDirChangeClearsSelection(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("media/app", "media", 1, 1, 0)})
+	m.client = &fakeClient{}
+	m.selected["media/app"] = true
+	m.view, m.dirPath = viewDirPicker, "/autre"
+	m.dirEntries = []string{"[*] Choisir ce dossier"}
+	t.Setenv("HOME", t.TempDir()) // cfg.Save
+	out, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := out.(Model)
+	if got.cfg.StackDir != "/autre" || len(got.selected) != 0 || len(got.stacks) != 0 {
+		t.Fatalf("dossier %q, sélection %v, stacks %d", got.cfg.StackDir, got.selected, len(got.stacks))
 	}
 }

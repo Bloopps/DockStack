@@ -7,12 +7,16 @@ package compose
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Bloopps/dockstack/internal/fakedocker"
 )
 
 const probeImage = "busybox:latest"
@@ -103,6 +107,7 @@ func cleanupProbes(t *testing.T) {
 
 func newLiveClient(t *testing.T) *Client {
 	t.Helper()
+	fakedocker.LiveLock(t)
 	c, err := New()
 	if err != nil {
 		t.Skipf("Docker indisponible : %v", err)
@@ -389,20 +394,107 @@ func TestLiveNameConflictNotStolen(t *testing.T) {
 	}
 }
 
-// TestLiveUsage : la mesure d'occupation répond et reste cohérente.
+// TestLiveUsage : la mesure d'occupation répond et reste cohérente, et ne
+// renvoie que les mesures demandées.
 func TestLiveUsage(t *testing.T) {
 	c, err := New()
 	if err != nil {
 		t.Skip(err)
 	}
-	u, err := c.Usage(context.Background(), true)
+	ctx := context.Background()
+	u, err := c.Usage(ctx, UsageOptions{Images: true, Volumes: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.RootDir == "" || u.Running > u.Containers || !u.VolumesOK || u.ImagesSize <= 0 {
+	if u.RootDir == "" || u.Running > u.Containers || !u.VolumesOK || !u.ImagesOK || u.ImagesSize <= 0 {
 		t.Fatalf("usage incohérent : %+v", u)
 	}
 	t.Logf("%+v", u)
+
+	info, err := c.Usage(ctx, UsageOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.RootDir == "" || info.Containers == 0 || info.ImagesOK || info.VolumesOK {
+		t.Fatalf("Info seul : %+v", info)
+	}
+	img, err := c.Usage(ctx, UsageOptions{Images: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !img.ImagesOK || img.ImagesSize != u.ImagesSize || img.VolumesOK {
+		t.Fatalf("images seules : %+v (complet : %d)", img, u.ImagesSize)
+	}
+}
+
+// TestLiveEventFilter : le filtre appliqué par le démon laisse passer le
+// cycle de vie et les changements de santé des conteneurs, ainsi que les
+// changements d'images, mais plus les exec_* des contrôles de santé.
+func TestLiveEventFilter(t *testing.T) {
+	c := newLiveClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ch := c.SubscribeEvents(ctx)
+	// Laisse le temps à l'abonnement de s'établir avant de produire des
+	// événements.
+	time.Sleep(300 * time.Millisecond)
+
+	const name = "zzdsprobe-events"
+	const tag = "zzdsprobe-events:t"
+	dockerCLI("rm", "-f", name)
+	t.Cleanup(func() {
+		dockerCLI("rm", "-f", name)
+		dockerCLI("rmi", tag)
+	})
+	if out, err := dockerCLI("run", "-d", "--name", name, "--health-cmd", "true",
+		"--health-interval", "1s", "--health-start-period", "0s", probeImage, "sleep", "60"); err != nil {
+		t.Fatalf("docker run : %v %s", err, out)
+	}
+	if out, err := dockerCLI("tag", probeImage, tag); err != nil {
+		t.Fatalf("docker tag : %v %s", err, out)
+	}
+
+	seen := map[string]bool{}
+	want := []string{"container create", "container start", "container health_status", "image tag"}
+	done := func() bool {
+		for _, w := range want {
+			if !seen[w] {
+				return false
+			}
+		}
+		return true
+	}
+	// Continue un peu après avoir tout vu : plusieurs contrôles de santé
+	// (donc des exec_*) ont lieu pendant ce temps.
+	deadline := time.After(20 * time.Second)
+	var extra <-chan time.Time
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				t.Fatal("flux fermé")
+			}
+			if strings.HasPrefix(ev.Action, "exec_") {
+				t.Fatalf("événement non filtré : %+v", ev)
+			}
+			key := ev.Type + " " + strings.SplitN(ev.Action, ":", 2)[0]
+			seen[key] = true
+			if strings.HasPrefix(ev.Action, "health_status") && !IsRelevantDockerEvent(ev) {
+				t.Errorf("changement de santé jugé non pertinent : %+v", ev)
+			}
+			if ev.Type == "image" && !ImagesChanged(ev) {
+				t.Errorf("événement d'image ignoré : %+v", ev)
+			}
+			if done() && extra == nil {
+				extra = time.After(3 * time.Second)
+			}
+		case <-extra:
+			t.Logf("reçus : %v", seen)
+			return
+		case <-deadline:
+			t.Fatalf("événements manquants, reçus : %v", seen)
+		}
+	}
 }
 
 // TestLiveScopedServices : avec Stack.Only, chaque action ne touche QUE les
@@ -618,5 +710,128 @@ func TestLiveLenientRestore(t *testing.T) {
 	errs, _ = runOp(t, c.UpManyLive(ctx, []Stack{none}, 1))
 	if err := errs["zzdsprobelen"]; err == nil || !strings.Contains(err.Error(), "n'existe plus") {
 		t.Errorf("aucun service restaurable : erreur claire attendue, eu %v", err)
+	}
+}
+
+// TestLiveRemoveAfterDown : Remove sur une stack déjà arrêtée par un down
+// supprime ses volumes, comme « docker compose down --volumes » lancé dans
+// son dossier.
+func TestLiveRemoveAfterDown(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	yaml := `services:
+  web:
+    image: ` + probeImage + `
+    command: ["sleep", "3600"]
+    volumes: [data:/data]
+volumes:
+  data: {}
+`
+	st := probeStack(t, root, "zzdsprobermdown", yaml, "")
+	one := []Stack{st}
+	errs, _ := runOp(t, c.UpManyLive(ctx, one, 1))
+	mustOK(t, "Up", errs)
+	errs, _ = runOp(t, c.DownManyLive(ctx, one, 1))
+	mustOK(t, "Down", errs)
+	if v, _ := dockerCLI("volume", "ls", "-q", "--filter", "name=zzdsprobermdown_data"); v == "" {
+		t.Fatal("le volume doit survivre au Down")
+	}
+	errs, _ = runOp(t, c.RemoveManyLive(ctx, one, 1))
+	mustOK(t, "Remove", errs)
+	if v, _ := dockerCLI("volume", "ls", "-q", "--filter", "name=zzdsprobermdown_data"); v != "" {
+		t.Fatal("Remove après Down : le volume de la stack doit être supprimé, comme down --volumes")
+	}
+}
+
+// TestLiveNoGoroutineLeak : ouvrir puis fermer les logs, s'abonner puis se
+// désabonner des événements, lancer puis annuler une opération : le nombre
+// de goroutines revient à son niveau de départ.
+func TestLiveNoGoroutineLeak(t *testing.T) {
+	c := newLiveClient(t)
+	ctx := context.Background()
+	st := probeStack(t, t.TempDir(), "zzdsprobeleak", `services:
+  web:
+    image: `+probeImage+`
+    command: ["sh", "-c", "while true; do echo tic; sleep 0.05; done"]
+`, "")
+	one := []Stack{st}
+	errs, _ := runOp(t, c.UpManyLive(ctx, one, 1))
+	mustOK(t, "Up", errs)
+
+	settle := func() int {
+		var n int
+		for range 20 {
+			time.Sleep(100 * time.Millisecond)
+			n = runtime.NumGoroutine()
+		}
+		return n
+	}
+	base := settle()
+
+	for range 5 {
+		lctx, cancel := context.WithCancel(ctx)
+		lch, err := c.LogsAsync(lctx, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-lch
+		// La vue fermée ne lit plus : l'annulation doit suffire à tout
+		// libérer, même avec un flux bavard en cours d'envoi.
+		cancel()
+	}
+	for range 5 {
+		ectx, cancel := context.WithCancel(ctx)
+		ch := c.SubscribeEvents(ectx)
+		// Un événement en attente d'envoi pendant l'annulation.
+		dockerCLI("restart", "-t", "0", "zzdsprobeleak-web-1")
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+		_ = ch // plus personne ne lit, comme une vue fermée
+	}
+	if got := settle(); got > base+2 {
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		t.Fatalf("goroutines : %d au départ, %d après (fuite)\n%s", base, got, buf[:n])
+	}
+}
+
+// Rafale réelle d'événements (conteneurs jetables zzdsprobe*) que personne ne
+// lit, puis annulation : la goroutine de SubscribeEvents se termine.
+// Pendant de TestSubscribeEventsCancelWithFullBuffer, contre le vrai démon.
+func TestLiveEventsBurstCancel(t *testing.T) {
+	c := newLiveClient(t)
+	if _, err := dockerCLI("image", "inspect", probeImage); err != nil {
+		if out, err := dockerCLI("pull", probeImage); err != nil {
+			t.Fatalf("pull %s : %v\n%s", probeImage, err, out)
+		}
+	}
+	const fn = "compose.(*Client).SubscribeEvents"
+	base := goroutinesIn(fn)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := c.SubscribeEvents(ctx)
+	time.Sleep(300 * time.Millisecond) // abonnement établi
+	// 15 conteneurs × (create, start, die) = 45 événements filtrés, plus que
+	// le tampon de 32.
+	for i := range 15 {
+		if out, err := dockerCLI("run", "-d", "--name", fmt.Sprintf("zzdsprobeburst%d", i), probeImage, "true"); err != nil {
+			t.Fatalf("docker run : %v\n%s", err, out)
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for len(ch) < cap(ch) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(ch) != cap(ch) {
+		t.Fatalf("tampon %d/%d après la rafale", len(ch), cap(ch))
+	}
+	cancel()
+	deadline = time.Now().Add(3 * time.Second)
+	for goroutinesIn(fn) > base && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := goroutinesIn(fn); n > base {
+		t.Fatalf("goroutine de SubscribeEvents toujours là (%d > %d)", n, base)
 	}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -28,11 +29,15 @@ func TestDockerLine(t *testing.T) {
 		t.Errorf("sans mesure : %q", got)
 	}
 	got := ansi.Strip(dockerLine(&compose.DockerUsage{Running: 39, Containers: 40,
-		ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, VolumesSize: 512 << 20, VolumesOK: true}, sc))
+		ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesExact: true, ImagesOK: true, VolumesSize: 512 << 20, VolumesOK: true}, sc))
 	for _, want := range []string{"Stacks ⚠ 14/15 (● 1 arrêtée)", "Conteneurs 39/40", "Images 85.0 Go (24.0 Go libres)", "Volumes 512 Mo"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("ligne Docker %q : %q absent", got, want)
 		}
+	} // Libérable estimé (image non détaillée couche par couche) : « ≈ ».
+	got = ansi.Strip(dockerLine(&compose.DockerUsage{ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesOK: true}, sc))
+	if !strings.Contains(got, "(≈ 24.0 Go libres)") {
+		t.Errorf("estimation non signalée : %q", got)
 	}
 }
 
@@ -88,5 +93,64 @@ func TestDockerItemsOutsideStacks(t *testing.T) {
 	got = ansi.Strip(dockerItems(du, StackCounts{Total: 14, CtrRunning: 39, CtrTotal: 40}, true)[1])
 	if strings.Contains(got, "hors stack") {
 		t.Fatalf("note superflue : %q", got)
+	}
+}
+
+// TestImagesRefreshCycle : la taille des images (coûteuse pour le démon)
+// n'est relue qu'au premier passage, à la cadence des volumes, ou après un
+// événement qui peut la changer ; un tick ordinaire ne lit que les
+// compteurs et conserve les images connues.
+func TestImagesRefreshCycle(t *testing.T) {
+	m := New(&config.Config{StackDir: "/tmp"})
+	m.client = &fakeClient{}
+	opts := func(m *Model) compose.UsageOptions {
+		t.Helper()
+		cmd := m.startUsage()
+		if !m.usageBusy {
+			t.Fatal("usageBusy doit être levé")
+		}
+		m.usageBusy = false
+		return cmd().(usageMsg).opts
+	}
+	if o := opts(&m); !o.Images || !o.Volumes {
+		t.Fatalf("premier passage : %+v, attendu images et volumes", o)
+	}
+	out, _ := m.Update(usageMsg{opts: compose.UsageOptions{Images: true, Volumes: true},
+		usage: compose.DockerUsage{Containers: 2, ImagesSize: 9, ImagesOK: true, VolumesOK: true}})
+	m = out.(Model)
+	if o := opts(&m); o.Images || o.Volumes {
+		t.Fatalf("tick ordinaire : %+v, attendu compteurs seuls", o)
+	}
+	out, _ = m.Update(usageMsg{usage: compose.DockerUsage{Containers: 3}})
+	m = out.(Model)
+	if u := m.usage; !u.ImagesOK || u.ImagesSize != 9 || u.Containers != 3 {
+		t.Fatalf("images non conservées : %+v", u)
+	}
+
+	// Un exec de contrôle de santé ne touche pas aux images ; un pull, si.
+	out, _ = m.Update(dockerEventMsg{Type: "container", Action: "exec_start"})
+	if m = out.(Model); m.imagesStale {
+		t.Fatal("exec_start ne doit pas invalider les images")
+	}
+	out, cmd := m.Update(dockerEventMsg{Type: "image", Action: "pull"})
+	if m = out.(Model); !m.imagesStale || cmd == nil {
+		t.Fatal("pull doit invalider les images et programmer leur relecture")
+	}
+	out, cmd = m.Update(imagesRefreshMsg{})
+	m = out.(Model)
+	if cmd == nil || !m.usageBusy || m.imagesStale {
+		t.Fatalf("relecture non lancée (busy=%v stale=%v)", m.usageBusy, m.imagesStale)
+	}
+	msg := cmd().(usageMsg)
+	if !msg.opts.Images || msg.opts.Volumes {
+		t.Fatalf("relecture : %+v, attendu images seules", msg.opts)
+	}
+	// Échec : les images restent à relire au prochain passage.
+	out, _ = m.Update(usageMsg{opts: msg.opts, err: context.DeadlineExceeded})
+	if m = out.(Model); !m.imagesStale {
+		t.Fatal("après un échec, les images doivent rester à relire")
+	}
+	if o := opts(&m); !o.Images {
+		t.Fatal("le passage suivant doit relire les images")
 	}
 }

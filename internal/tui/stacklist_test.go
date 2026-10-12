@@ -182,11 +182,17 @@ func TestRenderStackLineCursorShowsSelection(t *testing.T) {
 // créerait ~/.dockstack en root), et un « permission denied » hors Docker
 // n'est pas présenté comme un refus d'accès Docker.
 func TestRenderErrorNoSudo(t *testing.T) {
-	out := renderError(errors.New("permission denied while trying to connect to the docker API at unix:///var/run/docker.sock"))
+	out := renderError(errors.New("permission denied while trying to connect to the docker API at unix:///var/run/docker.sock"), 120)
 	if !strings.Contains(out, "Accès Docker refusé") || strings.Contains(out, "sudo dockstack") {
 		t.Errorf("écran d'accès Docker inattendu :\n%s", out)
 	}
-	if strings.Contains(renderError(errors.New("open /srv/stacks: permission denied")), "Accès Docker refusé") {
-		t.Error("un dossier illisible ne doit pas s'afficher comme un refus d'accès Docker")
+	for _, msg := range []string{"open /srv/stacks: permission denied", "open /srv/docker: permission denied", "open /opt/docker-stacks/app: permission denied"} {
+		if strings.Contains(renderError(errors.New(msg), 120), "Accès Docker refusé") {
+			t.Errorf("%q : un dossier illisible ne doit pas s'afficher comme un refus d'accès Docker", msg)
+		}
+	}
+	// Démon distant (tcp) : pas de docker.sock dans le message.
+	if !strings.Contains(renderError(errors.New("permission denied while trying to connect to the Docker daemon socket at tcp://h:2376"), 120), "Accès Docker refusé") {
+		t.Error("refus d'accès au démon non reconnu")
 	}
 }

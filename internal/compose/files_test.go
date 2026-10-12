@@ -3,6 +3,7 @@ package compose
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -163,5 +164,52 @@ func TestLoadProjectDiscardsEnvFiles(t *testing.T) {
 	}
 	if len(sv.EnvFiles) != 0 {
 		t.Errorf("env_file conservé : %v", sv.EnvFiles)
+	}
+}
+
+// Parité CLI : un .env illisible fait échouer le chargement, comme
+// « docker compose » (« failed to read …/.env: line 3: key cannot contain a
+// space »), au lieu d'être ignoré : les variables s'interpolaient alors à
+// vide et un up pouvait déployer une autre config que la CLI.
+func TestLoadProjectMalformedDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(file, []byte("services:\n  web:\n    image: busybox:${TAG:-latest}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("TAG=1.36\nMAUVAISE LIGNE SANS EGAL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadProject(Stack{Name: "s", Dir: dir, ComposeFile: file})
+	if err == nil || !strings.Contains(err.Error(), ".env") || !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("erreur attendue sur le .env, eu %v", err)
+	}
+}
+
+// Un dossier de stacks illisible (droits) est une erreur, pas une liste vide :
+// l'écran disait « Aucune stack trouvée » sans évoquer le refus d'accès.
+func TestFindComposeFilesUnreadableRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lit tout")
+	}
+	root := filepath.Join(t.TempDir(), "stacks")
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(root, 0o755)
+	InvalidateComposeCache()
+	if _, err := findComposeFiles(root); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("erreur de droits attendue, eu %v", err)
+	}
+	// Un sous-dossier illisible, lui, est simplement sauté.
+	os.Chmod(root, 0o755)
+	os.Chmod(filepath.Join(root, "app"), 0)
+	defer os.Chmod(filepath.Join(root, "app"), 0o755)
+	InvalidateComposeCache()
+	if _, err := findComposeFiles(root); err != nil {
+		t.Fatalf("sous-dossier illisible : %v", err)
 	}
 }

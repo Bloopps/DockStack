@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/config"
 )
 
 // TestProgressApplyResources : les ressources de premier niveau sont créées
@@ -81,5 +82,41 @@ func TestProgressFailureRecap(t *testing.T) {
 	lines, _ = m.progressLines(0, 100)
 	if strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "échec") {
 		t.Error("une seule stack : pas de récapitulatif redondant")
+	}
+}
+
+// Les événements disponibles sont livrés par lots, dans l'ordre, et la
+// sentinelle de fin lue au milieu d'un lot termine l'opération après eux.
+func TestProgressBatching(t *testing.T) {
+	ch := make(chan compose.ProgressEvent, 10)
+	ch <- compose.ProgressEvent{StackName: "a", Container: "Container a-1", Status: "Starting", State: "working"}
+	ch <- compose.ProgressEvent{StackName: "a", Container: "Container a-1", Status: "Started", State: "done"}
+	ch <- compose.ProgressEvent{StackName: "a", StackDone: true}
+	ch <- compose.ProgressEvent{StackName: "b", StackDone: true, Err: errors.New("image introuvable")}
+	ch <- compose.ProgressEvent{AllDone: true}
+
+	msg, ok := readProgressCmd(ch, 7)().(progressEventMsg)
+	if !ok || len(msg.evs) != 4 || !msg.done || msg.seq != 7 {
+		t.Fatalf("lot attendu de 4 événements terminé : %+v", msg)
+	}
+	m := New(&config.Config{StackDir: "/tmp"})
+	m.progressSeq, m.progress, m.view = 7, newProgressState(), viewProgress
+	out, _ := m.Update(msg)
+	got := out.(Model)
+	if !got.progressDone || got.progressTotal != 2 || got.progressOk != 1 {
+		t.Fatalf("done=%v total=%d ok=%d", got.progressDone, got.progressTotal, got.progressOk)
+	}
+	if r := got.progress.byName["a"].byID["Container a-1"]; r == nil || r.status != "Started" || r.state != "done" {
+		t.Fatalf("dernier état de la ressource non appliqué : %+v", r)
+	}
+	// Un lot d'une opération précédente est ignoré.
+	m.progressSeq = 8
+	if out, _ := m.Update(msg); out.(Model).progressDone {
+		t.Fatal("lot périmé appliqué")
+	}
+	// Canal vide après un premier événement : le lot part sans attendre.
+	ch <- compose.ProgressEvent{StackName: "c", Container: "x", State: "working"}
+	if msg := readProgressCmd(ch, 1)().(progressEventMsg); len(msg.evs) != 1 || msg.done {
+		t.Fatalf("lot d'un événement attendu : %+v", msg)
 	}
 }

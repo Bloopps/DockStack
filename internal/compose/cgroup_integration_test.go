@@ -61,3 +61,34 @@ func TestLiveCgroupMatchesAPI(t *testing.T) {
 	}
 	t.Logf("%d/%d conteneurs lus dans les cgroups, valeurs conformes à l'API", found, len(list.Items))
 }
+
+// Conteneur jetable supprimé entre deux lectures : pas de panique, chemin
+// oublié, et l'erreur de l'API remonte seulement si plus rien n'est lisible.
+func TestLiveCgroupContainerRemoved(t *testing.T) {
+	c := newLiveClient(t)
+	if c.cg == nil {
+		t.Skip("pas de cgroups v2 sur cet hôte")
+	}
+	id, err := dockerCLI("run", "-d", "--name", "zzdsprobecg", probeImage, "sleep", "300")
+	if err != nil {
+		t.Fatalf("docker run : %v\n%s", err, id)
+	}
+	ctx := context.Background()
+	u, err := c.ContainerUsages(ctx, []string{id})
+	if _, ok := u[id]; err != nil || !ok || u[id].MemBytes == 0 {
+		t.Fatalf("première lecture : %v %+v", err, u)
+	}
+	if _, ok := c.cg.paths[id]; !ok {
+		t.Fatal("cgroup non mémorisé")
+	}
+	if out, err := dockerCLI("rm", "-f", id); err != nil {
+		t.Fatalf("docker rm : %v\n%s", err, out)
+	}
+	u, err = c.ContainerUsages(ctx, []string{id})
+	if err == nil || len(u) != 0 {
+		t.Errorf("conteneur supprimé : %+v, erreur %v", u, err)
+	}
+	if _, ok := c.cg.paths[id]; ok {
+		t.Error("chemin périmé conservé")
+	}
+}

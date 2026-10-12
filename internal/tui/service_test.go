@@ -27,6 +27,61 @@ type fakeClient struct {
 	calls    map[string][]compose.Stack
 	plan     []compose.Recreation
 	planErr  error
+	cleanup  compose.CleanupReport
+	cleanErr error
+	cleaned  []compose.CleanupItem  // éléments passés à CleanupLive
+	pruned   []compose.PruneCommand // commandes passées à PruneLive
+}
+
+func (f *fakeClient) AnalyzeCleanup(context.Context, string) (compose.CleanupReport, error) {
+	return f.cleanup, f.cleanErr
+}
+
+// PruneLive simulé : une étape réussie par commande élémentaire.
+func (f *fakeClient) PruneLive(_ context.Context, p compose.PruneCommand) <-chan compose.ProgressEvent {
+	f.mu.Lock()
+	f.pruned = append(f.pruned, p)
+	f.mu.Unlock()
+	ch := make(chan compose.ProgressEvent, 16)
+	for _, s := range p.Steps() {
+		ch <- compose.ProgressEvent{StackName: p.CLI(), Container: s.CLI(), Status: "Fait", State: "done"}
+	}
+	ch <- compose.ProgressEvent{StackName: p.CLI(), StackDone: true}
+	ch <- compose.ProgressEvent{AllDone: true}
+	return ch
+}
+
+// CleanupLive simulé : chaque élément est « supprimé », catégorie par
+// catégorie, et retiré du rapport renvoyé par la prochaine analyse.
+func (f *fakeClient) CleanupLive(_ context.Context, items []compose.CleanupItem) <-chan compose.ProgressEvent {
+	f.mu.Lock()
+	f.cleaned = append(f.cleaned, items...)
+	gone := map[string]bool{}
+	for _, it := range items {
+		gone[it.ID+it.Name] = true
+	}
+	var kept []compose.CleanupItem
+	for _, it := range f.cleanup.Items {
+		if !gone[it.ID+it.Name] {
+			kept = append(kept, it)
+		}
+		if gone[it.ID+it.Name] && it.Size > 0 {
+			f.cleanup.Images.Size -= it.Size
+		}
+	}
+	f.cleanup.Items = kept
+	f.mu.Unlock()
+	ch := make(chan compose.ProgressEvent, len(items)*2+16)
+	seen := map[compose.CleanupKind]bool{}
+	for _, it := range items {
+		ch <- compose.ProgressEvent{StackName: it.Kind.Label(), Container: it.Name, Status: "Supprimé", State: "done"}
+		seen[it.Kind] = true
+	}
+	for k := range seen {
+		ch <- compose.ProgressEvent{StackName: k.Label(), StackDone: true}
+	}
+	ch <- compose.ProgressEvent{AllDone: true}
+	return ch
 }
 
 func (f *fakeClient) PlanUp(context.Context, compose.Stack) ([]compose.Recreation, error) {
@@ -72,7 +127,7 @@ func (f *fakeClient) SubscribeEvents(context.Context) <-chan compose.DockerEvent
 func (f *fakeClient) LogsAsync(context.Context, compose.Stack) (<-chan compose.LogEntry, error) {
 	return f.logsCh, f.logsErr
 }
-func (f *fakeClient) Usage(context.Context, bool) (compose.DockerUsage, error) {
+func (f *fakeClient) Usage(context.Context, compose.UsageOptions) (compose.DockerUsage, error) {
 	return compose.DockerUsage{}, nil
 }
 func (f *fakeClient) ContainerUsages(context.Context, []string) (map[string]compose.ContainerUsage, error) {
@@ -132,17 +187,18 @@ func TestLoadStacksCmd(t *testing.T) {
 	// Succès -> stacksLoadedMsg.
 	switch msg := loadStacks(fake, "/x", nil)().(type) {
 	case stacksLoadedMsg:
-		if len(msg) != 1 || msg[0].Name != "a" {
-			t.Errorf("stacks = %v, want [a]", []compose.Stack(msg))
+		if len(msg.stacks) != 1 || msg.stacks[0].Name != "a" || msg.dir != "/x" || msg.at.IsZero() {
+			t.Errorf("message = %+v, want [a] pour /x", msg)
 		}
 	default:
 		t.Fatalf("type de message = %T, want stacksLoadedMsg", msg)
 	}
 
-	// Erreur de listing -> fatalErrMsg (écran d'erreur, R pour réessayer).
+	// Erreur de listing -> stacksLoadedMsg porteur de l'erreur (écran
+	// d'erreur, R pour réessayer), daté pour écarter une erreur périmée.
 	fake.listErr = errors.New("daemon HS")
-	if _, ok := loadStacks(fake, "/x", nil)().(fatalErrMsg); !ok {
-		t.Errorf("erreur de listing : type = %T, want fatalErrMsg", loadStacks(fake, "/x", nil)())
+	if msg, ok := loadStacks(fake, "/x", nil)().(stacksLoadedMsg); !ok || msg.err == nil {
+		t.Errorf("erreur de listing : %#v, want stacksLoadedMsg avec err", loadStacks(fake, "/x", nil)())
 	}
 
 	// Client nil -> fatalErrMsg (garde anti-panic).
@@ -205,7 +261,7 @@ func TestUpdateOpErr(t *testing.T) {
 func TestUpdateStacksLoadedClearsErr(t *testing.T) {
 	m := New(&config.Config{StackDir: "/tmp"})
 	m.err = errors.New("ancienne erreur transitoire")
-	out, _ := m.Update(stacksLoadedMsg([]compose.Stack{{Name: "a"}}))
+	out, _ := m.Update(stacksLoadedMsg{stacks: []compose.Stack{{Name: "a"}}, dir: "/tmp"})
 	got := out.(Model)
 	if got.err != nil {
 		t.Error("un chargement réussi doit effacer l'erreur précédente")
