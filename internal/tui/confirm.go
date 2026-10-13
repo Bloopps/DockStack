@@ -178,6 +178,7 @@ type planUpMsg struct {
 	run   func(Model) (tea.Model, tea.Cmd)
 	from  view // vue d'où la prévision a été demandée
 	seq   int  // planSeq au moment de la demande
+	keys  int  // keySeq au moment de la demande
 }
 
 // confirmUpWithPlan prévoit (hors boucle UI) quels services en marche un up
@@ -185,7 +186,7 @@ type planUpMsg struct {
 // confirmation ; sinon la confirmation liste précisément les services et la
 // raison. Si la prévision échoue, on retombe sur la confirmation générique.
 func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.Stack, run func(Model) (tea.Model, tea.Cmd)) (tea.Model, tea.Cmd) {
-	client, from := m.client, m.view
+	client, from, keys := m.client, m.view, m.keySeq
 	m.planSeq++
 	seq := m.planSeq
 	m.setBusy(label + " : " + planStatus)
@@ -196,7 +197,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 		for _, s := range stacks {
 			plan, err := client.PlanUp(ctx, s)
 			if err != nil {
-				return planUpMsg{label: label, names: names, err: err, run: run, from: from, seq: seq}
+				return planUpMsg{label: label, names: names, err: err, run: run, from: from, seq: seq, keys: keys}
 			}
 			for _, r := range plan {
 				line := r.Service + " · " + r.Reason
@@ -206,7 +207,7 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 				recs = append(recs, line)
 			}
 		}
-		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from, seq: seq}
+		return planUpMsg{label: label, names: names, recs: recs, run: run, from: from, seq: seq, keys: keys}
 	})
 }
 
@@ -226,11 +227,24 @@ func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
 	if m.view != msg.from || m.opInProgress() {
 		return m, nil
 	}
-	switch {
-	case msg.err != nil:
-		return m.askConfirm(msg.label, upWarning, msg.names, msg.run)
-	case len(msg.recs) == 0:
+	if msg.err == nil && len(msg.recs) == 0 {
 		return msg.run(m) // aucun service en marche n'est perturbé
+	}
+	// La confirmation arriverait sous la frappe : si l'utilisateur a tapé
+	// depuis la demande (filtre, autre stack), son prochain ↩ ou y la
+	// validerait sans l'avoir lue, et l'up recréerait des services en
+	// marche. On le dit au lieu de l'ouvrir ; u relance la prévision.
+	if m.keySeq != msg.keys {
+		what := "prévision impossible"
+		if msg.err == nil {
+			n := len(msg.recs)
+			what = fmt.Sprintf("%d service%s en marche à recréer", n, plural(n))
+		}
+		m.setInfo(msg.label + " non lancé (touche pressée pendant l'analyse) : " + what + " · u pour revoir")
+		return m, m.clearStatusIn(6 * time.Second)
+	}
+	if msg.err != nil {
+		return m.askConfirm(msg.label, upWarning, msg.names, msg.run)
 	}
 	return m.askConfirm(msg.label, "Ces services en marche seront recréés (brève coupure) :", msg.recs, msg.run)
 }

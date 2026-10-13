@@ -93,7 +93,18 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.svcFocus {
+	// Écran d'erreur (cf. viewContent) : la liste gardée en mémoire n'y est
+	// pas affichée. Seules les touches qui ne visent aucune stack agissent
+	// (q, o, b, n ; R, t et ? sont globales) : u lançait Up sur la stack
+	// cachée sous le curseur, sans confirmation si elle était arrêtée, et ↩
+	// ouvrait son panneau. Le mode services y est inerte pour la même raison.
+	if m.err != nil && !m.loading {
+		switch msg.String() {
+		case "q", "ctrl+c", "o", "b", "n":
+		default:
+			return m, nil
+		}
+	} else if m.svcFocus {
 		return m.handleServiceKey(msg)
 	}
 
@@ -139,14 +150,23 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if _, ok := m.cursorStack(); ok {
 			return m.enterServices()
 		}
-		if g, ok := m.cursorGroup(); ok {
+		// Sur un en-tête : le déplie, comme ← le replie, sans filtre
+		// seulement (la liste ignore alors le repli : le changer ne se
+		// verrait qu'une fois le filtre effacé).
+		if g, ok := m.cursorGroup(); ok && m.filter.Value() == "" {
 			delete(m.foldedGroups, g)
 			m.invalidateRows()
 		}
 	case " ", "space":
 		// bubbletea v2 reports the space key as "space" (v1 used " ").
-		// Sur un en-tête de groupe : (dé)sélectionne tout le groupe.
+		// Sur un en-tête de groupe : (dé)sélectionne tout le groupe, déplié
+		// pour que ses coches se voient (repliées, elles ne seraient pas
+		// visées, cf. selectedStacks).
 		if row, ok := m.cursorRow(); ok && row.header {
+			if row.folded {
+				delete(m.foldedGroups, row.group)
+				m.invalidateRows()
+			}
 			m.toggleSelectAll(m.groupStacks(row.group))
 			return m, nil
 		}
@@ -176,11 +196,15 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// replier). Sans sélection : ↩ sur un en-tête replie/déplie, sur une
 		// stack ouvre le panneau.
 		if len(m.selectedStacks()) > 0 {
-			m.view = viewAction
-			m.actionCursor = 0
-			return m, nil
+			return m.openActionPanel()
 		}
 		if row, ok := m.cursorRow(); ok && row.header {
+			// Sous un filtre, la liste ignore le repli : ↩ ne changeait rien
+			// à l'écran mais repliait le dossier en silence, et une stack
+			// cochée pendant le filtre disparaissait en l'effaçant.
+			if m.filter.Value() != "" {
+				return m, nil
+			}
 			if m.foldedGroups[row.group] {
 				delete(m.foldedGroups, row.group)
 			} else {
@@ -189,11 +213,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.invalidateRows()
 			return m, nil
 		}
-		if _, ok := m.cursorStack(); !ok {
-			return m, nil
-		}
-		m.view = viewAction
-		m.actionCursor = 0
+		return m.openActionPanel()
 	case "u", "s", "d", "r", "c":
 		// Raccourcis directs calqués sur les noms compose (up/stop/down/
 		// restart/recreate), les mêmes dans la liste, le mode services et le
@@ -369,10 +389,46 @@ func (m Model) confirmExclude() (tea.Model, tea.Cmd) {
 
 // ---- action menu (stack courante ou sélection) ----
 
-// actionLabels renvoie les entrées du panneau d'actions selon la cible :
-// la sélection (actions groupées) ou la stack sous le curseur.
+// openActionPanel ouvre le panneau d'actions sur la sélection visible, ou à
+// défaut sur la stack sous le curseur, et fige cette cible par noms (cf.
+// actionTarget). Rien ne s'ouvre sur un en-tête sans sélection.
+func (m Model) openActionPanel() (tea.Model, tea.Cmd) {
+	if sel := m.selectedStacks(); len(sel) > 0 {
+		m.actionGroup, m.actionTarget = true, make([]string, len(sel))
+		for i, s := range sel {
+			m.actionTarget[i] = s.Name
+		}
+	} else if s, ok := m.cursorStack(); ok {
+		m.actionGroup, m.actionTarget = false, []string{s.Name}
+	} else {
+		return m, nil
+	}
+	m.view = viewAction
+	m.actionCursor = 0
+	return m, nil
+}
+
+// actionStacks : stacks visées par le panneau, relues par nom dans la liste
+// courante (leur état est à jour), dans l'ordre de l'ouverture. Celles qui
+// ont disparu depuis (dossier supprimé) sont omises.
+func (m Model) actionStacks() []compose.Stack {
+	by := make(map[string]compose.Stack, len(m.stacks))
+	for _, s := range m.stacks {
+		by[s.Name] = s
+	}
+	var out []compose.Stack
+	for _, n := range m.actionTarget {
+		if s, ok := by[n]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// actionLabels renvoie les entrées du panneau d'actions selon sa cible : la
+// sélection (actions groupées) ou une seule stack.
 func (m Model) actionLabels() []menuAction {
-	if len(m.selectedStacks()) > 0 {
+	if m.actionGroup {
 		return groupActions
 	}
 	return stackActions
@@ -395,10 +451,7 @@ func (m Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		m.actionCursor = len(m.actionLabels()) - 1
 	case "enter":
-		if len(m.selectedStacks()) > 0 {
-			return m.execGroupAction()
-		}
-		return m.execStackAction()
+		return m.execAction()
 	default:
 		// Les lettres de la liste marchent aussi dans le panneau (affichées à
 		// côté de chaque entrée) : y apprendre d puis devoir descendre avec
@@ -406,23 +459,30 @@ func (m Model) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for i, a := range m.actionLabels() {
 			if a.key != "" && a.key != "esc" && a.key == msg.String() {
 				m.actionCursor = i
-				if len(m.selectedStacks()) > 0 {
-					return m.execGroupAction()
-				}
-				return m.execStackAction()
+				return m.execAction()
 			}
 		}
 	}
 	return m, nil
 }
 
-func (m Model) execStackAction() (tea.Model, tea.Cmd) {
-	stack, ok := m.cursorStack()
-	if !ok {
+// execAction lance l'entrée choisie du panneau sur sa cible figée. Ni le
+// curseur ni la sélection ne sont relus : une relecture de la liste arrivée
+// panneau ouvert peut les avoir changés (stack devenue masquée), et la
+// lettre partait alors sur une autre stack, sans confirmation pour p.
+func (m Model) execAction() (tea.Model, tea.Cmd) {
+	targets := m.actionStacks()
+	if len(targets) == 0 {
 		m.view = viewList
 		return m, nil
 	}
+	if m.actionGroup {
+		return m.execGroupAction(targets)
+	}
+	return m.execStackAction(targets[0])
+}
 
+func (m Model) execStackAction(stack compose.Stack) (tea.Model, tea.Cmd) {
 	switch stackActions[m.actionCursor].id {
 	case "up":
 		return m.startOrConfirmUp(stack)
@@ -518,13 +578,7 @@ func (m Model) startStackAction(action string, stack compose.Stack) (tea.Model, 
 
 // ---- group action ----
 
-func (m Model) execGroupAction() (tea.Model, tea.Cmd) {
-	stacks := m.selectedStacks()
-	if len(stacks) == 0 {
-		m.view = viewList
-		return m, nil
-	}
-
+func (m Model) execGroupAction(stacks []compose.Stack) (tea.Model, tea.Cmd) {
 	switch id := groupActions[m.actionCursor].id; id {
 	case "up":
 		return m.startOrConfirmGroupUp(stacks)
@@ -550,7 +604,7 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 	client := m.client
 	par := m.cfg.MaxParallel
 	// Seules les stacks visées sont décochées : une stack cochée puis
-	// masquée (filtre, a) n'a pas été touchée, elle reste cochée.
+	// masquée (filtre, a, repli) n'a pas été touchée, elle reste cochée.
 	for _, s := range stacks {
 		delete(m.selected, s.Name)
 	}

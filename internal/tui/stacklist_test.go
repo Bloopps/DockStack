@@ -21,6 +21,23 @@ func newTestModel(stacks []compose.Stack) Model {
 	return m
 }
 
+// withPanel ouvre le panneau d'actions comme ↩ : sa cible (sélection
+// visible, sinon la stack sous le curseur) est figée à l'ouverture.
+func withPanel(m Model) Model {
+	out, _ := m.openActionPanel()
+	return out.(Model)
+}
+
+// seekStack pose le curseur de la liste sur la stack nommée.
+func seekStack(m Model, name string) Model {
+	for i, r := range m.listRows() {
+		if r.isStack() && r.stack.Name == name {
+			m.cursor = i
+		}
+	}
+	return m
+}
+
 // stack fabrique une Stack avec un état déterminé par (running/total/unhealthy).
 func stack(name, group string, running, total, unhealthy int) compose.Stack {
 	return compose.Stack{

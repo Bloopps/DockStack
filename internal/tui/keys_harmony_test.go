@@ -50,11 +50,8 @@ func keyViews(t *testing.T) map[string]Model {
 		m.width, m.height, m.loading = 80, 24, false
 		return m
 	}
-	views := map[string]Model{"liste": base()}
+	views := map[string]Model{"liste": base(), "panneau": withPanel(base())}
 	m := base()
-	m.view = viewAction
-	views["panneau"] = m
-	m = base()
 	m.view = viewBackup
 	for i := range 50 {
 		m.backups = append(m.backups, backup.Snapshot{Date: time.Now().Add(-time.Duration(i) * time.Hour)})

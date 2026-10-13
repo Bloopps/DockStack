@@ -44,11 +44,12 @@ func viewStates(t *testing.T) map[string]Model {
 	m = base()
 	m.previewCompose = true
 	out["volet compose"] = m
-	for _, v := range []view{viewHelp, viewBackup, viewAction} {
+	for _, v := range []view{viewHelp, viewBackup} {
 		m = base()
 		m.view = v
 		out[fmt.Sprintf("vue %d", v)] = m
 	}
+	out[fmt.Sprintf("vue %d", viewAction)] = withPanel(base())
 	m = base()
 	m.backups = []backup.Snapshot{{Date: time.Now(), StackDir: "/srv", Stacks: []string{m.stacks[0].Name, "disparue"}}}
 	m.view = viewBackup
@@ -240,4 +241,85 @@ func TestReadOnlyConfigDir(t *testing.T) {
 		t.Fatalf("capture : statut %q (%v)", m.status, m.statusKind)
 	}
 	t.Logf("statut : %s", m.status)
+}
+
+// Bandeau de capture sur un corps d'écran sans hauteur (en-tête de 128 cœurs
+// en 120x30, terminal très bas, mode services étroit) : la liste recevait une
+// hauteur de -1, et le volet paniquait (content[:-1]), ce qui quittait
+// l'application.
+func TestCaptureBannerWithoutBodyHeight(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stacks := []compose.Stack{
+		capStack("immich", svc("immich-server", 1), svc("redis", 1)),
+		capStack("authelia", svc("authelia", 0)),
+	}
+	for _, tc := range []struct {
+		name  string
+		w, h  int
+		cores int
+		svc   bool
+	}{
+		{"128 cœurs, liste", 120, 30, 128, false},
+		{"8 cœurs, liste", 200, 9, 8, false},
+		{"mode services étroit", 80, 5, 8, true},
+	} {
+		m := newTestModel(sortByState(stacks))
+		m.cfg.ShowAll = true
+		m.client = &fakeClient{stacks: stacks, autoDone: true}
+		m.loading, m.lastRefresh = false, time.Now()
+		m.width, m.height = 120, 36
+		m.invalidateRows()
+		m.backups = []backup.Snapshot{{Date: time.Now().Add(-26 * time.Hour), StackDir: m.cfg.StackDir,
+			Entries: []backup.Entry{{Name: "authelia"}}, Stacks: []string{"authelia"}}}
+		if m.captureBanner() == "" {
+			t.Fatal("pas de bandeau : le cas n'est pas reproduit")
+		}
+		m.metrics.NCores, m.metrics.CPUCores = tc.cores, make([]int, tc.cores)
+		if tc.svc {
+			m = typeKeys(seekStack(m, "immich"), "right")
+		}
+		m.width, m.height = tc.w, tc.h
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s, %dx%d : panique %v", tc.name, tc.w, tc.h, r)
+				}
+			}()
+			_ = m.viewContent()
+		}()
+	}
+}
+
+// Écran d'erreur (relecture en échec, liste gardée en mémoire mais non
+// affichée) : les touches de la liste n'y visent plus la stack cachée sous le
+// curseur. u lançait Up sur authelia, arrêtée donc sans confirmation, et ↩
+// ouvrait son panneau. Celles qu'annonce le pied restent actives.
+func TestErrorScreenKeysTargetNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stacks := []compose.Stack{capStack("immich", svc("redis", 1)), capStack("authelia", svc("authelia", 0))}
+	m := newTestModel(sortByState(stacks))
+	m.cfg.ShowAll = true
+	fake := &fakeClient{stacks: stacks, autoDone: true}
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 36
+	m.invalidateRows()
+	m = seekStack(m, "authelia")
+	m.err = fmt.Errorf("open /srv/stacks: permission denied")
+	if strings.Contains(ansi.Strip(m.viewContent()), "authelia") {
+		t.Fatal("authelia ne devrait pas être affichée")
+	}
+	for _, k := range []string{"u", "p", "s", "enter", "space", "right", "l", "x"} {
+		out := typeKeys(m, k)
+		if out.view != viewList || len(out.selected) > 0 || out.svcFocus {
+			t.Errorf("%s sur l'écran d'erreur : vue %v, sélection %v, services %v", k, out.view, out.selected, out.svcFocus)
+		}
+	}
+	for _, a := range []string{"up", "pull"} {
+		if got := fake.called(a); len(got) > 0 {
+			t.Errorf("%s lancé sur %v, invisible", a, got)
+		}
+	}
+	if out := typeKeys(m, "o"); out.view != viewDirPicker {
+		t.Errorf("o : vue %v, want le choix du répertoire", out.view)
+	}
 }

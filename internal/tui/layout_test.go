@@ -146,8 +146,9 @@ func TestActionPanelMatchesExec(t *testing.T) {
 		}
 	}
 	for i, a := range stackActions {
-		m.view, m.actionCursor = viewAction, i
-		out, _ := m.execStackAction()
+		m = withPanel(m)
+		m.actionCursor = i
+		out, _ := m.execStackAction(s)
 		got := out.(Model).view
 		want := map[string]view{"compose": viewCompose, "back": viewList, "remove": viewConfirm,
 			"down": viewConfirm, "restart": viewConfirm, "recreate": viewConfirm}[a.id]
@@ -302,7 +303,7 @@ func TestReducedHeaderOutsideList(t *testing.T) {
 		views := map[string]func(Model) Model{
 			"Aide":            func(m Model) Model { m.view = viewHelp; return m },
 			"Captures d'état": func(m Model) Model { m.view = viewBackup; return m },
-			"Actions":         func(m Model) Model { m.view = viewAction; return m },
+			"Actions":         withPanel,
 			"Nettoyage":       func(m Model) Model { return drive(t, m, keyMsg("n"), 0) },
 			"Confirmation": func(m Model) Model {
 				out, _ := m.askConfirm("Down — immich", "", []string{"immich"}, nil)
@@ -331,7 +332,7 @@ func TestReducedHeaderOutsideList(t *testing.T) {
 			}
 		}
 		// Le panneau d'actions retrouve l'état et les services en 80x24.
-		m.view = viewAction
+		m = withPanel(m)
 		if out := ansi.Strip(m.viewContent()); !strings.Contains(out, "machine-learning") || !strings.Contains(out, "Retour") {
 			t.Errorf("%dx%d : panneau d'actions sans les services :\n%s", sz[0], sz[1], out)
 		}

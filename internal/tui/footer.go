@@ -98,8 +98,8 @@ func (m Model) listFooter() (left, right []footerKey) {
 			[]footerKey{{"←", "retour"}, help}
 	}
 	if sel := m.selection(); sel.any() {
-		// Les cochées masquées (filtre, a) sont comptées à part : les
-		// actions ne visent que les visibles, et aucune lettre n'agit si
+		// Les cochées masquées (filtre, a, repli) sont comptées à part :
+		// les actions ne visent que les visibles, et aucune lettre n'agit si
 		// toutes sont masquées (cf. refuseHiddenSelection).
 		esc := footerKey{"esc", "décocher"}
 		if sel.byFilter {
@@ -108,7 +108,12 @@ func (m Model) listFooter() (left, right []footerKey) {
 		if sel.shown == 0 {
 			left = []footerKey{{fmt.Sprintf("%d", sel.hidden), "cochée" + plural(sel.hidden) + " masquée" + plural(sel.hidden)}}
 			if !sel.byFilter {
-				left = append(left, footerKey{"a", "tout afficher"})
+				if sel.dormant > 0 {
+					left = append(left, footerKey{"a", "tout afficher"})
+				}
+				if sel.folded > 0 {
+					left = append(left, footerKey{"→", "déplier le dossier"})
+				}
 			}
 			return left, []footerKey{esc, help}
 		}
@@ -128,7 +133,16 @@ func (m Model) listFooter() (left, right []footerKey) {
 	row, ok := m.cursorRow()
 	switch {
 	case ok && row.header:
-		left = []footerKey{{"↩", "replier"}, {"␣", "cocher le dossier"}}
+		// Sous un filtre, la liste ignore le repli : ↩ n'y replie rien.
+		// Replié, ↩ le déplie.
+		left = []footerKey{{"␣", "cocher le dossier"}}
+		if m.filter.Value() == "" {
+			fold := "replier"
+			if row.folded {
+				fold = "déplier"
+			}
+			left = append([]footerKey{{"↩", fold}}, left...)
+		}
 		if !m.previewVisible() {
 			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}}, left...)
 		}

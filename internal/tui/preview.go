@@ -112,14 +112,16 @@ func renderPreviewPane(m Model, height, paneW int) string {
 	case !ok || row.sep || row.more:
 		content = []string{styleDim.Render("(rien à afficher)")}
 	case row.header:
-		content = previewGroup(m, row.group, inner, height, m.selection())
+		content = previewGroup(m, row, inner, height, m.selection())
 	case m.previewCompose:
 		content = previewStack(m, row.stack, inner, height)
 	default:
 		content = previewDetail(m.cfg.StackDir, row.stack, m.stackServices(row.stack), inner, height, m.selection(), m.previewExtraFor(row.stack))
 	}
 
-	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste.
+	// Hauteur fixe : compléter ou tronquer pour aligner sur la liste. Jamais
+	// négative (même garde-fou que fitHeight) : content[:-1] paniquait.
+	height = max(height, 0)
 	if len(content) > height {
 		content = content[:height]
 	}
@@ -189,7 +191,8 @@ func previewStack(m Model, s compose.Stack, inner, height int) []string {
 // états, puis chaque stack membre avec sa pastille d'état colorée et son
 // compteur conteneurs (x/y). Un dossier regroupe plusieurs stacks ayant chacune
 // son propre compose : pas de fichier unique à prévisualiser, d'où ce bilan.
-func previewGroup(m Model, group string, inner, height int, sel selState) []string {
+func previewGroup(m Model, row listRow, inner, height int, sel selState) []string {
+	group := row.group
 	members := m.groupStacks(group)
 
 	out := []string{
@@ -201,9 +204,17 @@ func previewGroup(m Model, group string, inner, height int, sel selState) []stri
 	out = append(out, "")
 
 	// Actions sur tout le dossier, sous la liste des membres (place réservée).
-	actions := append([]string{"", styleDim.Render("Actions sur tout le dossier")}, keyGrid([]footerKey{
-		{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"←", "replier"},
-	}, inner)...)
+	// Le repli ne vaut que sans filtre (la liste l'ignore alors) ; replié, →
+	// le déplie et ← n'a plus d'effet.
+	keys := []footerKey{{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}}
+	switch {
+	case m.filter.Value() != "":
+	case row.folded:
+		keys = append(keys, footerKey{"→", "déplier"})
+	default:
+		keys = append(keys, footerKey{"←", "replier"})
+	}
+	actions := append([]string{"", styleDim.Render("Actions sur tout le dossier")}, keyGrid(keys, inner)...)
 	if sel.any() {
 		actions = append([]string{""}, selectionActions(sel, inner)...)
 	}
@@ -478,20 +489,36 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 
 // selectionActions : bloc d'actions du volet quand des stacks sont cochées —
 // les lettres visent alors la sélection visible, quelle que soit la ligne
-// affichée. Les cochées masquées (filtre, a) sont signalées à part : elles ne
-// sont pas visées, et si toutes le sont, aucune lettre n'agit.
+// affichée. Les cochées masquées (filtre, a, repli) sont signalées à part :
+// elles ne sont pas visées, et si toutes le sont, aucune lettre n'agit.
 func selectionActions(sel selState, inner int) []string {
 	n, h := sel.shown, sel.hidden
 	if n == 0 {
 		// Pas de grille d'actions : les lettres n'agissent ni sur les
 		// masquées ni sur la stack affichée (cf. refuseHiddenSelection).
+		// L'indication mène jusqu'à elles : sous un filtre, une arrêtée
+		// reste masquée par a une fois le filtre effacé.
 		title := fmt.Sprintf("%d stack%s cochée%s, masquée%s", h, plural(h), plural(h), plural(h))
-		hint := "a pour tout afficher · esc pour décocher"
-		if sel.byFilter {
+		var hint string
+		switch steps := sel.revealSteps("a pour afficher les arrêtées", "→ sur le dossier pour le déplier"); {
+		case sel.byFilter && len(steps) > 0:
+			title += " par le filtre"
+			hint = "esc efface le filtre, puis " + strings.Join(steps, ", puis ")
+		case sel.byFilter:
 			title += " par le filtre"
 			hint = "esc efface le filtre pour agir dessus"
+		default:
+			if sel.folded > 0 && sel.dormant == 0 {
+				title += " (dossier replié)"
+			}
+			hint = strings.Join(append(sel.revealSteps("a pour tout afficher", "→ sur le dossier pour le déplier"),
+				"esc pour décocher"), " · ")
 		}
-		return []string{styleYellow.Render(truncate(title, inner)), styleDim.Render(truncate(hint, inner))}
+		out := []string{styleYellow.Render(truncate(title, inner))}
+		for _, l := range wordWrap(hint, inner) {
+			out = append(out, styleDim.Render(l))
+		}
+		return out
 	}
 	title := fmt.Sprintf("Actions sur les %d stacks cochées", n)
 	if n == 1 {
@@ -499,9 +526,16 @@ func selectionActions(sel selState, inner int) []string {
 	}
 	out := []string{styleYellow.Render(truncate(title, inner))}
 	if h > 0 {
-		note := fmt.Sprintf("(%d autre%s masquée%s par le filtre)", h, plural(h), plural(h))
-		if !sel.byFilter {
+		var note string
+		switch {
+		case sel.byFilter:
+			note = fmt.Sprintf("(%d autre%s masquée%s par le filtre)", h, plural(h), plural(h))
+		case sel.folded == 0:
 			note = fmt.Sprintf("(%d autre%s masquée%s : a pour tout afficher)", h, plural(h), plural(h))
+		case sel.dormant == 0:
+			note = fmt.Sprintf("(%d autre%s dans un dossier replié : → le déplie)", h, plural(h))
+		default:
+			note = fmt.Sprintf("(%d autre%s masquée%s : a, ou → sur le dossier)", h, plural(h), plural(h))
 		}
 		out = append(out, styleDim.Render(truncate(note, inner)))
 	}

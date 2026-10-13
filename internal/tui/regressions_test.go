@@ -116,7 +116,8 @@ func TestActionPanelFitsScreen(t *testing.T) {
 	}
 	m.stacks = many
 	m.invalidateRows()
-	m.width, m.height, m.loading, m.view = 100, 24, false, viewAction
+	m.width, m.height, m.loading = 100, 24, false
+	m = withPanel(m)
 	m.metrics.NCores = 8
 	out := ansi.Strip(m.viewContent())
 	for _, a := range groupActions {

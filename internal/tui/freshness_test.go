@@ -166,7 +166,8 @@ func TestEventsDuringOtherViewReloadOnReturn(t *testing.T) {
 // chargement plus ancien, non.
 func TestLaterLoadClearsListDirty(t *testing.T) {
 	m := newTestModel([]compose.Stack{stack("web", "", 1, 1, 0)})
-	m.client, m.loading, m.view = &fakeClient{}, false, viewAction
+	m.client, m.loading = &fakeClient{}, false
+	m = withPanel(m)
 	before := time.Now()
 	m, _ = update(m, stackTickMsg{})
 	if !m.listDirty {
@@ -408,5 +409,86 @@ func TestDirPickerArrows(t *testing.T) {
 	m = drive(t, m, keyMsg("backspace"), 0)
 	if m.dirPath != filepath.Join(root, "a") {
 		t.Errorf("⌫ : %q, want le parent", m.dirPath)
+	}
+}
+
+// loadOf extrait la relecture de la liste d'une commande (sans l'appliquer).
+func loadOf(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	for _, msg := range runQuick(cmd) {
+		if _, ok := msg.(stacksLoadedMsg); ok {
+			return msg
+		}
+	}
+	t.Fatal("aucune relecture de la liste")
+	return nil
+}
+
+// La cible du panneau d'actions est figée à son ouverture : la relecture de
+// rattrapage au retour des logs, arrivée panneau ouvert, masquait la stack
+// visée (arrêtée entre-temps, liste par défaut), le curseur passait sur une
+// autre, et p lançait son pull sans confirmation.
+func TestActionPanelTargetSurvivesReload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fake := &fakeClient{stacks: []compose.Stack{stack("api", "", 1, 1, 0), stack("web", "", 0, 1, 0)}}
+	m := newTestModel([]compose.Stack{stack("api", "", 1, 1, 0), stack("web", "", 1, 1, 0)})
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 40
+	m.lastRefresh = time.Now()
+	m = seekStack(m, "web")
+	m, _ = update(m, keyMsg("l"))
+	m, _ = update(m, debounceRefreshMsg{gen: m.refreshGen}) // web s'arrête pendant les logs
+	m, cmd := update(m, keyMsg("esc"))
+	loaded := loadOf(t, cmd)
+	m, _ = update(m, keyMsg("enter"))
+	if m.view != viewAction {
+		t.Fatalf("vue %v, want le panneau", m.view)
+	}
+	m, _ = update(m, loaded) // arrive panneau ouvert : web masquée
+	if s, _ := m.cursorStack(); s.Name == "web" {
+		t.Fatal("web encore sous le curseur : le cas n'est pas reproduit")
+	}
+	m, _ = update(m, keyMsg("p"))
+	if got := fake.called("pull"); len(got) != 1 || got[0].Name != "web" {
+		t.Errorf("panneau ouvert sur web : pull lancé sur %v", got)
+	}
+}
+
+// Même règle pour un panneau ouvert sur la sélection : la relecture qui
+// masque la cochée ne fait pas retomber les lettres sur la stack sous le
+// curseur.
+func TestActionPanelSelectionSurvivesReload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fake := &fakeClient{stacks: []compose.Stack{stack("api", "", 1, 1, 0), stack("web", "", 0, 1, 0)}}
+	m := newTestModel([]compose.Stack{stack("api", "", 1, 1, 0), stack("web", "", 1, 1, 0)})
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 40
+	m.lastRefresh = time.Now()
+	m.selected["web"] = true
+	m.view, m.helpReturn = viewHelp, viewList
+	m, _ = update(m, debounceRefreshMsg{gen: m.refreshGen})
+	m, cmd := update(m, keyMsg("x")) // ferme l'aide : relecture de rattrapage
+	loaded := loadOf(t, cmd)
+	m, _ = update(m, keyMsg("enter"))
+	if m.view != viewAction || !m.actionGroup {
+		t.Fatalf("vue %v, groupe %v : want le panneau de la sélection", m.view, m.actionGroup)
+	}
+	m, _ = update(m, loaded)
+	m, _ = update(m, keyMsg("p"))
+	if got := fake.called("pull"); len(got) != 1 || got[0].Name != "web" {
+		t.Errorf("panneau ouvert sur la sélection (web) : pull lancé sur %v", got)
+	}
+}
+
+// Une relecture où la cible du panneau a disparu (dossier supprimé) le
+// ferme et le dit, au lieu de laisser un panneau vide.
+func TestActionPanelClosesWhenTargetGone(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("api", "", 1, 1, 0), stack("web", "", 1, 1, 0)})
+	m.client, m.loading = &fakeClient{}, false
+	m.width, m.height = 120, 40
+	m = withPanel(seekStack(m, "web"))
+	m, _ = update(m, stacksLoadedMsg{stacks: []compose.Stack{stack("api", "", 1, 1, 0)}, dir: "/tmp", at: time.Now()})
+	if m.view != viewList || m.statusKind != statusInfo || !strings.Contains(m.status, "disparu") {
+		t.Errorf("vue %v, statut %q : want la liste et un mot d'explication", m.view, m.status)
 	}
 }

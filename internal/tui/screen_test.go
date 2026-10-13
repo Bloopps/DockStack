@@ -142,7 +142,7 @@ func TestScreenMatchesLipgloss(t *testing.T) {
 		{"erreur", func(m *Model) { m.err = errors.New("dial unix /var/run/docker.sock: permission denied") }},
 		{"aide", func(m *Model) { m.view = viewHelp }},
 		{"captures", func(m *Model) { m.view = viewBackup }},
-		{"panneau", func(m *Model) { m.view = viewAction }},
+		{"panneau", func(m *Model) { *m = withPanel(*m) }},
 		{"thèmes", func(m *Model) {
 			out, _ := m.Update(keyMsg("t"))
 			*m = out.(Model)

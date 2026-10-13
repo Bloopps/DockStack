@@ -32,21 +32,20 @@ func panelWidthFor(names []string, termW int) int {
 }
 
 func renderActionMenu(m Model, height int) string {
-	sel := m.selectedStacks()
-	stack, okStack := m.cursorStack()
-	if len(sel) == 0 && !okStack {
+	targets := m.actionStacks()
+	if len(targets) == 0 {
 		return ""
 	}
 
-	// Panneau seul, centré : même panneau pour les deux cibles (sélection si
-	// elle existe, sinon la stack sous le curseur). La cible est rappelée
-	// dans le titre, afficher la liste assombrie derrière n'était que du
-	// bruit visuel.
+	// Panneau seul, centré : même panneau pour les deux cibles (sélection, ou
+	// une stack), figées à l'ouverture (cf. openActionPanel). La cible est
+	// rappelée dans le titre, afficher la liste assombrie derrière n'était
+	// que du bruit visuel.
 	var panel string
-	if len(sel) > 0 {
-		panel = buildGroupPanel(sel, m.actionCursor, height, m.width)
+	if m.actionGroup {
+		panel = buildGroupPanel(targets, m.actionCursor, height, m.width)
 	} else {
-		panel = buildActionPanel(stack, m.actionCursor, height, m.width)
+		panel = buildActionPanel(targets[0], m.actionCursor, height, m.width)
 	}
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, panel)
 }

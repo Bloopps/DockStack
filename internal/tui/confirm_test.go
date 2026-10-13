@@ -167,7 +167,7 @@ func TestConfirmRemoveDangerAndSize(t *testing.T) {
 	m.client = &fakeClient{}
 	m.width, m.height, m.loading = 120, 40, false
 	openRemove := func(m Model) Model {
-		m.view = viewAction
+		m = withPanel(m)
 		for i, a := range stackActions {
 			if a.id == "remove" {
 				m.actionCursor = i
@@ -254,5 +254,46 @@ func TestMarkedWindow(t *testing.T) {
 			t.Errorf("markedWindow(%d, %d, %d) = %d, %d, %d, %d ; want %d, %d, %d, %d",
 				tc.n, tc.s, tc.h, from, to, above, below, tc.from, tc.to, tc.above, tc.below)
 		}
+	}
+}
+
+// La confirmation d'un up, ouverte par le résultat de sa prévision, ne
+// s'ouvre plus sous une frappe : le ↩ tapé pour figer le filtre confirmait
+// l'up, qui recréait des services en marche. Le statut le dit, u relance.
+func TestPlanConfirmNotOpenedUnderTyping(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fake := &fakeClient{
+		stacks: []compose.Stack{stack("web", "", 1, 1, 0), stack("media", "", 1, 1, 0)},
+		plan:   []compose.Recreation{{Service: "app", Reason: "image modifiée"}},
+	}
+	m := newTestModel(fake.stacks)
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 40
+
+	m, cmd := update(m, keyMsg("u"))
+	pm := planMsgOf(t, cmd)
+	m, _ = update(m, keyMsg("/"))
+	for _, k := range "medi" {
+		m, _ = update(m, tea.KeyPressMsg{Code: k, Text: string(k)})
+	}
+	m, _ = update(m, pm)
+	if m.view == viewConfirm {
+		t.Fatal("confirmation ouverte pendant la saisie du filtre")
+	}
+	m, _ = update(m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m, _ = update(m, keyMsg("enter"))
+	if got := fake.called("up"); len(got) > 0 {
+		t.Errorf("↩ tapé pour figer le filtre a lancé l'up de %q", got[0].Name)
+	}
+	if m.filter.Value() != "media" || m.statusKind != statusInfo || !strings.Contains(m.status, "u pour revoir") {
+		t.Errorf("filtre %q, statut %q (%v) : want le filtre complet et le rappel", m.filter.Value(), m.status, m.statusKind)
+	}
+
+	// Sans frappe entre la demande et la réponse, la confirmation s'ouvre.
+	m, _ = update(m, keyMsg("esc"))
+	m, cmd = update(m, keyMsg("u"))
+	m, _ = update(m, planMsgOf(t, cmd))
+	if m.view != viewConfirm {
+		t.Errorf("vue %v, want la confirmation de l'up", m.view)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/compose"
@@ -308,6 +309,27 @@ func TestProgressCancelQuestion(t *testing.T) {
 		last := lines[len(lines)-1]
 		if !strings.Contains(last, tc.reason) || !strings.Contains(last, "esc = oui") {
 			t.Errorf("%d colonnes : %q", tc.width, last)
+		}
+	}
+}
+
+// « autre touche = non » : toute touche autre que esc désarme la question
+// d'annulation. ↑↓, pgup/pgdn, g/G, ↩ et q la laissaient armée, et l'esc
+// suivant annulait l'opération.
+func TestProgressCancelQuestionOtherKeys(t *testing.T) {
+	for _, k := range []tea.KeyPressMsg{{Code: tea.KeyDown}, {Code: tea.KeyUp}, {Code: tea.KeyPgDown}, {Code: tea.KeyPgUp},
+		{Code: 'g', Text: "g"}, {Code: 'G', Text: "G"}, {Code: tea.KeyEnter}, {Code: 'q', Text: "q"}} {
+		m := opProgress("Pull — 2 stacks")
+		cancelled := false
+		m.progressCancel = func() { cancelled = true }
+		m, _ = update(m, keyMsg("esc"))
+		if !strings.Contains(ansi.Strip(m.viewContent()), "autre touche = non") {
+			t.Fatal("question absente")
+		}
+		m, _ = update(m, k)
+		m, _ = update(m, keyMsg("esc"))
+		if cancelled || !m.progressConfirmCancel {
+			t.Errorf("esc, %s, esc : annulée %v, question réarmée %v", k, cancelled, m.progressConfirmCancel)
 		}
 	}
 }

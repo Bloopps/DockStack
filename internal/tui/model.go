@@ -170,6 +170,12 @@ type Model struct {
 
 	// Action menu cursor (shared between viewAction / viewBackup)
 	actionCursor int
+	// Cible du panneau d'actions, figée par noms à son ouverture (cf.
+	// openActionPanel) : la sélection (actionGroup) ou une stack. Relire le
+	// curseur ou la sélection au moment d'agir laissait une relecture de la
+	// liste, arrivée panneau ouvert, changer la stack visée.
+	actionTarget []string
+	actionGroup  bool
 
 	// Logs (canal et annulation portés par le Model, pas par des globals).
 	// logSeq numérote la session courante pour invalider les messages en vol
@@ -308,6 +314,11 @@ type Model struct {
 	// réponse arrivée après un aller-retour dans l'aide, ou doublée par un
 	// second u, est écartée au lieu de lancer l'up sans nouvelle frappe.
 	planSeq int
+	// keySeq compte les frappes (et collages) : une prévision d'up dont le
+	// résultat demande confirmation n'ouvre pas celle-ci si l'utilisateur a
+	// tapé depuis la demande, sinon le ↩ ou la lettre destinés au filtre ou
+	// à la liste tombaient dans la confirmation (cf. handlePlanUp).
+	keySeq int
 
 	// Confirmation (destructive actions)
 	confirmLabel   string
@@ -513,6 +524,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.listDirty = false // chargement parti après le dernier événement
 		}
 		m.seekCursor(anchor)
+		// Panneau d'actions ouvert sur des stacks disparues depuis (dossier
+		// supprimé) : il se ferme au lieu de rester vide.
+		if m.view == viewAction && len(m.actionStacks()) == 0 {
+			m.view = viewList
+			m.manualR = false
+			m.setInfo("Panneau fermé : sa cible a disparu de la liste")
+			return m, m.clearStatusIn(4 * time.Second)
+		}
 		// Un refresh manuel (R) confirme sa fin ; l'auto-refresh reste discret.
 		if m.manualR {
 			m.manualR = false
@@ -843,9 +862,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.PasteMsg:
+		m.keySeq++
 		return m.handlePaste(msg.Content)
 
 	case tea.KeyPressMsg:
+		m.keySeq++
 		from, seq := m.view, m.planSeq
 		next, cmd := m.handleKey(msg)
 		nm, ok := next.(Model)
@@ -882,6 +903,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// ça, q puis esc puis q quittait depuis la liste.
 		if msg.String() != "q" {
 			m.quitArmed = false
+		}
+		// Toute touche autre que esc (et ctrl+c, son équivalent ici) répond
+		// « non » à la question d'annulation, comme elle l'annonce : ↑↓, ↩
+		// ou q la laissaient armée, et l'esc suivant annulait l'opération.
+		if k := msg.String(); k != "esc" && k != "ctrl+c" {
+			m.progressConfirmCancel = false
 		}
 		switch msg.String() {
 		case "up", "k":
@@ -955,10 +982,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return m.startStackAction("logs", s)
 			}
-			m.progressConfirmCancel = false
-		default:
-			// Toute autre touche désarme la confirmation d'annulation.
-			m.progressConfirmCancel = false
 		}
 		return m, nil
 	}
@@ -1139,10 +1162,12 @@ func (m Model) viewContent() string {
 			body = renderError(m.err, m.width, m.retryNote())
 		} else {
 			// Bandeau éventuel : une ligne prise sur la hauteur de la liste.
+			// Jamais en dessous de zéro : un corps sans hauteur (en-tête qui
+			// prend tout l'écran) faisait paniquer le volet sur une hauteur -1.
 			banner := m.captureBanner()
 			listH := bodyH
 			if banner != "" {
-				listH--
+				listH = max(listH-1, 0)
 			}
 			list := m.listBlock(listH)
 			if banner != "" {
@@ -1517,27 +1542,34 @@ func (m Model) filteredStacks() []compose.Stack {
 	return out
 }
 
-// selectedStacks : stacks cochées ET affichées (filtre et a appliqués), celles
-// que visent les actions. Une stack cochée puis masquée n'est jamais visée :
-// une action sans confirmation (p, u sur une stack arrêtée) ne doit pas
-// toucher ce qu'on ne voit pas — la règle du mode services.
+// selectedStacks : stacks cochées ET affichées par une ligne de la liste
+// (filtre, a et repli appliqués, comme ctrl+a), celles que visent les
+// actions. Une stack cochée puis masquée n'est jamais visée : une action sans
+// confirmation (p, u sur une stack arrêtée) ne doit pas toucher ce qu'on ne
+// voit pas — la règle du mode services. Une cochée repliée dans son dossier
+// partait ainsi avec p, sans rien à l'écran pour la montrer.
 func (m Model) selectedStacks() []compose.Stack {
 	if len(m.selected) == 0 {
 		return nil
 	}
 	var out []compose.Stack
-	for _, s := range m.shownStacks() {
-		if m.selected[s.Name] {
-			out = append(out, s)
+	for _, r := range m.listRows() {
+		if r.isStack() && m.selected[r.stack.Name] {
+			out = append(out, r.stack)
 		}
 	}
 	return out
 }
 
 // selState : stacks cochées, visibles (visées par les actions) et masquées.
+// byFilter : un filtre est appliqué, esc l'efface d'abord. dormant et folded
+// comptent les masquées qui le resteraient sans filtre : arrêtées (a les
+// affiche) ou dans un dossier replié (→ le déplie). Les indications mènent
+// jusqu'à elles : « esc efface le filtre » seul laissait une arrêtée cachée.
 type selState struct {
-	shown, hidden int
-	byFilter      bool // masquées par le filtre (esc l'efface), sinon par a
+	shown, hidden   int
+	byFilter        bool
+	dormant, folded int
 }
 
 func (s selState) any() bool { return s.shown+s.hidden > 0 }
@@ -1548,14 +1580,55 @@ func (m Model) selection() selState {
 	if len(m.selected) == 0 {
 		return selState{}
 	}
-	total := 0
+	sel := selState{byFilter: m.filter.Value() != ""}
+	shown := make(map[string]bool)
+	for _, s := range m.selectedStacks() {
+		shown[s.Name] = true
+	}
+	sel.shown = len(shown)
+	// Sans filtre, a masque les arrêtées, et un dossier n'a d'en-tête (donc
+	// de repli) que s'il garde plusieurs stacks affichées.
+	hideDormant := !m.cfg.ShowAll
+	var sizes map[string]int
 	for _, s := range m.stacks {
-		if m.selected[s.Name] {
-			total++
+		if !m.selected[s.Name] || shown[s.Name] {
+			continue
+		}
+		sel.hidden++
+		if hideDormant && dormant(s) {
+			sel.dormant++
+			continue
+		}
+		if !m.foldedGroups[s.Group] {
+			continue
+		}
+		if sizes == nil {
+			var unfiltered []compose.Stack
+			for _, o := range m.stacks {
+				if !hideDormant || !dormant(o) {
+					unfiltered = append(unfiltered, o)
+				}
+			}
+			sizes = groupSizes(unfiltered)
+		}
+		if sizes[s.Group] > 1 {
+			sel.folded++
 		}
 	}
-	shown := len(m.selectedStacks())
-	return selState{shown: shown, hidden: total - shown, byFilter: m.filter.Value() != ""}
+	return sel
+}
+
+// revealSteps : gestes qui rendent visibles, une fois le filtre effacé, les
+// cochées masquées : a pour les arrêtées, puis → pour un dossier replié.
+func (s selState) revealSteps(showAll, unfold string) []string {
+	var steps []string
+	if s.dormant > 0 {
+		steps = append(steps, showAll)
+	}
+	if s.folded > 0 {
+		steps = append(steps, unfold)
+	}
+	return steps
 }
 
 // refuseHiddenSelection : des stacks sont cochées mais toutes masquées. Les
@@ -1563,10 +1636,18 @@ func (m Model) selection() selState {
 // croirait visée à la place de la sélection, et p ou u partent sans
 // confirmation.
 func (m Model) refuseHiddenSelection(sel selState) (tea.Model, tea.Cmd) {
+	// Le message mène jusqu'à elles : sous un filtre, une arrêtée reste
+	// masquée par a une fois le filtre effacé, une repliée par son dossier.
+	const unfold = "→ sur le dossier pour le déplier"
 	if sel.byFilter {
-		m.setInfo("Stacks cochées masquées par le filtre : esc pour l'effacer")
+		msg := "Stacks cochées masquées par le filtre : esc pour l'effacer"
+		if steps := sel.revealSteps("a pour afficher les arrêtées", unfold); len(steps) > 0 {
+			msg += ", puis " + strings.Join(steps, ", puis ")
+		}
+		m.setInfo(msg)
 	} else {
-		m.setInfo("Stacks cochées masquées : a pour les afficher, esc pour les décocher")
+		steps := sel.revealSteps("a pour les afficher", unfold)
+		m.setInfo("Stacks cochées masquées : " + strings.Join(append(steps, "esc pour les décocher"), ", "))
 	}
 	return m, m.clearStatusIn(4 * time.Second)
 }

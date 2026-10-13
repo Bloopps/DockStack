@@ -230,3 +230,127 @@ func TestEmptyListMessages(t *testing.T) {
 		}
 	}
 }
+
+// foldModel : media/jellyfin et media/sonarr (dossier media) et traefik, en
+// marche.
+func foldModel() (Model, *fakeClient) {
+	fake := &fakeClient{autoDone: true}
+	m := newTestModel([]compose.Stack{
+		stack("media/jellyfin", "media", 1, 1, 0), stack("media/sonarr", "media", 1, 1, 0), stack("traefik", "traefik", 1, 1, 0),
+	})
+	m.client = fake
+	m.width, m.height, m.loading = 120, 40, false
+	return m, fake
+}
+
+// Une stack cochée puis repliée dans son dossier n'est plus visée, comme
+// celles masquées par le filtre ou a : p sur traefik lançait le pull de
+// media/sonarr, invisible, sans rien à l'écran pour la montrer. Pied et volet
+// la comptent masquée et disent comment la retrouver.
+func TestFoldedSelectionNotTargeted(t *testing.T) {
+	m, fake := foldModel()
+	m.selected["media/sonarr"] = true
+	m = typeKeys(seekStack(m, "media/jellyfin"), "left") // replie « media »
+	if sel := m.selection(); sel.shown != 0 || sel.hidden != 1 || sel.folded != 1 {
+		t.Fatalf("selection = %+v, want la cochée masquée par le repli", sel)
+	}
+	m = seekStack(m, "traefik")
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, "1  cochée masquée") || !strings.Contains(f, "→  déplier le dossier") {
+		t.Errorf("pied : %q", f)
+	}
+	if screen := ansi.Strip(m.viewContent()); !strings.Contains(screen, "(dossier replié)") || strings.Contains(screen, "Actions sur la stack cochée") {
+		t.Errorf("volet : la cochée repliée passe pour visée :\n%s", screen)
+	}
+	m = typeKeys(m, "p")
+	if got := fake.called("pull"); len(got) != 0 {
+		t.Errorf("p sur traefik : pull de %v, cochée repliée hors de vue", got)
+	}
+	if !strings.Contains(m.status, "→ sur le dossier pour le déplier") {
+		t.Errorf("refus : %q", m.status)
+	}
+
+	// ␣ sur un en-tête replié le déplie : les coches posées se voient.
+	m.selected = map[string]bool{}
+	m.cursor = m.headerRowIndex("media")
+	m = typeKeys(m, "space")
+	if m.foldedGroups["media"] || len(m.selectedStacks()) != 2 {
+		t.Errorf("␣ sur l'en-tête replié : replié %v, cochées visibles %v", m.foldedGroups["media"], m.selectedStacks())
+	}
+}
+
+// Sous un filtre, la liste ignore le repli : ↩ (et →) sur un en-tête n'y
+// replient ni ne déplient rien, et le pied ne l'annonce plus. ↩ repliait le
+// dossier en silence, et une stack cochée pendant le filtre disparaissait en
+// l'effaçant.
+func TestEnterDoesNotFoldUnderFilter(t *testing.T) {
+	m, _ := foldModel()
+	m = typeKeys(m, "/", "m", "e", "d", "enter")
+	if row, ok := m.cursorRow(); !ok || !row.header {
+		t.Fatalf("curseur pas sur l'en-tête après « /med ↩ » : %+v", row)
+	}
+	if f := ansi.Strip(m.renderFooter()); strings.Contains(f, "replier") || strings.Contains(f, "déplier") {
+		t.Errorf("pied sous filtre : %q", f)
+	}
+	m = typeKeys(m, "enter")
+	if m.foldedGroups["media"] {
+		t.Fatal("↩ sur l'en-tête sous filtre : dossier replié en silence")
+	}
+	m.foldedGroups["media"] = true
+	m = typeKeys(m, "right")
+	if !m.foldedGroups["media"] {
+		t.Error("→ sur l'en-tête sous filtre : dossier déplié en silence")
+	}
+	delete(m.foldedGroups, "media")
+	m = typeKeys(m, "down", "down", "space", "esc") // coche sonarr, efface le filtre
+	if sel := m.selection(); sel.shown != 1 || sel.hidden != 0 {
+		t.Errorf("après esc : selection %+v, want la cochée visible", sel)
+	}
+}
+
+// Dossier replié : le pied annonce « ↩ déplier » et le volet « → déplier »
+// (ils disaient « replier », que ← ne fait plus).
+func TestFoldedGroupHints(t *testing.T) {
+	m, _ := foldModel()
+	m.cursor = m.headerRowIndex("media")
+	m = typeKeys(m, "left")
+	if r, ok := m.cursorRow(); !ok || !r.header || !r.folded {
+		t.Fatal("dossier non replié")
+	}
+	foot, screen := ansi.Strip(m.renderFooter()), ansi.Strip(m.viewContent())
+	if !strings.Contains(foot, "↩  déplier") || strings.Contains(foot, "replier") {
+		t.Errorf("pied : %q", foot)
+	}
+	if !strings.Contains(screen, "→ déplier") || strings.Contains(screen, "← replier") {
+		t.Errorf("volet :\n%s", screen)
+	}
+	m = typeKeys(m, "enter")
+	if foot := ansi.Strip(m.renderFooter()); !strings.Contains(foot, "↩  replier") {
+		t.Errorf("déplié : pied %q", foot)
+	}
+}
+
+// Cochée masquée à la fois par le filtre et par a : l'indication mène
+// jusqu'à elle (esc, puis a). « esc efface le filtre pour agir dessus »
+// laissait l'arrêtée cachée par a, les lettres toujours refusées.
+func TestHiddenSelectionHintLeadsToIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel([]compose.Stack{stack("web", "web", 1, 1, 0), stack("old", "old", 0, 1, 0)})
+	m.client = &fakeClient{autoDone: true}
+	m.width, m.height, m.loading = 120, 40, false
+	m.selected["old"] = true
+	m = typeKeys(m, "/", "w", "e", "b", "enter")
+	// Texte du volet remis bout à bout (l'indication se replie sur deux
+	// lignes, chacune précédée de la règle « │ »).
+	screen := strings.Join(strings.Fields(strings.ReplaceAll(ansi.Strip(m.viewContent()), "│", "")), " ")
+	if !strings.Contains(screen, "esc efface le filtre, puis a pour afficher les arrêtées") {
+		t.Errorf("volet sans les deux étapes :\n%s", ansi.Strip(m.viewContent()))
+	}
+	m = typeKeys(m, "u")
+	if !strings.Contains(m.status, "esc pour l'effacer, puis a pour afficher les arrêtées") {
+		t.Errorf("refus : %q", m.status)
+	}
+	m = typeKeys(m, "esc", "a")
+	if sel := m.selection(); sel.shown != 1 {
+		t.Errorf("après esc puis a : selection %+v, want la cochée visible", sel)
+	}
+}
