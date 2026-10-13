@@ -410,7 +410,7 @@ func previewDetail(stackDir string, s compose.Stack, services []compose.ServiceS
 
 	state := dotStyle.Render(stateWord(s.State()))
 	if s.Total > 0 {
-		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", s.Running, s.Total))
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneur%s", s.Running, s.Total, plural(s.Total)))
 	}
 	out = append(out, state)
 	if ex.fail != nil {

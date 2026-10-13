@@ -475,11 +475,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Le bas des logs dépend de la hauteur, et de la largeur une fois les
-		// lignes repliées : sans recalcul, un terminal réduit cachait la fin
-		// du direct.
-		if m.view == viewLogs {
+		switch m.view {
+		case viewLogs:
+			// Le bas des logs dépend de la hauteur, et de la largeur une fois
+			// les lignes repliées : sans recalcul, un terminal réduit cachait
+			// la fin du direct.
 			m.syncLogScroll()
+		case viewConfirm:
+			// Agrandi, le terminal abaisse la borne du défilement : sans
+			// recalcul, le premier ↑ ne faisait que la rattraper, écran figé.
+			m.confirmScroll = min(m.confirmScroll, m.confirmMaxScroll())
 		}
 
 	case metricsMsg:
@@ -1926,7 +1931,7 @@ func (m Model) listPosition() string {
 			}
 		}
 	}
-	return fmt.Sprintf("%d stacks", len(all))
+	return fmt.Sprintf("%d stack%s", len(all), plural(len(all)))
 }
 
 // stacksTickInterval : relecture périodique de la liste, en filet du flux
@@ -2005,8 +2010,14 @@ func (m Model) headerLines() int {
 	return titleBarLines
 }
 
-// page : pas de pgup/pgdown pour une fenêtre de h lignes. Deux lignes de
-// recouvrement gardent le contexte d'une page à l'autre.
+// page : pas de pgup/pgdown pour une fenêtre de h lignes, repères « ··· »
+// compris. Règle commune à toutes les listes : une page avance de ce que la
+// fenêtre montre entre ses deux repères, si bien que chaque page reprend où
+// la précédente s'arrêtait, sans ligne sautée. Sans repère (logs, compose,
+// aide), ces deux lignes deviennent un recouvrement qui garde le contexte.
+// L'appelant passe donc la hauteur réelle de la fenêtre : celle du corps
+// oubliait la barre du filtre, le bandeau de capture ou le détail des
+// services, et chaque page sautait des lignes jamais affichées.
 func page(h int) int {
 	return max(h-2, 1)
 }

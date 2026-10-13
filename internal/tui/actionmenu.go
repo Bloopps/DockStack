@@ -133,7 +133,7 @@ func buildActionPanel(stack compose.Stack, cursor, height, termW int) string {
 	// compteur, et non « Running (4/4) », seul reste d'anglais.
 	state := dotStyle.Render(dot) + " " + dotStyle.Render(stateWord(stack.State()))
 	if stack.Total > 0 {
-		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", stack.Running, stack.Total))
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneur%s", stack.Running, stack.Total, plural(stack.Total)))
 	}
 	state = ansi.Truncate(state, inner, "…")
 
@@ -181,7 +181,7 @@ func buildGroupPanel(selected []compose.Stack, cursor, height, termW int) string
 	inner := width - 4
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
-	title := stylePanelTitle.Render(fmt.Sprintf("%d stacks sélectionnées", len(selected)))
+	title := stylePanelTitle.Render(fmt.Sprintf("%d stack%s sélectionnée%s", len(selected), plural(len(selected)), plural(len(selected))))
 	lines := make([]string, len(selected))
 	for i, s := range selected {
 		dot, dotStyle := stateStyle(s.State())

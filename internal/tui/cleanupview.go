@@ -410,7 +410,7 @@ func (m Model) prunePreview(p compose.PruneCommand) pruneSummary {
 			if idx := m.cleanupItems(compose.CleanBuildCache); len(idx) > 0 {
 				n = rep.Items[idx[0]].Count
 			}
-			s.lines = append(s.lines, fmt.Sprintf("Cache de build inutilisé : %d entrées · %s", n, fmtCleanupSize(rep.Builds.Reclaimable, false)))
+			s.lines = append(s.lines, fmt.Sprintf("Cache de build inutilisé : %d entrée%s · %s", n, plural(n), fmtCleanupSize(rep.Builds.Reclaimable, false)))
 			countOf(n, "entrée", "entrées")
 		case compose.PruneNetworks:
 			n := len(m.cleanupItems(compose.CleanUnusedNetwork)) + len(rep.KeptExternalNetworks)
@@ -581,9 +581,9 @@ func (m Model) handleCleanupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.cleanupCursor = min(m.cleanupCursor+1, max(len(nav)-1, 0))
 	case "pgup":
-		m.cleanupCursor = max(m.cleanupCursor-page(m.cleanupListH()), 0)
+		m.cleanupCursor = m.cleanupPage(-1)
 	case "pgdown":
-		m.cleanupCursor = min(m.cleanupCursor+page(m.cleanupListH()), max(len(nav)-1, 0))
+		m.cleanupCursor = m.cleanupPage(1)
 	case "g", "home":
 		m.cleanupCursor = 0
 	case "G", "end":
@@ -800,8 +800,7 @@ func (m Model) cleanupNarrowLayout(height int) cleanupNarrow {
 }
 
 // cleanupListH : hauteur de la sélection dans renderCleanup, pour le pas de
-// pgup/pgdown. Le pas compte des lignes navigables : les notes et titres de
-// section le rallongent un peu à l'écran, la fenêtre suit le curseur.
+// pgup/pgdown (cf. cleanupPage).
 func (m Model) cleanupListH() int {
 	h := m.bodyHeight()
 	switch {
@@ -880,7 +879,7 @@ func (m Model) cleanupDetail(w int) []string {
 			out = append(out, "")
 			for n, i := range items {
 				if n == 8 {
-					out = append(out, dim(fmt.Sprintf("  … et %d autres", len(items)-n)))
+					out = append(out, dim(fmt.Sprintf("  … et %d autre%s", len(items)-n, plural(len(items)-n))))
 					break
 				}
 				it := rep.Items[i]
@@ -1070,7 +1069,7 @@ func (m Model) cleanupDiskLine() []string {
 	}
 	return []string{"  " + styleCyan.Render("Disque ") + styleDim.Render(truncate(mt.DiskMount, 12)) + " " +
 		bar(mt.DiskPercent, 12) + fmt.Sprintf(" %d / %d Go (%d %%)", mt.DiskUsedGB, mt.DiskTotalGB, mt.DiskPercent) +
-		styleDim.Render(fmt.Sprintf(" · %d Go libres", mt.DiskFreeGB))}
+		styleDim.Render(fmt.Sprintf(" · %d Go libre%s", mt.DiskFreeGB, plural(mt.DiskFreeGB)))}
 }
 
 // cleanupImagesFree : espace libérable des images inutilisées, exact
@@ -1176,17 +1175,17 @@ func (m Model) cleanupList(colW, h int, withKept bool) []string {
 	// la date d'un élément déplié (« il y a 137 j », 14 avec la marge).
 	labelW := min(max(colW-10-cleanupCountW-1-cleanupSizeW-2-14, 12), 56)
 	var lines []string
-	curLine, secLine, lastSec := -1, -1, -1
+	curLine, secLine := -1, -1
+	if cur >= 0 {
+		lineOf, secOf, _ := m.cleanupLines(withKept)
+		curLine, secLine = lineOf[cur], secOf[cur]
+	}
 	for i, r := range rows {
 		if r.kept && !withKept {
 			continue
 		}
-		if i == cur {
-			curLine, secLine = len(lines), lastSec
-		}
 		switch {
 		case r.section != "":
-			lastSec = len(lines)
 			lines = append(lines, "  "+styleYellow.Render(r.section))
 		case !r.nav:
 			lines = append(lines, styleDim.Render(truncate("      "+r.note, max(colW, 1))))
@@ -1242,18 +1241,75 @@ func (m Model) cleanupList(colW, h int, withKept bool) []string {
 			lines = append(lines, cleanupLine(plain, i == cur, colW))
 		}
 	}
-	start, _ := windowSpan(len(lines), curLine, h)
-	if secLine < 0 || secLine >= start || h < 4 {
-		return windowWithMarks(lines, curLine, h)
-	}
-	// Une ligne pour le titre, le reste pour la fenêtre. Rétrécie, la
-	// fenêtre peut remonter d'une ligne en fin de liste et montrer le titre
-	// à sa place : pas de doublon alors.
-	win := windowWithMarks(lines, curLine, h-1)
-	if s, _ := windowSpan(len(lines), curLine, h-1); secLine >= s {
+	wh := cleanupWinH(len(lines), curLine, secLine, h)
+	win := windowWithMarks(lines, curLine, wh)
+	// Rétrécie, la fenêtre peut remonter d'une ligne en fin de liste et
+	// montrer le titre à sa place : pas de doublon alors.
+	if s, _ := windowSpan(len(lines), curLine, wh); wh == h || secLine >= s {
 		return win
 	}
 	return append([]string{lines[secLine]}, win...)
+}
+
+// cleanupLines : disposition de cleanupList sans le rendu. Pour chaque
+// ligne de cleanupRows, sa ligne dans la sélection (-1 : absente, section
+// « Conservé » de la disposition large) et celle du titre de sa section
+// (-1 : aucun), puis le nombre de lignes.
+func (m Model) cleanupLines(withKept bool) (lineOf, secOf []int, n int) {
+	rows := m.cleanupRows()
+	lineOf, secOf = make([]int, len(rows)), make([]int, len(rows))
+	sec := -1
+	for i, r := range rows {
+		lineOf[i], secOf[i] = -1, sec
+		if r.kept && !withKept {
+			continue
+		}
+		lineOf[i] = n
+		if r.section != "" {
+			sec = n
+		}
+		n++
+	}
+	return lineOf, secOf, n
+}
+
+// cleanupWinH : hauteur de la fenêtre de la sélection autour de la ligne
+// cur, sur h lignes : une de moins quand le titre de sa section (ligne sec)
+// est sorti par le haut et reste épinglé en tête (cf. cleanupList).
+func cleanupWinH(n, cur, sec, h int) int {
+	if start, _ := windowSpan(n, cur, h); sec < 0 || sec >= start || h < 4 {
+		return h
+	}
+	return h - 1
+}
+
+// cleanupPage : position du curseur après pgup (dir -1) ou pgdown (dir 1).
+// La fenêtre suit le curseur, avec ses repères, le titre de section
+// épinglé, et des notes et titres intercalés : un pas fixe d'éléments
+// faisait passer des éléments à supprimer entre deux écrans sans les
+// montrer. Le curseur va donc aussi loin que possible tant que la nouvelle
+// fenêtre reprend où l'ancienne s'arrêtait (cf. page), d'un élément au moins.
+func (m Model) cleanupPage(dir int) int {
+	nav := m.cleanupNav()
+	if len(nav) == 0 {
+		return 0
+	}
+	lineOf, secOf, n := m.cleanupLines(m.width < cleanupWideMin)
+	h := m.cleanupListH()
+	span := func(c int) (int, int) {
+		cur := lineOf[nav[c]]
+		return windowSpan(n, cur, cleanupWinH(n, cur, secOf[nav[c]], h))
+	}
+	cur := min(max(m.cleanupCursor, 0), len(nav)-1)
+	start, end := span(cur)
+	next := min(max(cur+dir, 0), len(nav)-1)
+	for c := next + dir; c >= 0 && c < len(nav); c += dir {
+		if s, e := span(c); (dir > 0 && s > end) || (dir < 0 && e < start) {
+			break
+		}
+		next = c
+	}
+	return next
 }
 
 // windowWithMarks garde h lignes autour de cur et signale ce qui est

@@ -42,6 +42,12 @@ func (m Model) openConfirm(label, warning, effect string, danger bool, names []s
 	m.confirmScroll = 0
 	m.confirmExec = exec
 	m.confirmDanger = danger
+	// Le pied de page est celui de la confirmation (↑↓ lire, ses touches) :
+	// un refus encore affiché le masquait jusqu'à 4 s, et son conseil
+	// (« esc pour l'effacer ») y devenait faux, esc annulant ici. La seule
+	// attente (prévision d'up) est déjà close : handlePlanUp l'efface avant
+	// d'ouvrir, et changer de vue l'abandonne (cf. Update).
+	m.setStatus("", false)
 	// Annuler ramène d'où l'on vient quand ça a du sens (vue backup),
 	// sinon à la liste.
 	m.confirmReturn = viewList
@@ -71,7 +77,7 @@ func (m Model) confirmGroupActionWarn(action, warning string, stacks []compose.S
 	for i, s := range stacks {
 		names[i] = s.Name
 	}
-	label := fmt.Sprintf("%s — %d stacks", actionTitle[action], len(stacks))
+	label := fmt.Sprintf("%s — %d stack%s", actionTitle[action], len(stacks), plural(len(stacks)))
 	return m.openConfirm(label, warning, actionEffect(action, false), false, names, func(m Model) (tea.Model, tea.Cmd) {
 		return m.startGroupAction(action, stacks)
 	})
@@ -81,16 +87,18 @@ func (m Model) confirmGroupActionWarn(action, warning string, stacks []compose.S
 // confirmation. Le verbe compose ne le dit pas : down supprime les conteneurs
 // mais garde les volumes, et restart ne relit pas le compose (piège
 // classique : c'est recreate qui applique une modification). scoped : seuls
-// certains services sont visés (stack.Only), down garde alors le réseau,
-// que les autres services utilisent encore. "" pour up et pull : la
-// prévision ou l'absence de risque en tient lieu.
+// certains services sont visés (stack.Only). Compose supprime quand même
+// chaque réseau du projet auquel plus aucun conteneur en marche n'est relié
+// (tous les services visés, ou les autres arrêtés) : « réseau conservé »
+// était faux dans ces cas. "" pour up et pull : la prévision ou l'absence de
+// risque en tient lieu.
 func actionEffect(action string, scoped bool) string {
 	switch action {
 	case "stop":
 		return "Arrête les conteneurs sans les supprimer (u relance)"
 	case "down":
 		if scoped {
-			return "Arrête et supprime ces conteneurs ; réseau, volumes et images conservés"
+			return "Arrête et supprime ces conteneurs ; volumes et images conservés, réseau supprimé s'il ne sert plus"
 		}
 		return "Arrête et supprime conteneurs et réseau ; volumes et images conservés"
 	case "restart":
@@ -159,7 +167,7 @@ func (m Model) startOrConfirmGroupUp(stacks []compose.Stack) (tea.Model, tea.Cmd
 		for i, s := range stacks {
 			names[i] = s.Name
 		}
-		return m.confirmUpWithPlan(fmt.Sprintf("Up — %d stacks", len(stacks)), names, stacks,
+		return m.confirmUpWithPlan(fmt.Sprintf("Up — %d stack%s", len(stacks), plural(len(stacks))), names, stacks,
 			func(m Model) (tea.Model, tea.Cmd) { return m.startGroupAction("up", stacks) })
 	}
 	return m.startGroupAction("up", stacks)
@@ -277,9 +285,9 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.scrollConfirm(1)
 	case "pgup":
-		m.scrollConfirm(-max(m.confirmArea(m.bodyHeight())-1, 1))
+		m.scrollConfirm(-page(m.confirmArea(m.bodyHeight())))
 	case "pgdown":
-		m.scrollConfirm(max(m.confirmArea(m.bodyHeight())-1, 1))
+		m.scrollConfirm(page(m.confirmArea(m.bodyHeight())))
 	case "g", "home":
 		m.confirmScroll = 0
 	case "G", "end":

@@ -179,7 +179,7 @@ func renderBackupView(m Model, height int) string {
 			title, "", "",
 			"  Aucune capture pour l'instant.",
 			"",
-			"  " + k("c") + "  capturer l'état actuel" + styleDim.Render(fmt.Sprintf("  (%d stacks en marche)", running)),
+			"  " + k("c") + "  capturer l'état actuel" + styleDim.Render(fmt.Sprintf("  (%d stack%s en marche)", running, plural(running))),
 			"",
 			styleDim.Render("  Relancer une capture lance (Up) les stacks qu'elle contient."),
 		}, "\n")
@@ -268,8 +268,8 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 		}
 	}
 
-	rows := []string{stylePanelTitle.Render(truncate(fmt.Sprintf("Capture du %s · %d stacks",
-		snap.Date.Format("02/01/2006 15:04"), len(snap.Stacks)), inner))}
+	rows := []string{stylePanelTitle.Render(truncate(fmt.Sprintf("Capture du %s · %d stack%s",
+		snap.Date.Format("02/01/2006 15:04"), len(snap.Stacks), plural(len(snap.Stacks))), inner))}
 	if snap.Label != "" {
 		rows = append(rows, styleCyan.Render(truncate("★ "+snap.Label, inner)))
 	}

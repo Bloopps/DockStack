@@ -59,6 +59,73 @@ func TestPluralsAgree(t *testing.T) {
 	}
 }
 
+// Une seule stack ou un seul conteneur s'accorde au singulier partout où le
+// compte s'affiche : titres de confirmation et de progression, panneau
+// d'actions, volet, mode services, captures, relance et nettoyage. « Down —
+// 1 stacks », « 1 stacks sélectionnées » ou « 1/1 conteneurs » restaient.
+func TestOneStackAgreement(t *testing.T) {
+	two := func() Model {
+		m := newTestModel([]compose.Stack{stack("web", "", 1, 1, 0), stack("db", "", 1, 1, 0)})
+		m.client = &fakeClient{autoDone: true}
+		m.width, m.height, m.loading = 120, 36, false
+		return press(m, "space") // web cochée
+	}
+	screens := map[string]string{
+		"down groupé":    ansi.Strip(press(two(), "d").viewContent()),
+		"stop groupé":    ansi.Strip(press(two(), "s").viewContent()),
+		"panneau groupé": ansi.Strip(press(two(), "enter").viewContent()),
+		"pull groupé":    ansi.Strip(press(two(), "p").viewContent()),
+	}
+	m := newTestModel([]compose.Stack{stack("traefik", "", 1, 1, 0)})
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 120, 36, false
+	screens["volet"] = ansi.Strip(m.viewContent())
+	screens["panneau"] = ansi.Strip(press(m, "enter").viewContent())
+	screens["services"] = ansi.Strip(press(m, "right").viewContent())
+
+	m = New(&config.Config{StackDir: "/srv"})
+	m.width, m.view = 120, viewBackup
+	m.stacks = []compose.Stack{{Name: "traefik", Running: 1, Total: 1}}
+	screens["captures vides"] = ansi.Strip(renderBackupView(m, 20))
+	m.backups = []backup.Snapshot{{Date: time.Now(), StackDir: "/srv", Stacks: []string{"traefik"}}}
+	screens["capture"] = ansi.Strip(renderBackupView(m, 20))
+
+	m.view, m.restoreLabel, m.restoreSel = viewRestorePick, "capture", map[string]bool{"x": true}
+	m.restoreEntries = []captureEntry{{name: "x", kind: entryMissing}}
+	screens["relance"] = ansi.Strip(renderRestorePick(m, 20))
+
+	for name, s := range screens {
+		for _, bad := range []string{"1 stacks", "sélectionnées", "1/1 conteneurs"} {
+			if strings.Contains(s, bad) {
+				t.Errorf("%s : « %s »\n%s", name, bad, s)
+			}
+		}
+	}
+	for name, want := range map[string]string{
+		"down groupé": "Down — 1 stack", "stop groupé": "Stop — 1 stack", "pull groupé": "Pull — 1 stack",
+		"panneau groupé": "1 stack sélectionnée", "volet": "1/1 conteneur", "panneau": "1/1 conteneur",
+		"services": "1/1 conteneur", "captures vides": "(1 stack en marche)", "capture": "· 1 stack",
+		"relance": "1/1 sélectionnée",
+	} {
+		if !strings.Contains(screens[name], want) {
+			t.Errorf("%s : « %s » absent\n%s", name, want, screens[name])
+		}
+	}
+
+	// Cache de build d'une seule entrée, dans l'aperçu de builder prune -a.
+	rep := sampleCleanup()
+	for i, it := range rep.Items {
+		if it.Kind == compose.CleanBuildCache {
+			rep.Items[i].Count = 1
+		}
+	}
+	m = newTestModel(nil)
+	m.cleanupRep = &rep
+	if lines := strings.Join(m.prunePreview(compose.PruneBuilderAll).lines, "\n"); !strings.Contains(lines, ": 1 entrée ·") {
+		t.Errorf("builder prune -a : %q, want « 1 entrée »", lines)
+	}
+}
+
 // Le repère de l'aide qui défile accorde « lignes » et écrit « en
 // dessous » sans trait d'union, comme les autres listes.
 func TestScrollMarksWording(t *testing.T) {

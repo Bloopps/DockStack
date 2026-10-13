@@ -230,9 +230,9 @@ func (m Model) handleServiceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.svcCursor = min(m.svcCursor+1, max(len(vis)-1, 0))
 	case "pgup":
-		m.svcCursor = max(m.svcCursor-10, 0)
+		m.svcCursor = max(m.svcCursor-page(m.svcZone()), 0)
 	case "pgdown":
-		m.svcCursor = min(m.svcCursor+10, max(len(vis)-1, 0))
+		m.svcCursor = min(m.svcCursor+page(m.svcZone()), max(len(vis)-1, 0))
 	case "home", "g":
 		m.svcCursor = 0
 	case "end", "G":
@@ -370,18 +370,26 @@ func serviceDetail(sv compose.ServiceStatus, all []compose.ServiceStatus, withDe
 	return out
 }
 
-// previewServices rend le volet en mode services : titre, filtre, zone des
-// services défilant autour du curseur, puis le détail du service courant.
-func previewServices(m Model, s compose.Stack, inner, height int) []string {
-	all := m.stackServices(s)
-	svcs := m.visibleServices(all)
+// svcPane : disposition du volet en mode services (cf. previewServices) :
+// en-tête, détail du service courant, et zone : lignes laissées aux
+// services, qui défilent autour du curseur.
+type svcPane struct {
+	all, svcs    []compose.ServiceStatus
+	head, detail []string
+	room, zone   int
+}
+
+// servicesPane répartit un volet de inner colonnes sur height lignes.
+func (m Model) servicesPane(s compose.Stack, inner, height int) svcPane {
+	p := svcPane{all: m.stackServices(s)}
+	p.svcs = m.visibleServices(p.all)
 	dot, dotStyle := stateStyle(s.State())
 	// « ● immich › services » : le focus est ici, et les lettres visent des
 	// services (la ligne de la stack, à gauche, a perdu le fond du curseur).
 	const crumb = " › services"
 	state := dotStyle.Render(stateWord(s.State()))
 	if s.Total > 0 {
-		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneurs", s.Running, s.Total))
+		state += styleDim.Render(fmt.Sprintf("  %d/%d conteneur%s", s.Running, s.Total, plural(s.Total)))
 	}
 	out := []string{
 		dotStyle.Render(dot) + " " + styleCyan.Bold(true).Render(truncate(s.Name, max(inner-2-lipgloss.Width(crumb), 1))) + styleDim.Render(crumb),
@@ -390,9 +398,9 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	// Le titre compte les services ; la position du curseur est à droite du
 	// pied de page (« service 2/4 »). « Services · 2/3 » se lisait comme un
 	// compteur de conteneurs, à côté d'une stack à 2/3 conteneurs en marche.
-	head := fmt.Sprintf("Services (%d)", len(all))
-	if len(svcs) != len(all) {
-		head = fmt.Sprintf("Services (%d sur %d)", len(svcs), len(all))
+	head := fmt.Sprintf("Services (%d)", len(p.all))
+	if len(p.svcs) != len(p.all) {
+		head = fmt.Sprintf("Services (%d sur %d)", len(p.svcs), len(p.all))
 	}
 	if n := len(m.svcSel); n > 0 {
 		head += fmt.Sprintf(" · %d coché%s", n, plural(n))
@@ -415,13 +423,13 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	default:
 		out = append(out, "")
 	}
-	if len(svcs) == 0 {
-		return append(out, styleDim.Render("(aucun service ne correspond)"))
+	p.head = out
+	if len(p.svcs) == 0 {
+		return p
 	}
 
-	var detail []string
-	if m.svcCursor < len(svcs) {
-		detail = serviceDetail(svcs[m.svcCursor], all, m.svcDeps, inner, m.previewExtraFor(s))
+	if svcs := p.svcs; m.svcCursor < len(svcs) {
+		detail := serviceDetail(svcs[m.svcCursor], p.all, m.svcDeps, inner, m.previewExtraFor(s))
 		// Actions : sur les services cochés ET visibles, sinon sur celui du
 		// curseur — exactement ce que vise targetServices. Compter tous les
 		// cochés annonçait « 3 services cochés » quand le filtre en masquait,
@@ -435,7 +443,7 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 			}
 		}
 		detail = append(detail, "", styleDim.Render(truncate(target, inner)))
-		detail = append(detail, keyGrid([]footerKey{
+		p.detail = append(detail, keyGrid([]footerKey{
 			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
 		}, inner)...)
 	}
@@ -444,8 +452,38 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	// (qui s'ouvre sur un trait). Collé en bas du volet, le détail était à
 	// 10 ou 20 lignes du service qu'il décrit ; placé sous les seuls
 	// services visibles, il bougerait à chaque lettre du filtre.
-	room := height - len(out) - len(detail)
-	zone := min(len(all), max(room, 1))
+	p.room = height - len(p.head) - len(p.detail)
+	p.zone = min(len(p.all), max(p.room, 1))
+	return p
+}
+
+// svcZone : services montrés d'un coup dans le volet tel qu'il est à
+// l'écran (cf. View et listBlock), pour le pas de pgup/pgdown. Un pas fixe
+// de 10 services sautait ceux que le détail ne laissait pas afficher (6
+// visibles en 80x24).
+func (m Model) svcZone() int {
+	s, ok := m.focusedStack()
+	if !ok {
+		return 1
+	}
+	paneW, height := m.width, m.bodyHeight()
+	if m.previewVisible() {
+		paneW = m.previewWidth()
+	}
+	if m.captureBanner() != "" {
+		height--
+	}
+	return m.servicesPane(s, max(paneW-2, 1), max(height, 0)).zone
+}
+
+// previewServices rend le volet en mode services : titre, filtre, zone des
+// services défilant autour du curseur, puis le détail du service courant.
+func previewServices(m Model, s compose.Stack, inner, height int) []string {
+	p := m.servicesPane(s, inner, height)
+	out, svcs, zone := p.head, p.svcs, p.zone
+	if len(svcs) == 0 {
+		return append(out, styleDim.Render("(aucun service ne correspond)"))
+	}
 	start := 0
 	if len(svcs) > zone {
 		start = min(max(m.svcCursor-zone/2, 0), len(svcs)-zone)
@@ -484,8 +522,8 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	for len(out) < top+zone {
 		out = append(out, "")
 	}
-	if room > zone {
+	if p.room > zone {
 		out = append(out, "")
 	}
-	return append(out, detail...)
+	return append(out, p.detail...)
 }

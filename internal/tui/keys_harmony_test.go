@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +239,150 @@ func TestPageKeys(t *testing.T) {
 		if m2, _ := update(m1, up); get(m2) != start {
 			t.Errorf("%s : aller-retour d'une page : %d, want %d", name, get(m2), start)
 		}
+	}
+}
+
+var stackNumRe = regexp.MustCompile(`stack-(\d\d)`)
+
+// pageThrough tape key n fois depuis m. Il renvoie le modèle obtenu et les
+// numéros « stack-NN » jamais affichés entre le plus petit et le plus grand
+// vus à l'écran : chaque page doit reprendre où la précédente s'arrêtait.
+func pageThrough(m Model, key tea.KeyPressMsg, n int) (Model, []int) {
+	seen := map[int]bool{}
+	look := func() {
+		for _, sub := range stackNumRe.FindAllStringSubmatch(ansi.Strip(m.viewContent()), -1) {
+			k, _ := strconv.Atoi(sub[1])
+			seen[k] = true
+		}
+	}
+	look()
+	for range n {
+		m, _ = update(m, key)
+		look()
+	}
+	lo, hi := 100, -1
+	for k := range seen {
+		lo, hi = min(lo, k), max(hi, k)
+	}
+	var missed []int
+	for k := lo; k <= hi; k++ {
+		if !seen[k] {
+			missed = append(missed, k)
+		}
+	}
+	return m, missed
+}
+
+// pgup et pgdown ne sautent aucune ligne, dans aucune liste : une page
+// avance de ce que la fenêtre montre entre ses repères (cf. page). Le pas
+// comptait tout le corps (liste avec filtre ou bandeau de capture), une
+// ligne de trop (confirmation), 10 services fixes, ou des éléments au lieu
+// de lignes d'écran (nettoyage) : des stacks, des volumes à effacer ou des
+// images à supprimer passaient sans jamais être affichés.
+func TestPageSkipsNoLine(t *testing.T) {
+	pgdown, pgup := tea.KeyPressMsg{Code: tea.KeyPgDown}, tea.KeyPressMsg{Code: tea.KeyPgUp}
+	check := func(name string, m Model) {
+		t.Helper()
+		m, missed := pageThrough(m, pgdown, 8)
+		if len(missed) > 0 {
+			t.Errorf("%s : pgdown n'a jamais affiché %v", name, missed)
+		}
+		m, _ = update(m, keyMsg("G"))
+		if _, missed = pageThrough(m, pgup, 8); len(missed) > 0 {
+			t.Errorf("%s : pgup depuis la fin n'a jamais affiché %v", name, missed)
+		}
+	}
+	sizes := [][2]int{{80, 24}, {120, 36}}
+
+	// Liste des stacks, avec ou sans filtre figé et bandeau de capture.
+	for _, sz := range sizes {
+		for _, banner := range []bool{false, true} {
+			for _, filter := range []bool{false, true} {
+				var stacks []compose.Stack
+				for i := range 90 {
+					stacks = append(stacks, stack(fmt.Sprintf("stack-%02d", i), "", 1, 1, 0))
+				}
+				m := newTestModel(stacks)
+				m.width, m.height, m.loading = sz[0], sz[1], false
+				if filter {
+					m.filter.SetValue("stack")
+					m.invalidateRows()
+				}
+				if banner {
+					m.stacks[89].Running = 0
+					m.invalidateRows()
+					m.backups = []backup.Snapshot{{Date: time.Now(), StackDir: "/tmp", Stacks: []string{"stack-89"}}}
+					if m.captureBanner() == "" {
+						t.Fatal("bandeau de capture attendu")
+					}
+				}
+				check(fmt.Sprintf("liste %dx%d bandeau=%v filtre=%v", sz[0], sz[1], banner, filter), m)
+			}
+		}
+	}
+
+	// Dossiers et séparateur avant les stacks jamais déployées : ↓ saute le
+	// séparateur, la page compte des lignes et non des frappes.
+	for _, sz := range sizes {
+		var stacks []compose.Stack
+		for i := range 90 {
+			n := 1
+			if i >= 45 {
+				n = 0
+			}
+			stacks = append(stacks, stack(fmt.Sprintf("stack-%02d", i), fmt.Sprintf("g%d", i/10), n, n, 0))
+		}
+		m := newTestModel(stacks)
+		m.cfg.ShowAll = true
+		m.width, m.height, m.loading = sz[0], sz[1], false
+		m.invalidateRows()
+		check(fmt.Sprintf("liste en dossiers %dx%d", sz[0], sz[1]), m)
+	}
+
+	// Confirmations, simple et destructrice (avertissement : liste plus courte).
+	var names []string
+	for i := range 60 {
+		names = append(names, fmt.Sprintf("stack-%02d", i))
+	}
+	for _, sz := range sizes {
+		m := newTestModel([]compose.Stack{stack("app", "", 1, 1, 0)})
+		m.width, m.height, m.loading = sz[0], sz[1], false
+		next, _ := m.askConfirm("Alignement", "", names, nil)
+		check(fmt.Sprintf("confirmation %dx%d", sz[0], sz[1]), next.(Model))
+		next, _ = m.askConfirmDanger("Nettoyage — 12 Go", "Efface définitivement les données de 60 volumes.", names, nil)
+		check(fmt.Sprintf("confirmation destructrice %dx%d", sz[0], sz[1]), next.(Model))
+	}
+
+	// Mode services : le détail du service visé prend une partie du volet.
+	for _, sz := range sizes {
+		st := stack("big", "", 40, 40, 0)
+		for i := range 40 {
+			st.Services = append(st.Services, compose.ServiceStatus{Name: fmt.Sprintf("stack-%02d", i), Running: 1, Total: 1})
+		}
+		m := newTestModel([]compose.Stack{st})
+		m.width, m.height, m.loading = sz[0], sz[1], false
+		check(fmt.Sprintf("services %dx%d", sz[0], sz[1]), press(m, "right"))
+	}
+
+	// Nettoyage, dispositions étroite et large : deux catégories dépliées,
+	// titres de section et notes intercalés, titre de section épinglé.
+	rep := sampleCleanup()
+	rep.Items = rep.Items[:1]
+	for i := range 80 {
+		kind := compose.CleanDanglingImage
+		if i >= 40 {
+			kind = compose.CleanUnusedImage
+		}
+		rep.Items = append(rep.Items, compose.CleanupItem{Kind: kind, ID: fmt.Sprintf("sha256:%02d", i), Name: fmt.Sprintf("stack-%02d", i), Size: 1 << 30, Count: 1})
+	}
+	for _, sz := range append(sizes, [2]int{180, 48}) {
+		m := newTestModel([]compose.Stack{stack("web", "", 1, 1, 0)})
+		m.client = &fakeClient{cleanup: rep}
+		m.width, m.height, m.loading = sz[0], sz[1], false
+		m = drive(t, m, keyMsg("n"), 0)
+		m.cleanupOpen[compose.CleanDanglingImage] = true
+		m.cleanupOpen[compose.CleanUnusedImage] = true
+		check(fmt.Sprintf("nettoyage %dx%d", sz[0], sz[1]), m)
 	}
 }
 

@@ -41,7 +41,7 @@ func renderRestorePick(m Model, height int) string {
 	header := []string{
 		styleBold.Render("  🔄 Relancer — " + m.restoreLabel),
 		styleDim.Render("  ␣ coche ou décoche, puis ↩ pour relancer."),
-		ansi.Truncate("  "+styleCyan.Render(fmt.Sprintf("%d/%d sélectionnées", selected, len(m.restoreEntries)))+
+		ansi.Truncate("  "+styleCyan.Render(fmt.Sprintf("%d/%d sélectionnée%s", selected, len(m.restoreEntries), plural(selected)))+
 			styleDim.Render("  ·  ")+strings.Join(parts, styleDim.Render(" · ")), max(m.width, 1), ""),
 		"",
 	}

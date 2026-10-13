@@ -302,14 +302,28 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // pageCursor déplace le curseur de la liste d'une page (pgup, pgdown), pas
 // à pas : moveCursor saute les lignes que ↑↓ sautent, et s'arrête aux bords.
-// Une ligne de moins pour les titres des colonnes.
+// La fenêtre est centrée sur le curseur (cf. renderStackList) : elle avance
+// d'autant de lignes que lui. Le pas compte donc des lignes et non des
+// frappes de ↓ : franchir un séparateur faisait avancer d'une ligne de
+// plus que la page, qui passait sans être affichée.
 func (m *Model) pageCursor(key string) {
 	d := 1
 	if key == "pgup" {
 		d = -1
 	}
-	for range page(m.bodyHeight() - 1) {
+	from, step := m.cursor, page(m.listRowsH())
+	for {
+		prev := m.cursor
 		m.moveCursor(d)
+		switch dist := (m.cursor - from) * d; {
+		case m.cursor == prev, dist == step:
+			return
+		case dist > step:
+			if prev != from {
+				m.cursor = prev // une ligne de trop : on s'arrête avant
+			}
+			return
+		}
 	}
 }
 
@@ -608,7 +622,7 @@ func (m Model) startGroupAction(action string, stacks []compose.Stack) (tea.Mode
 	for _, s := range stacks {
 		delete(m.selected, s.Name)
 	}
-	title := fmt.Sprintf("%s — %d stacks", actionTitle[action], len(stacks))
+	title := fmt.Sprintf("%s — %d stack%s", actionTitle[action], len(stacks), plural(len(stacks)))
 	ctx, cancel := context.WithCancel(context.Background())
 
 	switch action {

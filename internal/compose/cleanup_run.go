@@ -143,7 +143,7 @@ func (c *Client) removeCleanupItem(ctx context.Context, it CleanupItem) (detail 
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%d entrées, %s récupérés", len(res.Report.CachesDeleted), humanSize(int64(res.Report.SpaceReclaimed))), nil
+		return fmt.Sprintf("%d entrée%s, %s récupérés", len(res.Report.CachesDeleted), plural(len(res.Report.CachesDeleted)), humanSize(int64(res.Report.SpaceReclaimed))), nil
 	case CleanDanglingImage, CleanUnusedImage, CleanStackImage:
 		// Une image étiquetée plusieurs fois ne se supprime par identifiant
 		// qu'en forçant : on retire chaque étiquette, la dernière supprime

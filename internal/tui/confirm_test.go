@@ -89,6 +89,41 @@ func TestConfirmListScrolls(t *testing.T) {
 	}
 }
 
+// Agrandir le terminal abaisse la borne du défilement : le premier ↑ qui
+// suit remonte la liste d'une ligne. Sans recalcul, il ne faisait que
+// rattraper la nouvelle borne et l'écran restait figé.
+func TestConfirmScrollClampedOnResize(t *testing.T) {
+	m := longConfirm(t)
+	m, _ = update(m, keyMsg("G"))
+	m, _ = update(m, tea.WindowSizeMsg{Width: 80, Height: 36})
+	if end := m.confirmMaxScroll(); m.confirmScroll != end {
+		t.Fatalf("agrandi : défilement %d, want la nouvelle borne %d", m.confirmScroll, end)
+	}
+	before := ansi.Strip(m.viewContent())
+	m, _ = update(m, tea.KeyPressMsg{Code: tea.KeyUp})
+	if ansi.Strip(m.viewContent()) == before {
+		t.Errorf("↑ après agrandissement : écran inchangé (défilement %d)", m.confirmScroll)
+	}
+}
+
+// Une confirmation s'ouvre avec son pied de page (↑↓ lire, ses touches). Le
+// refus d'une frappe précédente (« … : esc pour l'effacer ») y restait
+// jusqu'à 4 s, alors qu'esc y annule et que le filtre était déjà effacé.
+func TestConfirmClearsStaleRefusal(t *testing.T) {
+	m, _ := selectionModel() // jellyfin et sonarr cochées
+	m = typeKeys(m, "/", "t", "r", "a", "e", "f", "enter", "d")
+	if !strings.Contains(m.status, "esc pour l'effacer") {
+		t.Fatalf("refus attendu, statut %q", m.status)
+	}
+	m = typeKeys(m, "esc", "d")
+	if m.view != viewConfirm {
+		t.Fatalf("vue %v, want la confirmation", m.view)
+	}
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, "annuler") || strings.Contains(f, "effacer") {
+		t.Errorf("pied de la confirmation : %q, want ses touches", f)
+	}
+}
+
 // Une liste qui tient dans le cadre ne défile pas et le pied de page ne
 // propose pas de la lire.
 func TestConfirmShortListNoScroll(t *testing.T) {
@@ -108,7 +143,9 @@ func TestConfirmShortListNoScroll(t *testing.T) {
 // Une stack unique : sous le séparateur, la ligne d'effet (ce que fait
 // l'action) remplace la répétition du nom, déjà dans le titre. Down dit que
 // les volumes sont conservés, restart qu'il ne relit pas le compose ; en mode
-// services, down garde le réseau.
+// services, down ne promet pas de garder le réseau : compose le supprime dès
+// qu'aucun conteneur en marche n'y est plus relié (tous les services visés,
+// ou les autres arrêtés).
 func TestConfirmShowsEffect(t *testing.T) {
 	m := newTestModel([]compose.Stack{stack("immich", "", 1, 1, 0)})
 	m.client = &fakeClient{}
@@ -131,8 +168,9 @@ func TestConfirmShowsEffect(t *testing.T) {
 	if !strings.Contains(m.confirmEffect, "sans relire le compose") || !strings.Contains(m.confirmEffect, "recreate") {
 		t.Errorf("Restart : effet %q, want le rappel de recreate", m.confirmEffect)
 	}
-	if !strings.Contains(actionEffect("down", true), "réseau, volumes et images conservés") {
-		t.Errorf("Down de services : effet %q", actionEffect("down", true))
+	if e := actionEffect("down", true); !strings.Contains(e, "volumes et images conservés") ||
+		!strings.Contains(e, "réseau supprimé s'il ne sert plus") || strings.Contains(e, "réseau, volumes") {
+		t.Errorf("Down de services : effet %q", e)
 	}
 
 	// Mode services : la confirmation liste les services et porte l'effet

@@ -469,6 +469,28 @@ func (m Model) visibleStacks() []compose.Stack {
 
 // ---- rendering ----
 
+// listRowsH : hauteur de la fenêtre des lignes de la liste (repères « ··· »
+// compris), une fois le corps partagé comme le font View (bandeau de
+// capture) et renderStackList (barre du filtre, titres des colonnes). Sert
+// au pas de pgup/pgdown : compté sur tout le corps, il sautait une stack par
+// page dès qu'un filtre ou le bandeau prenait une ligne.
+func (m Model) listRowsH() int {
+	h, w := m.bodyHeight(), m.width
+	if m.captureBanner() != "" {
+		h--
+	}
+	if m.previewVisible() {
+		w -= m.previewWidth()
+	}
+	if m.filterBar(w) != "" {
+		h--
+	}
+	if m.listColumnHeader(w) != "" {
+		h--
+	}
+	return max(h, 0)
+}
+
 func renderStackList(m Model, height, width int) string {
 	filterBar := m.filterBar(width)
 	if filterBar != "" {
