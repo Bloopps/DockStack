@@ -1,10 +1,15 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/Bloopps/dockstack/internal/compose"
+	"github.com/Bloopps/dockstack/internal/config"
 	"github.com/Bloopps/dockstack/internal/fakedocker"
 )
 
@@ -117,4 +122,45 @@ func TestDaemonMuteThenR(t *testing.T) {
 	d.Revive()
 	h.p.Send(keyShiftR)
 	h.waitFor("liste chargée après R", loadedOne, 15*time.Second)
+}
+
+// Démon devenu muet en cours de session (connexion acceptée, aucune
+// réponse) : la relecture expire. L'écran le dit (« Démon Docker
+// injoignable », conseil et essai automatique) et l'en-tête ne donne plus
+// les compteurs Docker pour actuels. Avant : « context deadline exceeded »
+// brut, et « Conteneurs 21/27 » comme une mesure du moment.
+func TestHungDaemonShownAsDown(t *testing.T) {
+	d, root := fakeDaemonStack(t)
+	client, err := compose.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stacks, err := client.ListStacks(context.Background(), root)
+	if err != nil || len(stacks) != 1 {
+		t.Fatalf("liste initiale : %v (%d stacks)", err, len(stacks))
+	}
+	d.Hang()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_, listErr := client.ListStacks(ctx, root)
+	d.Revive()
+	if listErr == nil {
+		t.Fatal("liste lue malgré le démon muet")
+	}
+
+	m := New(&config.Config{StackDir: root})
+	m.client, m.loading = client, false
+	m.width, m.height = 120, 36
+	m.stacks = stacks
+	m.invalidateRows()
+	m.lastRefresh = time.Now().Add(-40 * time.Second)
+	m.usage = &compose.DockerUsage{Running: 21, Containers: 27}
+	m.usageAt = time.Now().Add(-40 * time.Second)
+	m, _ = update(m, stacksLoadedMsg{err: listErr, dir: root, at: time.Now()})
+	if sc := m.headerCounts(); !sc.DockerDown {
+		t.Errorf("en-tête : %q, want les conteneurs marqués inconnus", ansi.Strip(dockerItems(m.usage, sc, true)[1]))
+	}
+	if out := ansi.Strip(m.viewContent()); !strings.Contains(out, "Démon Docker injoignable") {
+		t.Errorf("écran d'erreur générique (%v) :\n%s", listErr, out)
+	}
 }

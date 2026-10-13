@@ -117,6 +117,11 @@ type Model struct {
 	foldedGroups map[string]bool
 	rowsCache    *rowsCacheBox
 	refreshing   bool
+	// refreshAt : départ de la dernière relecture annoncée (refreshing).
+	// Seul un chargement parti après lui y met fin : une lecture plus
+	// ancienne, arrivée la première, remettait refreshing à faux pendant
+	// que la suivante courait encore, et c capturait l'état d'avant.
+	refreshAt time.Time
 
 	// Volet de détail à droite de la liste, qui suit le curseur : toujours
 	// affiché quand la largeur le permet. previewCache évite de relire le
@@ -155,7 +160,9 @@ type Model struct {
 	// listDirty : un événement Docker ou le tick périodique est arrivé
 	// pendant une vue où la liste ne se recharge pas (cf. stackTickMsg) ; elle
 	// sera rechargée au retour, au lieu de rester fausse jusqu'au tick suivant.
-	// listDirtyAt date le dernier : un chargement parti après lui suffit.
+	// listDirtyAt date le dernier changement noté (l'événement lui-même, pas
+	// le moment où l'anti-rebond le note) : un chargement parti après lui
+	// suffit.
 	listDirty   bool
 	listDirtyAt time.Time
 
@@ -167,6 +174,14 @@ type Model struct {
 	eventsCh       <-chan compose.DockerEvent
 	refreshPending bool
 	refreshGen     int
+	// lastEventAt : réception du dernier événement pertinent. L'anti-rebond
+	// date de lui ce qu'il reste à rattraper (cf. refreshOrMark) : un
+	// chargement parti après l'événement l'a vu, même s'il a démarré avant
+	// la fin de l'anti-rebond.
+	lastEventAt time.Time
+	// eventsSince : ouverture du flux d'événements en cours. Un flux refermé
+	// aussitôt ouvert (abonnement refusé) ne fait pas relire la liste.
+	eventsSince time.Time
 
 	// Action menu cursor (shared between viewAction / viewBackup)
 	actionCursor int
@@ -319,6 +334,11 @@ type Model struct {
 	// tapé depuis la demande, sinon le ↩ ou la lettre destinés au filtre ou
 	// à la liste tombaient dans la confirmation (cf. handlePlanUp).
 	keySeq int
+	// planLabel : attente de la prévision d'up en cours (vide sinon). Un
+	// autre statut (R, refus) la remplace le temps de s'afficher ; à son
+	// effacement, l'attente reprend sa place. Sinon rien ne disait plus que
+	// la prévision courait, et sa confirmation surgissait sans prévenir.
+	planLabel string
 
 	// Confirmation (destructive actions)
 	confirmLabel   string
@@ -498,11 +518,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.stacksAt = msg.at
+		// La relecture annoncée (refreshing, R) ne se termine qu'avec un
+		// chargement parti après elle (cf. refreshAt).
+		fresh := !msg.at.Before(m.refreshAt)
 		if msg.err != nil {
 			m.err = msg.err
 			m.loading = false
-			m.refreshing = false
-			m.manualR = false
+			if fresh {
+				m.refreshing = false
+				m.manualR = false
+			}
 			return m, nil
 		}
 		// Restaure la position du curseur par identité de ligne (stack ou
@@ -518,7 +543,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// affiché à vie alors que les refresh suivants aboutissent.
 		m.err = nil
 		m.loading = false
-		m.refreshing = false
+		if fresh {
+			m.refreshing = false
+		}
 		m.lastRefresh = time.Now()
 		if m.listDirty && !msg.at.Before(m.listDirtyAt) {
 			m.listDirty = false // chargement parti après le dernier événement
@@ -533,7 +560,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.clearStatusIn(4 * time.Second)
 		}
 		// Un refresh manuel (R) confirme sa fin ; l'auto-refresh reste discret.
-		if m.manualR {
+		if m.manualR && fresh {
 			m.manualR = false
 			m.setStatus("Liste actualisée", false)
 			return m, m.clearStatusIn(2 * time.Second)
@@ -684,6 +711,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case clearStatusMsg:
 		if msg.seq == m.statusSeq {
 			m.status, m.statusKind = "", statusOK
+			// Ce statut avait remplacé l'attente d'une prévision d'up encore
+			// en cours : elle reprend sa place, spinner relancé (sa chaîne de
+			// ticks s'est arrêtée avec l'attente).
+			if m.planLabel != "" {
+				m.setBusy(m.planLabel)
+				return m, m.spinner.Tick
+			}
 		}
 
 	case quitDisarmMsg:
@@ -697,13 +731,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// confirmation est ouvert re-trie les stacks et peut déplacer le
 		// curseur, donc faire viser une autre stack au moment d'exécuter
 		// l'action. Ailleurs, le rechargement est noté et fait au retour.
-		if cmd := m.refreshOrMark(); cmd != nil {
+		if cmd := m.refreshOrMark(time.Now()); cmd != nil {
 			return m, tea.Batch(cmd, tickStacks())
 		}
 		return m, tickStacks()
 
 	case dockerEventsStartedMsg:
 		m.eventsCh = msg.ch
+		m.eventsSince = time.Now()
 		return m, readDockerEventCmd(msg.ch)
 
 	case dockerEventMsg:
@@ -715,6 +750,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if compose.IsRelevantDockerEvent(ev) {
 			m.refreshGen++
+			m.lastEventAt = time.Now()
 			if !m.refreshPending {
 				m.refreshPending = true
 				cmds = append(cmds, debounceRefresh(m.refreshGen))
@@ -737,9 +773,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// fait apparaître la panne, au lieu d'attendre le tick (jusqu'à 60 s).
 		// Seulement sans erreur affichée : pendant la panne, le flux se
 		// referme à chaque réabonnement (toutes les 2 s), et chaque fermeture
-		// relancerait la liste.
-		if m.err == nil {
-			if cmd := m.refreshOrMark(); cmd != nil {
+		// relancerait la liste. Ni pour un flux refermé aussitôt ouvert :
+		// abonnement refusé (proxy du socket, règle d'autorisation) alors que
+		// la liste se lit, il se referme aussi à chaque réabonnement, et la
+		// liste entière était relue toutes les 2 s, sans fin. Le tick reste
+		// le filet.
+		refused := !m.eventsSince.IsZero() && time.Since(m.eventsSince) < reconnectDelay
+		if m.err == nil && !refused {
+			if cmd := m.refreshOrMark(time.Now()); cmd != nil {
 				return m, tea.Batch(resub, cmd)
 			}
 		}
@@ -759,7 +800,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshPending = false
 		// Appel avant le return : refreshOrMark modifie m (Go ne fixe pas
 		// l'ordre entre la lecture de m et l'appel dans un même return).
-		cmd := m.refreshOrMark()
+		cmd := m.refreshOrMark(m.lastEventAt)
 		return m, cmd
 
 	case logDoneMsg:
@@ -877,6 +918,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// sauf si c'est cette frappe même qui l'a demandée.
 		if nm.planSeq == seq {
 			nm.planSeq++
+			nm.planLabel = ""
 			if nm.statusKind == statusBusy {
 				nm.setStatus("", false)
 			}
@@ -1049,7 +1091,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.cfg.StackDir != "" {
 			compose.InvalidateComposeCache()
-			m.refreshing = true
+			m.refreshing, m.refreshAt = true, time.Now()
 			m.listDirty = false
 			m.manualR = true
 			return m, m.loadStacksCmd()
@@ -1311,16 +1353,25 @@ func (m Model) retryNote() string {
 // contact (compose.PingTimeout) puis la lecture (loadStacksTimeout), et un
 // « Chargement... » figé ressemblait à un blocage.
 func (m Model) loadingView() string {
-	step, limit := "Connexion au démon Docker…", compose.PingTimeout()
-	if m.client != nil {
-		step, limit = "Lecture des stacks de "+sanitizeText(m.cfg.StackDir)+"…", loadStacksTimeout
-	}
 	elapsed := time.Duration(0)
 	if !m.loadingSince.IsZero() {
 		elapsed = time.Since(m.loadingSince)
 	}
 	w := max(m.width-4, 10)
-	line := "\n  " + m.spinner.View() + styleDim.Render(truncate(fmt.Sprintf("%s %d s", step, int(elapsed/time.Second)), w-2))
+	secs := fmt.Sprintf(" %d s", int(elapsed/time.Second))
+	step, limit := "Connexion au démon Docker…", compose.PingTimeout()
+	if m.client != nil {
+		// Un chemin long cède la place (début coupé, comme dans l'en-tête) :
+		// la coupe de fin de ligne emportait la durée, seul signe, avec le
+		// spinner, que la lecture avance.
+		const lead = "Lecture des stacks de "
+		dir := sanitizeText(m.cfg.StackDir)
+		if room := w - 2 - lipgloss.Width(lead+"…"+secs); lipgloss.Width(dir) > room && room >= 8 {
+			dir = ansi.TruncateLeft(dir, lipgloss.Width(dir)-room+1, "…")
+		}
+		step, limit = lead+dir+"…", loadStacksTimeout
+	}
+	line := "\n  " + m.spinner.View() + styleDim.Render(truncate(step+secs, w-2))
 	if elapsed >= slowLoading {
 		line += "\n    " + styleYellow.Render(truncate(fmt.Sprintf("le démon répond lentement (abandon à %d s)", int(limit/time.Second)), w-2))
 	}
@@ -1436,15 +1487,23 @@ func (m Model) reloadableView() bool {
 // refreshOrMark : recharge la liste (événement Docker, tick) si la vue le
 // permet, sinon note qu'elle sera à recharger au retour (listDirty).
 // Pendant une capture (spinning), rien : sa fin recharge la liste.
-func (m *Model) refreshOrMark() tea.Cmd {
+// since date le changement à rattraper (l'événement, le tick) : un
+// chargement parti après lui suffit. La date notée ne recule jamais (un
+// changement plus ancien est couvert par le plus récent) et n'avance pas sur
+// un simple re-marquage (catchUpList entre deux vues non rechargeables) :
+// la dater du moment où on la note faisait relire la liste en double au
+// retour, le chargement de fin d'opération ayant déjà tout vu.
+func (m *Model) refreshOrMark(since time.Time) tea.Cmd {
 	if m.client == nil || m.cfg.StackDir == "" || m.spinning {
 		return nil
 	}
 	if !m.reloadableView() {
-		m.listDirty, m.listDirtyAt = true, time.Now()
+		if !m.listDirty || since.After(m.listDirtyAt) {
+			m.listDirty, m.listDirtyAt = true, since
+		}
 		return nil
 	}
-	m.refreshing = true
+	m.refreshing, m.refreshAt = true, time.Now()
 	m.listDirty = false
 	return m.loadStacksCmd()
 }
@@ -1456,7 +1515,7 @@ func (m *Model) catchUpList() tea.Cmd {
 	if !m.listDirty || m.loading {
 		return nil
 	}
-	return m.refreshOrMark()
+	return m.refreshOrMark(m.listDirtyAt)
 }
 
 // logsHeight : lignes du corps de la vue logs (titre, séparateur et pied ôtés).

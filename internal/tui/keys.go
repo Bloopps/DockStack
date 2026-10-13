@@ -285,7 +285,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.actionCursor = 0
 		// La liste est relue à l'ouverture : c enregistre m.stacks, qui
 		// pouvait dater d'avant une coupure du flux d'événements.
-		reload := m.refreshOrMark()
+		reload := m.refreshOrMark(time.Now())
 		return m, tea.Batch(loadBackups(m.cfg.ConfigDir()), reload)
 	case "n":
 		return m.openCleanup()
@@ -1091,7 +1091,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		entry := m.dirEntries[m.dirCursor]
 		switch entry {
 		case dirChooseEntry:
-			if m.dirPath != m.cfg.StackDir {
+			// dirPath est absolu et propre (cf. loadDirFocus) : comparé tel
+			// quel à un stack_dir saisi « /srv/stacks/ », le même dossier
+			// passait pour un autre, et la sélection était perdue.
+			if m.dirPath != cleanDir(m.cfg.StackDir) {
 				// Les stacks affichées et la sélection (par nom relatif)
 				// désignaient l'ancien dossier : un nom identique dans le
 				// nouveau aurait hérité de la coche.
@@ -1100,6 +1103,10 @@ func (m Model) handleDirKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.lastFail = nil // même raison : un échec par nom relatif
 				m.svcFocus = false
 				m.cursor = 0
+				// L'heure de la dernière liste datait l'ancien dossier :
+				// l'écran d'erreur (« dernière liste valide ») et l'en-tête
+				// (« maj il y a … ») la donnaient pour le nouveau, jamais lu.
+				m.lastRefresh = time.Time{}
 				m.invalidateRows()
 			}
 			m.cfg.StackDir = m.dirPath
@@ -1146,6 +1153,7 @@ func loadDirCmd(path string) tea.Cmd { return loadDirFocus(path, "") }
 // loadDirFocus liste path et pose le curseur sur l'entrée focus si elle
 // existe (le dossier d'où l'on remonte).
 func loadDirFocus(path, focus string) tea.Cmd {
+	path = cleanDir(path)
 	return func() tea.Msg {
 		entries := []string{dirChooseEntry}
 		if path != "/" {
@@ -1157,6 +1165,17 @@ func loadDirFocus(path, focus string) tea.Cmd {
 		entries = append(entries, dirs...)
 		return dirLoadedMsg{path: path, entries: entries, err: err, focus: focus}
 	}
+}
+
+// cleanDir : chemin absolu, sans barre finale. Le parent (← et ../) se
+// calcule par filepath.Dir : depuis un stack_dir saisi « /srv/stacks/ », il
+// rendait le même dossier, et depuis « ./stacks » on restait bloqué sur
+// « . », son propre parent.
+func cleanDir(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return filepath.Clean(path)
 }
 
 // pickerStart : point de départ du sélecteur sans dossier configuré. Le

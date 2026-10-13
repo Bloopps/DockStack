@@ -189,7 +189,8 @@ func (m Model) confirmUpWithPlan(label string, names []string, stacks []compose.
 	client, from, keys := m.client, m.view, m.keySeq
 	m.planSeq++
 	seq := m.planSeq
-	m.setBusy(label + " : " + planStatus)
+	m.planLabel = label + " : " + planStatus
+	m.setBusy(m.planLabel)
 	return m, tea.Batch(m.spinner.Tick, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -218,6 +219,7 @@ func (m Model) handlePlanUp(msg planUpMsg) (tea.Model, tea.Cmd) {
 	if msg.seq != m.planSeq {
 		return m, nil
 	}
+	m.planLabel = ""
 	// Seulement l'attente : un statut posé depuis (R, refus…) reste affiché.
 	if m.statusKind == statusBusy {
 		m.setStatus("", false)

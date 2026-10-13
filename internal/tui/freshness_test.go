@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -76,10 +77,13 @@ func TestStaleClearStatusIgnored(t *testing.T) {
 		t.Fatalf("statut %q (%v), want l'attente de la prévision", m.status, m.statusKind)
 	}
 	// La prévision arme le spinner, qui tourne tant que l'attente dure.
-	var tick tea.Msg
+	var tick, plan tea.Msg
 	for _, msg := range runQuick(cmd) {
-		if tm, ok := msg.(spinner.TickMsg); ok {
-			tick = tm
+		switch msg.(type) {
+		case spinner.TickMsg:
+			tick = msg
+		case planUpMsg:
+			plan = msg
 		}
 	}
 	if tick == nil {
@@ -93,9 +97,49 @@ func TestStaleClearStatusIgnored(t *testing.T) {
 	if m.status == "" {
 		t.Fatal("l'ancien minuteur a effacé l'attente en cours")
 	}
+	// Tant que la prévision court, l'attente revient même après un
+	// effacement à son numéro (cf. TestPlanBusyStatusRestored) ; c'est la
+	// réponse de la prévision qui l'efface.
+	m, _ = update(m, clearStatusMsg{seq: m.statusSeq})
+	if !strings.Contains(m.status, planStatus) {
+		t.Fatalf("statut %q, want l'attente tant que la prévision court", m.status)
+	}
+	if m, _ = update(m, plan); m.statusKind == statusBusy {
+		t.Errorf("attente %q restée après la réponse de la prévision", m.status)
+	}
+}
+
+// Un autre statut (R, un refus) remplace un moment l'attente d'une
+// prévision d'up : à son effacement, l'attente reprend sa place, spinner
+// relancé. Sinon rien ne disait plus que la prévision courait, et sa
+// confirmation (ou l'up) survenait sans signe avant-coureur. Une fois la
+// prévision revenue, l'attente n'est plus rétablie.
+func TestPlanBusyStatusRestored(t *testing.T) {
+	fake := &fakeClient{
+		stacks: []compose.Stack{stack("web", "", 1, 1, 0)},
+		plan:   []compose.Recreation{{Service: "app", Reason: "image modifiée"}},
+	}
+	m := newTestModel(fake.stacks)
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 40
+	m.lastRefresh = time.Now()
+
+	m, cmd := update(m, keyMsg("u"))
+	plan := planMsgOf(t, cmd)
+	m, cmd = update(m, keyShiftR)
+	m, _ = update(m, loadOf(t, cmd))
+	if !strings.Contains(m.status, "Liste actualisée") {
+		t.Fatalf("statut %q, want la fin de R", m.status)
+	}
+	m, cmd = update(m, clearStatusMsg{seq: m.statusSeq})
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, planStatus) || cmd == nil {
+		t.Errorf("prévision en cours : pied %q, spinner relancé %v", f, cmd != nil)
+	}
+
+	m, _ = update(m, plan)
 	m, _ = update(m, clearStatusMsg{seq: m.statusSeq})
 	if m.status != "" {
-		t.Errorf("statut %q resté après son propre minuteur", m.status)
+		t.Errorf("prévision revenue : statut %q, want effacé", m.status)
 	}
 }
 
@@ -212,6 +256,58 @@ func TestCaptureUsesFreshList(t *testing.T) {
 	}
 }
 
+// Deux relectures en vol (ouverture des captures, puis événement) : la plus
+// ancienne, arrivée la première, ne met plus fin à l'actualisation. c
+// capturait alors l'état d'avant l'événement, et l'écrivait dans
+// active_stacks, que lisent les scripts.
+func TestCaptureWaitsForLatestReload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fake := &fakeClient{stacks: []compose.Stack{stack("web", "", 1, 1, 0)}}
+	m := backupModel(fake, fake.stacks)
+	m.lastRefresh = time.Now()
+
+	m, cmd := update(m, keyMsg("b"))
+	before := loadOf(t, cmd)                                 // web encore en marche
+	time.Sleep(time.Millisecond)                             // les deux relectures partent à des instants distincts
+	fake.stacks = []compose.Stack{stack("web", "", 0, 1, 0)} // web s'arrête
+	m, cmd = update(m, debounceRefreshMsg{gen: m.refreshGen})
+	after := loadOf(t, cmd)
+	m, _ = update(m, before)
+	if m, _ = update(m, keyMsg("c")); m.spinning {
+		t.Fatal("c accepté pendant la relecture qui suit l'événement : capture de l'état d'avant")
+	}
+	m, _ = update(m, after)
+	if m, _ = update(m, keyMsg("c")); !m.spinning {
+		t.Errorf("c après la dernière relecture : capture non lancée (statut %q)", m.status)
+	}
+}
+
+// Un événement reçu juste avant la fin d'une opération est vu par le
+// chargement de fin, parti après lui : le retour à la liste ne la relit pas
+// une seconde fois. L'anti-rebond, qui note l'événement 300 ms plus tard, le
+// datait du moment où il le notait, après le départ de ce chargement.
+func TestNoDoubleReloadAfterOperation(t *testing.T) {
+	fake := &fakeClient{stacks: []compose.Stack{stack("web", "", 1, 1, 0)}}
+	m := newTestModel([]compose.Stack{stack("web", "", 0, 1, 0)})
+	m.client, m.loading = fake, false
+	m.width, m.height = 120, 40
+	m.lastRefresh = time.Now()
+	m.view, m.progress, m.progressSeq = viewProgress, newProgressState(), 1
+
+	m, _ = update(m, dockerEventMsg{Type: "container", Action: "start"})
+	m, cmd := update(m, progressAllDoneMsg{seq: 1})
+	end := loadOf(t, cmd)        // chargement de fin, parti après l'événement
+	time.Sleep(time.Millisecond) // l'anti-rebond note l'événement après ce départ
+	m, _ = update(m, debounceRefreshMsg{gen: m.refreshGen})
+	m, _ = update(m, end)
+	if m.listDirty {
+		t.Error("chargement de fin parti après l'événement : listDirty resté")
+	}
+	if _, cmd = update(m, keyMsg("enter")); hasLoad(cmd) {
+		t.Error("retour à la liste : seconde relecture complète")
+	}
+}
+
 // Fermeture du flux d'événements (démon tombé) : la liste est relue tout de
 // suite, sauf si l'erreur est déjà affichée (le flux se referme alors toutes
 // les 2 s, et relire à chaque fois ferait une boucle).
@@ -224,6 +320,46 @@ func TestEventsClosedReloadsOnce(t *testing.T) {
 	m.err = errDaemonDown
 	if _, cmd := update(m, dockerEventsClosedMsg{}); hasLoad(cmd) {
 		t.Error("flux fermé pendant la panne : pas de relecture")
+	}
+}
+
+// eventsRefusedClient : abonnement aux événements refusé (proxy du socket,
+// règle d'autorisation) alors que la liste se lit : le flux se referme
+// aussitôt ouvert.
+type eventsRefusedClient struct{ *fakeClient }
+
+func (eventsRefusedClient) SubscribeEvents(context.Context) <-chan compose.DockerEvent {
+	ch := make(chan compose.DockerEvent)
+	close(ch)
+	return ch
+}
+
+// Flux d'événements refusé, liste lisible : le flux se referme à chaque
+// réabonnement (toutes les 2 s). Seule la première fermeture relit la
+// liste ; avant, chaque fermeture la relisait, sans fin. Un flux qui avait
+// vécu (démon tombé) la relit toujours.
+func TestEventsRefusedNoReloadLoop(t *testing.T) {
+	fake := &fakeClient{stacks: []compose.Stack{stack("web", "", 1, 1, 0)}}
+	m := newTestModel(fake.stacks)
+	m.client, m.loading = eventsRefusedClient{fake}, false
+	m.lastRefresh = time.Now()
+
+	var cmd tea.Cmd
+	next, loads := tea.Msg(dockerEventsClosedMsg{}), 0
+	for range 10 {
+		if m, cmd = update(m, next); hasLoad(cmd) {
+			loads++
+		}
+		m, cmd = update(m, resubscribeEventsMsg{})
+		m, cmd = update(m, runQuick(cmd)[0]) // flux ouvert…
+		next = runQuick(cmd)[0]              // … et refermé aussitôt
+	}
+	if loads != 1 {
+		t.Errorf("%d relectures pour 10 fermetures du flux refusé, want 1", loads)
+	}
+	m.eventsSince = time.Now().Add(-time.Minute)
+	if _, cmd = update(m, dockerEventsClosedMsg{}); !hasLoad(cmd) {
+		t.Error("flux qui avait vécu refermé : relecture attendue")
 	}
 }
 
@@ -311,6 +447,37 @@ func TestErrorScreenRetryNote(t *testing.T) {
 	}
 }
 
+// Changement de dossier : aucune liste du nouveau n'a été lue. Ni l'écran
+// d'erreur (« dernière liste valide ») ni l'en-tête (« maj il y a … ») ne
+// datent plus l'ancien dossier.
+func TestDirChangeForgetsLastRefresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "autre"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := New(&config.Config{StackDir: "/srv"})
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 120, 36, false
+	m.stacks = []compose.Stack{stack("web", "", 1, 1, 0)}
+	m.invalidateRows()
+	m.lastRefresh = time.Now().Add(-10 * time.Minute)
+	m.view = viewDirPicker
+	m, _ = update(m, loadDirCmd(filepath.Join(root, "autre"))())
+	m, _ = update(m, keyMsg("enter"))
+	if m.cfg.StackDir != filepath.Join(root, "autre") {
+		t.Fatalf("dossier %q", m.cfg.StackDir)
+	}
+	m, _ = update(m, stacksLoadedMsg{err: errors.New("open " + m.cfg.StackDir + ": permission denied"), dir: m.cfg.StackDir, at: time.Now()})
+	if out := ansi.Strip(m.viewContent()); strings.Contains(out, "dernière liste valide") {
+		i := strings.Index(out, "dernière liste")
+		t.Errorf("nouveau dossier jamais lu, l'écran date l'ancien : %q", out[i:min(i+40, len(out))])
+	}
+	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 120)); strings.Contains(line, "maj il y a") {
+		t.Errorf("en-tête : %q", strings.Split(line, "\n")[0])
+	}
+}
+
 // Démarrage : l'étape en cours, sa durée et un spinner qui tourne, au lieu
 // d'un « Chargement... » figé ; le pied ne propose que de quitter.
 func TestLoadingScreenAnimated(t *testing.T) {
@@ -340,6 +507,18 @@ func TestLoadingScreenAnimated(t *testing.T) {
 	m.loading = false
 	if _, cmd := update(m, m.spinner.Tick()); cmd != nil {
 		t.Error("spinner encore animé une fois la liste chargée")
+	}
+}
+
+// Chemin de stacks long en 80 colonnes : il cède la place (début coupé),
+// et la durée écoulée reste affichée. La coupe de fin de ligne l'emportait.
+func TestLoadingScreenLongPathKeepsElapsed(t *testing.T) {
+	m := New(&config.Config{StackDir: "/home/utilisateur/infrastructure/docker/compose/stacks-production"})
+	m.width, m.height = 80, 24
+	m.client = &fakeClient{}
+	m.loadingSince = time.Now().Add(-12 * time.Second)
+	if out := ansi.Strip(m.loadingView()); !strings.Contains(out, "stacks-production… 12 s") {
+		t.Errorf("fin du chemin ou durée absente :\n%s", out)
 	}
 }
 
@@ -409,6 +588,38 @@ func TestDirPickerArrows(t *testing.T) {
 	m = drive(t, m, keyMsg("backspace"), 0)
 	if m.dirPath != filepath.Join(root, "a") {
 		t.Errorf("⌫ : %q, want le parent", m.dirPath)
+	}
+}
+
+// Sélecteur ouvert sur un stack_dir saisi à la main, avec barre finale ou
+// relatif : ← remonte au parent, curseur sur le dossier quitté (avant : le
+// même dossier, ou « . » sans fin). Choisir ce même dossier garde la
+// sélection.
+func TestDirPickerTypedStackDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "stacks", "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	for _, dir := range []string{filepath.Join(root, "stacks") + "/", "./stacks", "stacks/"} {
+		m := New(&config.Config{StackDir: dir})
+		m.width, m.height, m.loading = 100, 30, false
+		m.client = &fakeClient{}
+		m.stacks = []compose.Stack{stack("web", "", 1, 1, 0)}
+		m.selected["web"] = true
+		m.invalidateRows()
+		m = drive(t, m, keyMsg("o"), 0)
+		m = drive(t, m, keyMsg("left"), 0)
+		if m.dirPath != root || m.dirEntries[m.dirCursor] != "stacks/" {
+			t.Errorf("← depuis %q : %q, curseur sur %q, want %q et stacks/", dir, m.dirPath, m.dirEntries[m.dirCursor], root)
+			continue
+		}
+		m = drive(t, m, keyMsg("right"), 0)
+		m = drive(t, m, keyMsg("enter"), 0) // « Choisir ce répertoire »
+		if m.view != viewList || !m.selected["web"] {
+			t.Errorf("%q choisi de nouveau : vue %v, sélection %v", dir, m.view, m.selected)
+		}
 	}
 }
 

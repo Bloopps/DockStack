@@ -232,6 +232,15 @@ func (c *Client) ListStacks(ctx context.Context, stackDir string) ([]Stack, erro
 
 	result, err := c.cli.Client().ContainerList(ctx, mobyclient.ContainerListOptions{All: true})
 	if err != nil {
+		// Démon muet (connexion acceptée, aucune réponse) : le délai expire.
+		// Le dire comme New, que l'écran d'erreur et l'en-tête reconnaissent
+		// (démon injoignable) : « context deadline exceeded » seul laissait
+		// un écran générique, et des compteurs Docker donnés pour actuels. Le
+		// parcours des fichiers, plus haut, n'utilise pas ctx : le délai ne
+		// peut venir que du démon.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("le démon Docker ne répond pas (délai dépassé) : %w", err)
+		}
 		return nil, err
 	}
 
