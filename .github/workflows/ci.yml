@@ -1,12 +1,12 @@
 name: CI
 
 # Intégration continue : build, vérifications statiques et tests
-# Déclenchée sur les push et les pull requests vers master.
+# Déclenchée sur les push et les pull requests vers master et beta.
 on:
   push:
-    branches: [master]
+    branches: [master, beta]
   pull_request:
-    branches: [master]
+    branches: [master, beta]
 
 # Annule les exécutions précédentes encore en cours sur la même réf.
 concurrency:

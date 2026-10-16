@@ -94,6 +94,10 @@ chmod +x dockstack
 Pour arm64, remplacer `dockstack-linux-amd64` par `dockstack-linux-arm64`.
 `./dockstack --version` affiche la version installée.
 
+Les nouveautés sont d'abord publiées en préversion (`vX.Y.Z-beta.N`) sur la
+page [Releases](https://github.com/Bloopps/DockStack/releases) pour être
+testées avant la version stable ; `latest` ne pointe jamais vers une beta.
+
 ## Lancer depuis les sources
 
 ```bash

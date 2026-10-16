@@ -1,13 +1,25 @@
 name: Release
 
-# Publie une GitHub Release avec les binaires compilés à chaque tag « v* ».
+# Publication automatique des versions :
+#  - push sur master → version stable vX.Y.Z (GitHub Release « latest »)
+#  - push sur beta   → préversion vX.Y.Z-beta.N (marquée « pre-release »)
+# La version est déduite des commits (Conventional Commits, voir
+# scripts/next-version.sh) ; sans feat/fix/breaking, rien n'est publié.
+# Un tag « v* » poussé à la main déclenche aussi GoReleaser (reprise manuelle).
 on:
   push:
+    branches: [master, beta]
     tags:
       - 'v*'
 
+# Une seule publication à la fois par branche, jamais annulée en cours de route
+# (un tag à moitié publié serait pire qu'une file d'attente).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write # nécessaire pour créer la release et y attacher les binaires.
+  contents: write # nécessaire pour créer le tag, la release et y attacher les binaires.
 
 jobs:
   goreleaser:
@@ -17,7 +29,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # GoReleaser a besoin de tout l'historique et des tags.
+          fetch-depth: 0 # tout l'historique et les tags, pour la version et les notes.
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -25,7 +37,39 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Ne publie jamais un commit qui ne passe pas les vérifications de base.
+      - name: Vérifications
+        if: github.ref_type == 'branch'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Fichiers non formatés :"; echo "$unformatted"; exit 1
+          fi
+          go vet ./...
+          go test -race -count=1 ./...
+
+      # Détermine le tag à publier (vide : rien à publier).
+      - name: Calculer la version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          channel=stable
+          [ "${{ github.ref_name }}" = beta ] && channel=beta
+          scripts/next-version.sh "$channel" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Créer le tag
+        if: steps.version.outputs.tag != '' && github.ref_type == 'branch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
       - name: Run GoReleaser
+        if: steps.version.outputs.tag != ''
         uses: goreleaser/goreleaser-action@v6
         with:
           # Épinglé sur la série v2 pour éviter une rupture lors d'une future
@@ -34,3 +78,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Un tag poussé par GITHUB_TOKEN ne relance pas de workflow : tout
+          # se fait dans ce job. Les notes partent du tag précédent choisi
+          # par scripts/next-version.sh (dernière stable pour une stable).
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}
+          GORELEASER_PREVIOUS_TAG: ${{ steps.version.outputs.previous }}

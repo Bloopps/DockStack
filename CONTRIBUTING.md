@@ -94,10 +94,25 @@ Types utilisés :
 
 ## Publier une version
 
-Les releases sont déclenchées par un tag `v*` ; GoReleaser compile les binaires
-et publie la GitHub Release avec les notes générées :
+Tout est automatique (workflow [`release.yml`](.github/workflows/release.yml)) :
 
-```bash
-git tag v0.3.0
-git push origin v0.3.0
-```
+| Branche  | Publication                                   | Exemple         |
+|----------|-----------------------------------------------|-----------------|
+| `master` | Release **stable** (« latest »)               | `v0.4.0`        |
+| `beta`   | **Préversion** pour tester les nouveautés     | `v0.5.0-beta.2` |
+
+La version est déduite des messages de commit (voir
+[`scripts/next-version.sh`](scripts/next-version.sh)) :
+
+- `feat:` → version mineure ; `fix:` → correctif ;
+- `type!:` ou `BREAKING CHANGE` → version majeure (mineure tant qu'on est en 0.x) ;
+- `docs:`, `test:`, `ci:`, `chore:` seuls → aucune publication.
+
+Une beta `vX.Y.Z-beta.N` prépare la prochaine stable `vX.Y.Z` ; `N` augmente à
+chaque push sur `beta`. Flux conseillé : fusionner les nouveautés dans `beta`,
+les tester avec la préversion, puis fusionner `beta` dans `master` pour la
+stable. Les notes sont générées par GoReleaser (une stable regroupe tout ce qui
+s'est passé depuis la précédente stable). Les tests, `gofmt` et `go vet` doivent
+passer avant toute publication.
+
+Un tag `v*` poussé à la main publie aussi une release (reprise manuelle).
