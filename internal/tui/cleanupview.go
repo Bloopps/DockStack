@@ -109,6 +109,7 @@ func (m Model) handleCleanupLoaded(msg cleanupLoadedMsg) (tea.Model, tea.Cmd) {
 // cleanupOutcome : échecs et annulation d'un nettoyage (cf. Model).
 type cleanupOutcome struct {
 	fails     int  // éléments en échec (ou catégories, faute de détail)
+	ok        int  // éléments supprimés
 	cancelled bool // annulé en cours de route
 }
 
@@ -125,6 +126,8 @@ func (ps *progressState) cleanupOutcome() cleanupOutcome {
 		n := 0
 		for _, r := range st.byID {
 			switch {
+			case r.state == "done":
+				o.ok++
 			case r.state != "error":
 			case canceledText(r.status):
 				o.cancelled = true
@@ -176,6 +179,10 @@ func cleanupResultText(o cleanupOutcome, freed, planned int64, approx bool) (str
 		return s + " · libéré " + got, toneWarn
 	case o.fails > 0 && freed > 0:
 		return fmt.Sprintf("⚠ %d élément%s en échec · libéré %s", o.fails, plural(o.fails), got), toneWarn
+	case o.fails > 0 && o.ok > 0:
+		// Des éléments sont partis (un réseau ne libère aucun octet) : échec
+		// partiel, pas « rien n'a abouti ».
+		return fmt.Sprintf("⚠ %d échec%s · %d supprimé%s · libéré %s", o.fails, plural(o.fails), o.ok, plural(o.ok), got), toneWarn
 	case o.fails > 0:
 		return fmt.Sprintf("✕ Rien libéré : %d échec%s", o.fails, plural(o.fails)), toneErr
 	}
@@ -272,6 +279,10 @@ func (m *Model) leaveCleanup() {
 	}
 	m.cleanupSeq++
 	m.cleanupLoading = false
+	// Le bilan d'un nettoyage ne vaut que pour l'analyse lancée juste après :
+	// quitter avant son résultat l'écarte, et la visite suivante ne doit pas
+	// l'appliquer à un relevé sans rapport.
+	m.cleanupBefore, m.cleanupOutcome, m.cleanupResult = nil, cleanupOutcome{}, ""
 	m.view = viewList
 }
 
@@ -1117,7 +1128,8 @@ func (m Model) cleanupBilan(w int) []string {
 // disque, puis la colonne « Libérable » de docker system df, total et par
 // type, du plus gros au plus petit pour que la largeur coupe le moins utile.
 // Sans la note « * » (une ligne de plus) : la section « Conservé » de la
-// liste signale déjà les volumes des stacks arrêtées.
+// liste détaille les volumes des stacks arrêtées, et l'astérisque sur
+// « volumes » prévient qu'ils sont comptés.
 func (m Model) cleanupBilanCompact(w int) []string {
 	rep := m.cleanupRep
 	imgFree, imgExact := m.cleanupImagesFree()
@@ -1138,7 +1150,13 @@ func (m Model) cleanupBilanCompact(w int) []string {
 	for _, p := range parts {
 		if p.size > 0 {
 			total += p.size
-			txt = append(txt, p.label+" "+fmtCleanupSize(p.size, p.approx))
+			t := p.label + " " + fmtCleanupSize(p.size, p.approx)
+			// Comme la note « * » du bilan complet : ces volumes comptent ceux
+			// des stacks arrêtées, que la page ne propose jamais.
+			if p.label == "volumes" && len(rep.KeptStackVolumes) > 0 {
+				t += "*"
+			}
+			txt = append(txt, t)
 		}
 	}
 	line := "  " + styleCyan.Render("Libérable ") + styleBold.Render(fmtCleanupSize(total, !imgExact))

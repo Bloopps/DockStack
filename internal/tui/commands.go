@@ -235,6 +235,7 @@ func setBackupMeta(configDir string, snap backup.Snapshot, label string, pinned 
 // même stack ne soient ni fusionnées ni comptées deux fois.
 type livePhase struct {
 	suffix string
+	names  []string // stacks de l'étape, annoncées d'emblée et marquées non lancées si la chaîne est annulée
 	start  func() <-chan compose.ProgressEvent
 }
 
@@ -244,8 +245,21 @@ type livePhase struct {
 func chainLive(ctx context.Context, phases []livePhase) <-chan compose.ProgressEvent {
 	out := make(chan compose.ProgressEvent, 200)
 	go func() {
+		// Toutes les stacks de toutes les étapes sont annoncées d'emblée : le
+		// titre et le bilan comptent le travail prévu, pas la seule étape en cours.
 		for _, ph := range phases {
+			for _, n := range ph.names {
+				out <- compose.ProgressEvent{StackName: n + ph.suffix, StackQueued: true}
+			}
+		}
+		for i, ph := range phases {
 			if ctx.Err() != nil {
+				// Annulée avant leur tour : « non lancées » plutôt que oubliées.
+				for _, p := range phases[i:] {
+					for _, n := range p.names {
+						out <- compose.ProgressEvent{StackName: n + p.suffix, StackDone: true, Err: ctx.Err()}
+					}
+				}
 				break
 			}
 			ch := ph.start()

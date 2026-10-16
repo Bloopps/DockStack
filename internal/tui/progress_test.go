@@ -423,3 +423,105 @@ func TestProgressDurations(t *testing.T) {
 		}
 	}
 }
+
+// Annulation d'un nettoyage : les éléments arrêtés par le démon
+// (« context canceled ») s'affichent « ⊘ … interrompu », une ligne chacun,
+// jamais en ✕ rouge avec le texte technique.
+func TestProgressCancelledResourcesNotShownAsErrors(t *testing.T) {
+	m := opProgress("Nettoyage", stack("x", "", 0, 0, 0))
+	m.width, m.height = 120, 40
+	net := compose.CleanUnusedNetwork.Label()
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: net, StackStarted: true},
+		compose.ProgressEvent{StackName: net, Container: "reseau0", Status: `Delete "http://…/networks/n0": context canceled`, State: "error"},
+		compose.ProgressEvent{StackName: net, StackDone: true, Err: context.Canceled},
+	)
+	m.progress.byName[net].cancelled = true
+	lines, _ := m.progressLines(0, 1000)
+	out := ansi.Strip(strings.Join(lines, "\n"))
+	if strings.Contains(out, "context canceled") || strings.Contains(out, "✕ reseau") || !strings.Contains(out, "⊘ reseau0") {
+		t.Errorf("élément interrompu mal présenté :\n%s", out)
+	}
+}
+
+// Un échec que la fenêtre de progression a montré reste lisible dans le
+// panneau d'actions quand le volet est masqué (moins de 100 colonnes).
+func TestActionPanelShowsLastFailureNarrow(t *testing.T) {
+	m := opProgress("Up — 2 stacks", stack("ok", "", 1, 1, 0), stack("ko", "", 1, 2, 0))
+	m.width, m.height = 80, 24
+	m = feedProgress(m, true,
+		compose.ProgressEvent{StackName: "ok", StackDone: true},
+		compose.ProgressEvent{StackName: "ko", StackDone: true, Err: fmt.Errorf("Bind for 0.0.0.0:9091 failed: port is already allocated")},
+	)
+	m, _ = update(m, keyMsg("enter"))
+	m = seekStack(m, "ko")
+	m, _ = update(m, keyMsg("enter"))
+	if s := ansi.Strip(m.viewContent()); !strings.Contains(s, "9091") {
+		t.Errorf("80x24 : la cause de l'échec de ko n'est pas dans le panneau\n%s", s)
+	}
+}
+
+// Alignement en deux étapes : les stacks de l'étape suivante sont annoncées
+// d'emblée (titre « en attente ») et, la chaîne annulée pendant la première,
+// comptées « non lancées » au bilan plutôt qu'oubliées.
+func TestChainLiveAnnouncesAndCancelsLaterPhases(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("web", "", 1, 1, 0), stack("db", "", 0, 1, 0), stack("cache", "", 0, 1, 0)})
+	m.width, m.height, m.loading = 120, 40, false
+	m.client = &fakeClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	run := func(names []string, block bool) func() <-chan compose.ProgressEvent {
+		return func() <-chan compose.ProgressEvent {
+			ch := make(chan compose.ProgressEvent, 200)
+			go func() {
+				for _, n := range names {
+					ch <- compose.ProgressEvent{StackName: n, StackQueued: true}
+				}
+				for _, n := range names {
+					ch <- compose.ProgressEvent{StackName: n, StackStarted: true}
+					var err error
+					if block {
+						ch <- compose.ProgressEvent{StackName: n, Container: "Container " + n, Status: "Stopping", State: "working"}
+						<-ctx.Done()
+						err = ctx.Err()
+					}
+					ch <- compose.ProgressEvent{StackName: n, StackDone: true, Err: err}
+				}
+				ch <- compose.ProgressEvent{AllDone: true}
+			}()
+			return ch
+		}
+	}
+	phases := []livePhase{
+		{" — arrêt", []string{"web"}, run([]string{"web"}, true)},
+		{"", []string{"db", "cache"}, run([]string{"db", "cache"}, false)},
+	}
+	next, _ := m.startProgressOp("Alignement", cancel, chainLive(ctx, phases))
+	m = next.(Model)
+	pump := func(m Model, until func(Model) bool) Model {
+		deadline := time.Now().Add(10 * time.Second)
+		for !m.progressDone {
+			if time.Now().After(deadline) {
+				t.Fatal("progression jamais terminée")
+			}
+			m, _ = update(m, readProgressCmd(m.progressCh, m.progressSeq)())
+			if until != nil && until(m) {
+				return m
+			}
+		}
+		return m
+	}
+	m = pump(m, func(m Model) bool {
+		st := m.progress.byName["web — arrêt"]
+		return st != nil && len(st.roots) > 0
+	})
+	if title := ansi.Strip(m.progressTitleLine()); !strings.Contains(title, "en attente") {
+		t.Errorf("titre pendant l'arrêt %q : les stacks à démarrer ne sont pas annoncées", title)
+	}
+	m, _ = update(m, keyMsg("esc"))
+	m, _ = update(m, keyMsg("esc"))
+	m = pump(m, nil)
+	sum, _ := m.progressSummary(true)
+	if !strings.Contains(sum, "/3 OK") || !strings.Contains(sum, "2 non lancées") {
+		t.Errorf("bilan %q : les 2 stacks jamais lancées doivent y figurer", sum)
+	}
+}

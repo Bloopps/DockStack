@@ -651,6 +651,7 @@ func TestCleanupResultText(t *testing.T) {
 		{cleanupOutcome{}, 0, 0, "✔ Libéré rien", toneOK},
 		{cleanupOutcome{fails: 3}, 3 * gb, 5 * gb, "⚠ 3 éléments en échec · libéré 3.0 Go", toneWarn},
 		{cleanupOutcome{fails: 1}, 0, 5 * gb, "✕ Rien libéré : 1 échec", toneErr},
+		{cleanupOutcome{fails: 1, ok: 3}, 0, 5 * gb, "⚠ 1 échec · 3 supprimés · libéré rien", toneWarn},
 		{cleanupOutcome{cancelled: true}, 2 * gb, 5 * gb, "⊘ Annulé · libéré 2.0 Go", toneWarn},
 		{cleanupOutcome{cancelled: true, fails: 2}, 0, 5 * gb, "⊘ Annulé · 2 échecs · libéré rien", toneWarn},
 	} {
@@ -701,5 +702,73 @@ func TestCleanupResultAfterFailure(t *testing.T) {
 	}
 	if m.cleanupOutcome != (cleanupOutcome{}) {
 		t.Errorf("issue non consommée : %+v", m.cleanupOutcome)
+	}
+}
+
+// Un nettoyage dont les réseaux sont partis mais dont un volume est refusé
+// n'est pas un échec total : jaune, avec ce qui a abouti (un réseau ne libère
+// aucun octet, donc « libéré rien » ne dit pas « rien fait »).
+func TestCleanupPartialFailureNotShownAsTotal(t *testing.T) {
+	ps := newProgressState()
+	net, vol := compose.CleanUnusedNetwork.Label(), compose.CleanOrphanVolume.Label()
+	for _, ev := range []compose.ProgressEvent{
+		{StackName: net, StackQueued: true}, {StackName: vol, StackQueued: true},
+		{StackName: net, StackStarted: true},
+		{StackName: net, Container: "a_default", Status: "Supprimé", State: "done"},
+		{StackName: net, Container: "b_default", Status: "Supprimé", State: "done"},
+		{StackName: net, Container: "c_default", Status: "Supprimé", State: "done"},
+		{StackName: net, StackDone: true},
+		{StackName: vol, StackStarted: true},
+		{StackName: vol, Container: "v3_data", Status: "remove v3_data: volume is in use", State: "error"},
+		{StackName: vol, StackDone: true, Err: fmt.Errorf("remove v3_data: volume is in use")},
+	} {
+		ps.apply(ev)
+	}
+	text, tn := cleanupResultText(ps.cleanupOutcome(), 0, 70<<20, false)
+	if tn != toneWarn || strings.Contains(text, "Rien libéré") || !strings.Contains(text, "3 supprimés") {
+		t.Errorf("bilan %q (ton %v) : attendu un échec partiel avec les 3 supprimés", text, tn)
+	}
+}
+
+// Le bilan d'un nettoyage ne survit pas à une visite écourtée : quitter la
+// page avant le résultat de l'analyse qui suit le nettoyage l'écarte, et la
+// visite suivante n'affiche pas l'issue de l'ancien nettoyage.
+func TestCleanupOutcomeDroppedWhenLeavingBeforeAnalysis(t *testing.T) {
+	m, _ := cleanupModel(t)
+	before := *m.cleanupRep
+	m.cleanupBefore, m.cleanupPlanned = &before, 2<<30
+	m.view, m.progressReturn, m.progress, m.progressDone = viewProgress, viewCleanup, newProgressState(), true
+	for _, ev := range []compose.ProgressEvent{
+		{StackName: "Images pendantes <none>", Container: "<none> d1", Status: "conflict: unable to delete d1", State: "error"},
+		{StackName: "Images pendantes <none>", StackDone: true, Err: fmt.Errorf("conflict: unable to delete d1")},
+	} {
+		m.progress.apply(ev)
+	}
+	m, _ = update(m, keyMsg("enter"))
+	m, _ = update(m, keyMsg("esc"))
+	if m.view != viewList {
+		t.Fatalf("esc : vue %v", m.view)
+	}
+	m = drive(t, m, keyMsg("n"), 0)
+	if s := ansi.Strip(m.viewContent()); strings.Contains(s, "Rien libéré") || strings.Contains(s, "échec") {
+		t.Errorf("nouvelle visite : bilan d'un nettoyage précédent affiché (%q)", m.cleanupResult)
+	}
+}
+
+// Bilan compact (80x24) : les volumes des stacks arrêtées sont comptés dans
+// « Libérable » mais jamais proposés ; l'astérisque le signale, comme la note
+// du bilan complet.
+func TestCleanupCompactBilanMarksKeptVolumes(t *testing.T) {
+	m, _ := cleanupModel(t)
+	m.metrics = narrowMetrics(8)
+	m.width, m.height = 80, 24
+	var line string
+	for _, l := range strings.Split(ansi.Strip(m.viewContent()), "\n") {
+		if strings.Contains(l, "Libérable") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "volumes") || !strings.Contains(line, "Go*") {
+		t.Errorf("ligne Libérable compacte sans astérisque sur les volumes : %q", line)
 	}
 }

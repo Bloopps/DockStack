@@ -172,7 +172,16 @@ func (m Model) progressLayout(start, end int) (visible []string, total int, head
 	// en cas d'erreur le statut (message complet du démon Docker, ex. « Conflict.
 	// The container name … is already in use ») est replié sous la ligne au lieu
 	// de déborder hors de l'écran et d'être tronqué par le terminal.
-	addResource := func(r *resourceProgress, stackDone bool, indent string) {
+	addResource := func(r *resourceProgress, stackDone, stackCancelled bool, indent string) {
+		// Un élément arrêté par l'annulation (« context canceled » du démon, ou
+		// erreur émise par compose en l'interrompant) n'est pas un échec : une
+		// ligne grise « ⊘ … interrompu », sans le texte technique.
+		if r.state == "error" && (stackCancelled || canceledText(r.status)) {
+			add(func() string {
+				return indent + styleDim.Render("⊘ "+truncate(r.id, max(m.width-lipgloss.Width(indent)-14, 8))+"  interrompu")
+			})
+			return
+		}
 		if r.state != "error" {
 			add(func() string { return m.renderResourceLine(r, stackDone, now, indent) })
 			return
@@ -245,9 +254,9 @@ func (m Model) progressLayout(start, end int) (visible []string, total int, head
 		})
 
 		for _, r := range st.roots {
-			addResource(r, st.done, "      ")
+			addResource(r, st.done, st.cancelled, "      ")
 			for _, c := range st.children[r.id] {
-				addResource(c, st.done, "         ")
+				addResource(c, st.done, st.cancelled, "         ")
 			}
 		}
 

@@ -901,17 +901,26 @@ func (m Model) confirmAlign(snap backup.Snapshot) (tea.Model, tea.Cmd) {
 		client := m.client
 		var phases []livePhase
 		if len(stopStacks) > 0 {
-			phases = append(phases, livePhase{" — arrêt", func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopStacks, parallel) }})
+			phases = append(phases, livePhase{" — arrêt", stackNames(stopStacks), func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopStacks, parallel) }})
 		}
 		if len(stopServices) > 0 {
-			phases = append(phases, livePhase{" — arrêt de services", func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopServices, parallel) }})
+			phases = append(phases, livePhase{" — arrêt de services", stackNames(stopServices), func() <-chan compose.ProgressEvent { return client.StopManyLive(ctx, stopServices, parallel) }})
 		}
 		if len(ups) > 0 {
-			phases = append(phases, livePhase{"", func() <-chan compose.ProgressEvent { return client.UpManyLive(ctx, ups, parallel) }})
+			phases = append(phases, livePhase{"", stackNames(ups), func() <-chan compose.ProgressEvent { return client.UpManyLive(ctx, ups, parallel) }})
 		}
 		return m.startProgressOp(title, cancel, chainLive(ctx, phases))
 	}
 	return m.askConfirm("Mettre à l'identique de la capture du "+snap.Date.Format("02/01/2006 15:04"), warning, lines, run)
+}
+
+// stackNames : les noms des stacks, pour annoncer une étape d'avance.
+func stackNames(ss []compose.Stack) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = s.Name
+	}
+	return out
 }
 
 // entriesOf retrouve, dans la capture, les entrées (avec leurs services) des

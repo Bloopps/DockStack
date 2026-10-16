@@ -94,7 +94,7 @@ func TestChainLive(t *testing.T) {
 			return ch
 		}
 	}
-	out := chainLive(context.Background(), []livePhase{{" — arrêt", mk("a")}, {"", mk("a", "b")}})
+	out := chainLive(context.Background(), []livePhase{{" — arrêt", nil, mk("a")}, {"", nil, mk("a", "b")}})
 	var got []string
 	for ev := range out {
 		if ev.AllDone {
@@ -110,7 +110,7 @@ func TestChainLive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := false
-	out = chainLive(ctx, []livePhase{{"", func() <-chan compose.ProgressEvent { started = true; return doneCh() }}})
+	out = chainLive(ctx, []livePhase{{"", nil, func() <-chan compose.ProgressEvent { started = true; return doneCh() }}})
 	if ev := <-out; !ev.AllDone || started {
 		t.Errorf("annulé : AllDone=%v étape démarrée=%v", ev.AllDone, started)
 	}

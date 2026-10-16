@@ -45,7 +45,7 @@ func renderActionMenu(m Model, height int) string {
 	if m.actionGroup {
 		panel = buildGroupPanel(targets, m.actionCursor, height, m.width)
 	} else {
-		panel = buildActionPanel(targets[0], m.actionCursor, height, m.width)
+		panel = buildActionPanel(targets[0], m.actionCursor, height, m.width, m.lastFailOf(targets[0].Name))
 	}
 	return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, panel)
 }
@@ -115,7 +115,7 @@ func fitPanel(head, sep, actions []string, cursor int, extraSep string, extra []
 	return append(append(rows, extraSep), extra...)
 }
 
-func buildActionPanel(stack compose.Stack, cursor, height, termW int) string {
+func buildActionPanel(stack compose.Stack, cursor, height, termW int, fail *stackFailure) string {
 	dot, dotStyle := stateStyle(stack.State())
 
 	names := []string{stack.Name}
@@ -139,6 +139,14 @@ func buildActionPanel(stack compose.Stack, cursor, height, termW int) string {
 
 	divider := styleDim.Render(strings.Repeat("─", inner))
 
+	// Le dernier échec de la stack : sous 100 colonnes le volet n'existe pas,
+	// et la cause disparaissait avec la fenêtre de progression. Sous l'état,
+	// donc la première ligne cédée si la hauteur manque (fitPanel).
+	head := []string{title, state}
+	if fail != nil {
+		head = append(head, failLines(*fail, inner)...)
+	}
+
 	// Services plafonnés à la place restante : sans plafond, une stack de
 	// quelques services poussait Compose/Remove/Retour hors de l'écran.
 	var svcs []string
@@ -147,7 +155,7 @@ func buildActionPanel(stack compose.Stack, cursor, height, termW int) string {
 			svcs = append(svcs, renderServiceLine(svc, inner))
 		}
 	}
-	rows := fitPanel([]string{title, state}, []string{divider, ""}, menuLines(stackActions, cursor, inner), cursor,
+	rows := fitPanel(head, []string{divider, ""}, menuLines(stackActions, cursor, inner), cursor,
 		divider, svcs, func(n int) string { return styleDim.Render(fmt.Sprintf("  … +%d services", n)) }, true, height)
 	return stylePanel.Width(width).Render(strings.Join(rows, "\n"))
 }
@@ -192,4 +200,12 @@ func buildGroupPanel(selected []compose.Stack, cursor, height, termW int) string
 	rows := fitPanel([]string{title}, []string{divider, ""}, menuLines(groupActions, cursor, inner), cursor,
 		divider, lines, func(n int) string { return styleDim.Render(fmt.Sprintf("  … et %d autres", n)) }, true, height)
 	return stylePanel.Width(width).Render(strings.Join(rows, "\n"))
+}
+
+// lastFailOf : le dernier échec retenu pour une stack, nil s'il n'y en a pas.
+func (m Model) lastFailOf(name string) *stackFailure {
+	if f, ok := m.lastFail[name]; ok {
+		return &f
+	}
+	return nil
 }
