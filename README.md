@@ -159,7 +159,7 @@ Le catalogue intégré se met à jour avec `scripts/update-themes.sh`.
 | Touche                | Action                                              |
 |-----------------------|-----------------------------------------------------|
 | `u` / `s` / `d` / `r` / `c` / `p` | Up / Stop / Down / Restart / Recreate / Pull |
-| `l`                   | Logs de la stack courante (`f` suivre/pause, `/` filtrer, `w` retour à la ligne, `pgup`/`pgdn` défiler) |
+| `l`                   | Logs de la stack courante (suivi automatique en bas, `/` filtrer, `w` retour à la ligne, `pgup`/`pgdn` défiler) |
 | `↩`                   | Panneau d'actions (mêmes lettres, plus Remove)       |
 | `␣`                   | Sélectionner                                         |
 | `ctrl+a`              | Tout sélectionner (visible)                          |
