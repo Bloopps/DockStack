@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Bloopps/dockstack/internal/backup"
 	"github.com/Bloopps/dockstack/internal/compose"
@@ -62,7 +63,15 @@ func lipglossScreen(m Model) string {
 			}
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, fitHeight(body, bodyH), m.renderFooter())
+	out := lipgloss.JoinVertical(lipgloss.Left, header, fitHeight(body, bodyH), m.renderFooter())
+	// Aucune ligne ne dépasse l'écran : même garde-fou que viewContent.
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		if ansi.StringWidth(l) > m.width {
+			lines[i] = ansi.Truncate(l, m.width, "…")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // screenModel : écran chargé et varié — dossiers, états, services, noms
