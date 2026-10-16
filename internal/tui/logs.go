@@ -414,7 +414,7 @@ func (m Model) logState() (full, short string) {
 // de la saisie (q y est une lettre) ; en pause, G relance le suivi.
 func (m Model) logsFooter() string {
 	if m.quitArmed {
-		return quitWarning()
+		return quitWarning(m.width)
 	}
 	if m.logFiltering {
 		return renderBar([]footerKey{{"↩", "valider"}, {"esc", "effacer"}, {"↑↓ pgup/pgdn", "défiler"}}, nil, m.width, "")

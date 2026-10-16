@@ -72,7 +72,7 @@ func renderDirPicker(m Model) string {
 	// Cette vue a son propre pied de page : la confirmation de sortie doit y
 	// être visible aussi (le footer commun ne s'affiche pas ici).
 	if m.quitArmed {
-		hint = quitWarning()
+		hint = quitWarning(m.width)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, sub, "", body, "", hint)

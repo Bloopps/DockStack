@@ -172,10 +172,10 @@ func TestNarrowHeaderFourLines(t *testing.T) {
 	du := &compose.DockerUsage{Running: 21, Containers: 27, ImagesSize: 88 << 30, ImagesOK: true}
 	for _, cores := range []int{8, 16, 32} {
 		for _, w := range []int{60, 80, 100, 110, 119} {
-			h := renderHeader(narrowMetrics(cores), metricsHistory{}, sc, du, w)
+			h := renderHeader(narrowMetrics(cores), metricsHistory{}, sc, du, w, 100, true)
 			lines := strings.Split(ansi.Strip(h), "\n")
-			if len(lines) != 4 || headerHeight(cores, w) != 4 {
-				t.Fatalf("%d cœurs, w=%d : %d lignes (headerHeight %d), want 4\n%s", cores, w, len(lines), headerHeight(cores, w), ansi.Strip(h))
+			if len(lines) != 4 || headerHeight(cores, w, 100) != 4 {
+				t.Fatalf("%d cœurs, w=%d : %d lignes (headerHeight %d), want 4\n%s", cores, w, len(lines), headerHeight(cores, w, 100), ansi.Strip(h))
 			}
 			for _, bad := range []string{"cores", "avg", "Disk ", "Ko /s", "1m:"} {
 				if strings.Contains(ansi.Strip(h), bad) {
@@ -202,7 +202,7 @@ func TestNarrowHeaderFourLines(t *testing.T) {
 			}
 		}
 	}
-	if l := strings.Split(ansi.Strip(renderHeader(narrowMetrics(8), metricsHistory{}, sc, du, 119)), "\n")[1]; !strings.Contains(l, "Charge 1.12 0.98 0.87") {
+	if l := strings.Split(ansi.Strip(renderHeader(narrowMetrics(8), metricsHistory{}, sc, du, 119, 100, true)), "\n")[1]; !strings.Contains(l, "Charge 1.12 0.98 0.87") {
 		t.Errorf("w=119 : charge absente ou tronquée : %q", l)
 	}
 }
@@ -217,7 +217,7 @@ func TestNarrowHeaderIOStable(t *testing.T) {
 		for _, kbs := range []int{5, 1000, 5000, 900000} {
 			mt := narrowMetrics(8)
 			mt.DiskReadKBs, mt.DiskWriteKBs = kbs, kbs
-			l := strings.Split(ansi.Strip(renderHeader(mt, metricsHistory{}, sc, nil, w)), "\n")[1]
+			l := strings.Split(ansi.Strip(renderHeader(mt, metricsHistory{}, sc, nil, w, 100, true)), "\n")[1]
 			shown = append(shown, strings.Contains(l, "IO ↓"))
 		}
 		for _, s := range shown[1:] {

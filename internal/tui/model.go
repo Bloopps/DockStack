@@ -1166,6 +1166,21 @@ func (m Model) viewContent() string {
 	if m.width == 0 {
 		return ""
 	}
+	// Filet : aucune ligne ne dépasse l'écran, quelle que soit la vue. Le
+	// terminal coupait sinon sans prévenir, souvent la fin utile (touches,
+	// bordure droite). Les vues bornent d'abord leurs lignes elles-mêmes
+	// pour couper proprement ; ceci rattrape le reste.
+	lines := strings.Split(m.viewBody(), "\n")
+	for i, l := range lines {
+		if ansi.StringWidth(l) > m.width {
+			lines[i] = ansi.Truncate(l, m.width, "…")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// viewBody : l'écran, avant le filet de viewContent.
+func (m Model) viewBody() string {
 
 	switch m.view {
 	case viewLogs:
@@ -1252,7 +1267,10 @@ func (m Model) captureBanner() string {
 	}
 	txt := fmt.Sprintf("↻ %d stack%s de la dernière capture (%s) ne tourne%s plus",
 		n, plural(n), snap.Date.Format("02/01 15:04"), map[bool]string{true: "nt", false: ""}[n > 1])
-	return "  " + styleYellow.Render(truncate(txt, max(m.width-24, 10))) + styleDim.Render("  ·  ") + styleCyan.Render("b") + styleDim.Render(" pour les relancer")
+	// Le texte cède la place au rappel de b, mesuré tel qu'il est rendu :
+	// une marge fixe laissait la ligne dépasser de 2 colonnes.
+	suffix := styleDim.Render("  ·  ") + styleCyan.Render("b") + styleDim.Render(" pour les relancer")
+	return "  " + styleYellow.Render(truncate(txt, max(m.width-2-lipgloss.Width(suffix), 10))) + suffix
 }
 
 // fitHeight complète (ou coupe) s à exactement h lignes : sans ça, une vue
@@ -1296,15 +1314,27 @@ func renderError(err error, width int, retry string) string {
 		}
 		return rows
 	}
+	// Libellé et commande sur une ligne, ou la commande en dessous (repliée)
+	// quand le cadre est trop étroit : la couper la rendrait inutilisable.
+	cmdRows := func(label, cmd string) []string {
+		if lipgloss.Width(label)+2+lipgloss.Width(cmd) <= inner {
+			return []string{styleDim.Render(label) + "  " + styleYellow.Render(cmd)}
+		}
+		rows := []string{styleDim.Render(label)}
+		for _, l := range wordWrap(cmd, inner) {
+			rows = append(rows, styleYellow.Render(l))
+		}
+		return rows
+	}
 	if dockerDenied(lower) {
 		rows := []string{
 			styleRed.Bold(true).Render("Accès Docker refusé"),
 			"",
-			// Pas de « sudo dockstack » : lancé en root, l'outil crée ~/.dockstack
-			// en root et l'utilisateur ne peut plus y écrire ses captures ensuite.
-			styleDim.Render("Rejoindre le groupe :") + "  " + styleYellow.Render("sudo usermod -aG docker $USER  && newgrp docker"),
-			styleDim.Render("Ou démarrer le démon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}
+		// Pas de « sudo dockstack » : lancé en root, l'outil crée ~/.dockstack
+		// en root et l'utilisateur ne peut plus y écrire ses captures ensuite.
+		rows = append(rows, cmdRows("Rejoindre le groupe :", "sudo usermod -aG docker $USER  && newgrp docker")...)
+		rows = append(rows, cmdRows("Ou démarrer le démon :", "sudo systemctl start docker")...)
 		if retry != "" {
 			rows = append(append(rows, ""), retryRows()...)
 		}
@@ -1318,8 +1348,8 @@ func renderError(err error, width int, retry string) string {
 		rows := []string{
 			styleRed.Bold(true).Render("Démon Docker injoignable"),
 			"",
-			styleDim.Render("Démarrer le démon :") + "  " + styleYellow.Render("sudo systemctl start docker"),
 		}
+		rows = append(rows, cmdRows("Démarrer le démon :", "sudo systemctl start docker")...)
 		if retry != "" {
 			rows = append(rows, retryRows()...)
 		} else {
@@ -1718,7 +1748,7 @@ func (m Model) refuseHiddenSelection(sel selState) (tea.Model, tea.Cmd) {
 
 func (m Model) renderFooter() string {
 	if m.quitArmed {
-		return quitWarning()
+		return quitWarning(m.width)
 	}
 	if m.status != "" {
 		msg := m.status
@@ -1748,7 +1778,9 @@ func (m Model) renderFooter() string {
 	if m.loading && m.view == viewList {
 		return renderBar(nil, []footerKey{{"q", "quitter"}}, m.width, "")
 	}
-	if m.err != nil {
+	// Réservé à la liste : R et o n'agissent que là. Ailleurs (aide,
+	// nettoyage, captures…), le pied propre à la vue dit ce qui marche.
+	if m.err != nil && m.view == viewList {
 		return renderBar([]footerKey{{"R", "réessayer"}, {"o", "répertoire"}}, []footerKey{{"q", "quitter"}}, m.width, "")
 	}
 	back := []footerKey{{"esc", "retour"}}
@@ -1767,8 +1799,10 @@ func (m Model) renderFooter() string {
 		left := []footerKey{{"c", "capturer"}}
 		if len(m.backups) > 0 {
 			left = append(left, footerKey{"↩", "relancer"}, footerKey{"i", "à l'identique"},
-				footerKey{"n", "nommer"}, footerKey{"*", "épingler"}, footerKey{"⌫", "supprimer"})
+				footerKey{"n", "nommer"}, footerKey{"⌫", "supprimer"}, footerKey{"*", "épingler"})
 		}
+		// ⌫ avant * : seule indication de la suppression hors de l'aide, il
+		// cède après épingler quand « ? aide » prend la place à droite.
 		return renderBar(left, append(back, footerKey{"?", "aide"}), m.width, "")
 	case viewAction:
 		return renderBar([]footerKey{{"↑↓", "choisir"}, {"↩ / lettre", "valider"}}, back, m.width, "")
@@ -1951,9 +1985,18 @@ func tickMetrics() tea.Cmd {
 // quitWarning : avertissement de sortie armée. Toutes les vues l'affichent,
 // y compris celles qui ont leur propre pied de page (logs, compose,
 // progression, dossiers) : sinon le second q quittait sans prévenir.
-func quitWarning() string {
-	return styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
+// Sur un terminal étroit, une version plus courte (width, 0 = sans limite).
+func quitWarning(width int) string {
+	full := styleYellow.Bold(true).PaddingLeft(2).Render("⚠ Appuyer à nouveau pour quitter (q / ctrl+c)") +
 		styleDim.Render("  ·  autre touche = annuler")
+	if width <= 0 || lipgloss.Width(full) <= width {
+		return full
+	}
+	mid := styleYellow.Bold(true).PaddingLeft(2).Render("⚠ q encore pour quitter") + styleDim.Render(" · autre touche = annuler")
+	if lipgloss.Width(mid) <= width {
+		return mid
+	}
+	return ansi.Truncate(styleYellow.Bold(true).PaddingLeft(2).Render("⚠ q encore pour quitter"), width, "")
 }
 
 // typing dit si une saisie de texte est en cours (filtre de la liste, des
@@ -1994,7 +2037,9 @@ var viewTitles = map[view]string{
 // de titre et au séparateur (cf. fullHeader).
 func (m Model) headerBlock() string {
 	if m.fullHeader() {
-		return renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width)
+		// « o changer » seulement dans la liste hors mode services : le
+		// sélecteur de thème et les services ignorent o.
+		return renderHeader(m.metrics, m.history, m.headerCounts(), m.usage, m.width, m.height, m.view == viewList && !m.svcFocus)
 	}
 	return renderTitleBar(m.cfg.StackDir, viewTitles[m.view], m.width)
 }
@@ -2005,7 +2050,7 @@ func (m Model) headerBlock() string {
 // ou d'une confirmation se décale.
 func (m Model) headerLines() int {
 	if m.fullHeader() {
-		return headerHeight(m.metrics.NCores, m.width)
+		return headerHeight(m.metrics.NCores, m.width, m.height)
 	}
 	return titleBarLines
 }

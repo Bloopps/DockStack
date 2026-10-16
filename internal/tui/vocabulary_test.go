@@ -151,7 +151,7 @@ func TestScrollMarksWording(t *testing.T) {
 func TestHeaderWording(t *testing.T) {
 	sc := StackCounts{Dir: "/srv/stacks", Total: 12, Running: 8, CtrRunning: 21, CtrTotal: 27}
 	du := &compose.DockerUsage{Running: 21, Containers: 27, ImagesSize: 88 << 30, ImagesReclaimable: 24 << 30, ImagesExact: true, ImagesOK: true}
-	h := ansi.Strip(renderHeader(narrowMetrics(8), metricsHistory{}, sc, du, 160))
+	h := ansi.Strip(renderHeader(narrowMetrics(8), metricsHistory{}, sc, du, 160, 100, true))
 	if !strings.Contains(h, "Uptime 12j 3h") || strings.Contains(h, "Actif") {
 		t.Errorf("durée de fonctionnement :\n%s", h)
 	}

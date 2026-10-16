@@ -94,6 +94,11 @@ func (m Model) listFooter() (left, right []footerKey) {
 		return []footerKey{{"↩", "valider"}, {"↑↓", "choisir"}}, []footerKey{{"esc", "effacer"}}
 	}
 	if m.svcFocus {
+		// Même règle que pour le filtre de la liste : pendant la saisie,
+		// ␣, e, +, ← et ? sont des lettres du filtre.
+		if m.svcFiltering {
+			return []footerKey{{"↩", "valider"}, {"↑↓", "choisir"}}, []footerKey{{"esc", "effacer"}}
+		}
 		return []footerKey{{"␣", "cocher"}, {"e", "en défaut"}, {"/", "filtre"}, {"+", "dépendances"}},
 			[]footerKey{{"←", "retour"}, help}
 	}
@@ -121,8 +126,11 @@ func (m Model) listFooter() (left, right []footerKey) {
 		if sel.hidden > 0 {
 			left = append(left, footerKey{fmt.Sprintf("%d", sel.hidden), "masquée" + plural(sel.hidden)})
 		}
-		return append(left, footerKey{"u", "up"}, footerKey{"s", "stop"}, footerKey{"d", "down"},
-				footerKey{"r", "restart"}, footerKey{"↩", "toutes les actions"}),
+		// ↩ juste après le compte : c'est la seule porte vers Pull, Recreate
+		// et le panneau groupé, et renderBar coupe par la fin du bloc de
+		// gauche (en 80 colonnes, il disparaissait le premier).
+		return append(left, footerKey{"↩", "toutes les actions"}, footerKey{"u", "up"}, footerKey{"s", "stop"},
+				footerKey{"d", "down"}, footerKey{"r", "restart"}),
 			[]footerKey{esc, help}
 	}
 	right = []footerKey{help, {"q", "quitter"}}
@@ -135,17 +143,18 @@ func (m Model) listFooter() (left, right []footerKey) {
 	case ok && row.header:
 		// Sous un filtre, la liste ignore le repli : ↩ n'y replie rien.
 		// Replié, ↩ le déplie.
-		left = []footerKey{{"␣", "cocher le dossier"}}
+		// ↩ d'abord : devant u/d/r, il disparaissait en 60 colonnes.
 		if m.filter.Value() == "" {
 			fold := "replier"
 			if row.folded {
 				fold = "déplier"
 			}
-			left = append([]footerKey{{"↩", fold}}, left...)
+			left = append(left, footerKey{"↩", fold})
 		}
 		if !m.previewVisible() {
-			left = append([]footerKey{{"u", "up"}, {"d", "down"}, {"r", "restart"}}, left...)
+			left = append(left, footerKey{"u", "up"}, footerKey{"d", "down"}, footerKey{"r", "restart"})
 		}
+		left = append(left, footerKey{"␣", "cocher le dossier"})
 	case ok && row.isStack():
 		left = []footerKey{{"↩", "actions"}}
 		if !m.previewVisible() {

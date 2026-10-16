@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"errors"
+	"github.com/Bloopps/dockstack/internal/backup"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -29,13 +32,13 @@ func TestHeaderFooterFitWidth(t *testing.T) {
 		m.stacks = []compose.Stack{{Name: "a", Running: 1, Total: 1}}
 		m.invalidateRows()
 
-		h := renderHeader(m.metrics, m.history, m.stackCounts(), &compose.DockerUsage{Running: 39, Containers: 40, ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesOK: true, VolumesSize: 5 << 30, VolumesOK: true}, w)
+		h := renderHeader(m.metrics, m.history, m.stackCounts(), &compose.DockerUsage{Running: 39, Containers: 40, ImagesSize: 85 << 30, ImagesReclaimable: 24 << 30, ImagesOK: true, VolumesSize: 5 << 30, VolumesOK: true}, w, 100, true)
 		for _, l := range strings.Split(h, "\n") {
 			if lw := lipgloss.Width(l); lw > w {
 				t.Errorf("w=%d : ligne d'en-tête de %d colonnes", w, lw)
 			}
 		}
-		if got, want := lipgloss.Height(h), headerHeight(m.metrics.NCores, w); got != want {
+		if got, want := lipgloss.Height(h), headerHeight(m.metrics.NCores, w, 100); got != want {
 			t.Errorf("w=%d : en-tête de %d lignes, headerHeight=%d", w, got, want)
 		}
 
@@ -343,9 +346,221 @@ func TestReducedHeaderOutsideList(t *testing.T) {
 		// La liste et le thème gardent le tableau de bord complet.
 		for _, v := range []view{viewList, viewTheme} {
 			m.view = v
-			if m.headerLines() != headerHeight(m.metrics.NCores, m.width) || !strings.Contains(ansi.Strip(m.headerBlock()), "CPU") {
+			if m.headerLines() != headerHeight(m.metrics.NCores, m.width, m.height) || !strings.Contains(ansi.Strip(m.headerBlock()), "CPU") {
 				t.Errorf("vue %v : en-tête complet attendu", v)
 			}
+		}
+	}
+}
+
+// TestEveryViewFitsEveryScreenSize : chaque vue, de 40x12 à 200x60 (y compris
+// sur un hôte à 128 cœurs), tient exactement dans l'écran : pas de panique,
+// la hauteur du terminal et aucune ligne plus large que lui. Un en-tête qui
+// grossit avec les cœurs, une ligne d'avertissement trop longue ou un cadre
+// plus haut que l'écran poussaient jusqu'ici le pied de page dehors.
+func TestEveryViewFitsEveryScreenSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stacks := []compose.Stack{
+		capStack("immich", svc("database", 1), svc("immich-server", 1), svc("redis", 1)),
+		capStack("authelia", svc("authelia", 0)),
+	}
+	stacks[0].Group, stacks[1].Group = "media", "media"
+	for _, cores := range []int{8, 128} {
+		for _, sz := range [][2]int{{40, 12}, {60, 20}, {80, 24}, {120, 30}, {200, 60}} {
+			base := newTestModel(stacks)
+			base.stacks = sortByState(stacks)
+			base.client = &fakeClient{stacks: stacks, autoDone: true, cleanup: sampleCleanup()}
+			base.loading, base.lastRefresh = false, time.Now()
+			base.width, base.height = sz[0], sz[1]
+			base.metrics.NCores, base.metrics.CPUCores = cores, make([]int, cores)
+			base.backups = []backup.Snapshot{{Date: time.Now().Add(-26 * time.Hour), StackDir: base.cfg.StackDir,
+				Entries: []backup.Entry{{Name: "authelia"}}, Stacks: []string{"authelia"}}}
+			base.invalidateRows()
+
+			views := map[string]Model{
+				"liste":      base,
+				"bandeau":    base,
+				"services":   press(base, "right"),
+				"filtre svc": press(base, "right", "/", "r"),
+				"thème":      press(base, "t"),
+				"aide":       press(base, "?"),
+				"confirm":    press(base, "d"),
+				"panneau":    press(base, "enter"),
+				"captures":   press(base, "b"),
+				"nettoyage":  press(base, "n"),
+				"dossier":    press(base, "o"),
+				"sortie":     press(base, "q"),
+				"coches":     press(base, "space"),
+				"erreur": func() Model {
+					m := base
+					m.err = errors.New("Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+					return m
+				}(),
+				"progression": progressSample(base),
+			}
+			for name, m := range views {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Errorf("%s %dx%d, %d cœurs : panique %v", name, sz[0], sz[1], cores, r)
+						}
+					}()
+					lines := strings.Split(m.viewContent(), "\n")
+					if len(lines) != sz[1] {
+						t.Errorf("%s %dx%d, %d cœurs : %d lignes rendues, %d attendues", name, sz[0], sz[1], cores, len(lines), sz[1])
+					}
+					for i, l := range lines {
+						if w := ansi.StringWidth(strings.TrimRight(ansi.Strip(l), " ")); w > sz[0] {
+							t.Errorf("%s %dx%d, %d cœurs : ligne %d de %d colonnes : %q", name, sz[0], sz[1], cores, i+1, w, ansi.Strip(l))
+							break
+						}
+					}
+				}()
+			}
+		}
+	}
+}
+
+// progressSample : la vue de progression d'une opération en cours.
+func progressSample(m Model) Model {
+	m.view, m.progress, m.progressTitle = viewProgress, newProgressState(), "Pull — 3 stacks"
+	m.progressStart = time.Now().Add(-51 * time.Second)
+	for _, ev := range []compose.ProgressEvent{
+		{StackName: "immich", StackStarted: true},
+		{StackName: "immich", Container: "Image lscr.io/linuxserver/sonarr:latest", Status: "Pulling", State: "working"},
+	} {
+		m.progress.apply(ev)
+	}
+	return m
+}
+
+// En-tête large : à 64 ou 128 cœurs, la grille des cœurs mangeait l'écran
+// (31 lignes à 128 cœurs). Il retombe sur l'en-tête étroit, et la liste et le
+// pied de page restent visibles.
+func TestWideHeaderCappedWithManyCores(t *testing.T) {
+	stacks := []compose.Stack{capStack("immich", svc("redis", 1))}
+	m := newTestModel(stacks)
+	m.loading, m.lastRefresh = false, time.Now()
+	m.metrics.NCores, m.metrics.CPUCores = 128, make([]int, 128)
+	for _, h := range []int{24, 30, 36} {
+		m.width, m.height = 120, h
+		if n := m.headerLines(); n != narrowHeaderLines {
+			t.Errorf("120x%d, 128 cœurs : en-tête de %d lignes, %d attendues", h, n, narrowHeaderLines)
+		}
+		if s := ansi.Strip(m.viewContent()); !strings.Contains(s, "immich") || m.bodyHeight() < 8 {
+			t.Errorf("120x%d : liste absente ou corps de %d lignes", h, m.bodyHeight())
+		}
+	}
+	// Peu de cœurs : le gabarit large reste.
+	m.metrics.NCores, m.metrics.CPUCores, m.width, m.height = 8, make([]int, 8), 120, 36
+	if m.headerLines() == narrowHeaderLines {
+		t.Error("8 cœurs en 120x36 : gabarit large attendu")
+	}
+}
+
+// Pendant la saisie du filtre des services, ␣, e, + et ? sont des lettres :
+// le pied n'annonce que ↩, ↑↓ et esc, comme pour le filtre de la liste.
+func TestServiceFilterFooterOnlyTypingKeys(t *testing.T) {
+	st := stack("a", "", 2, 2, 0)
+	st.Services = []compose.ServiceStatus{{Name: "redis", Running: 1, Total: 1}, {Name: "web", Running: 1, Total: 1}}
+	m := newTestModel([]compose.Stack{st})
+	m.width, m.height, m.loading = 120, 36, false
+	m = press(m, "right", "/", "r")
+	f := strings.Join(strings.Fields(ansi.Strip(m.renderFooter())), " ")
+	for _, bad := range []string{"cocher", "en défaut", "dépendances", "retour", "aide"} {
+		if strings.Contains(f, bad) {
+			t.Errorf("saisie du filtre des services : le pied annonce %q (%q)", bad, f)
+		}
+	}
+	if !strings.Contains(f, "valider") || !strings.Contains(f, "effacer") {
+		t.Errorf("pied de saisie incomplet : %q", f)
+	}
+}
+
+// « o changer » ne figure que dans la liste : le sélecteur de thème et le
+// mode services ignorent o.
+func TestHeaderChangeHintOnlyInList(t *testing.T) {
+	st := stack("a", "", 1, 1, 0)
+	st.Services = []compose.ServiceStatus{{Name: "web", Running: 1, Total: 1}}
+	base := newTestModel([]compose.Stack{st})
+	base.width, base.height, base.loading = 120, 36, false
+	first := func(m Model) string { return ansi.Strip(strings.Split(m.headerBlock(), "\n")[0]) }
+	if !strings.Contains(first(base), "o changer") {
+		t.Errorf("liste : « o changer » attendu : %q", first(base))
+	}
+	if h := first(press(base, "right")); strings.Contains(h, "o changer") {
+		t.Errorf("services : « o changer » affiché, o sans effet : %q", h)
+	}
+	out, _ := base.openThemePicker()
+	if h := first(out.(Model)); strings.Contains(h, "o changer") {
+		t.Errorf("thèmes : « o changer » affiché, o sans effet : %q", h)
+	}
+}
+
+// ↩ reste annoncé sous 120 colonnes : sur une sélection, c'est la seule porte
+// vers Pull, Recreate et le panneau groupé ; sur un dossier, il replie.
+func TestListFooterKeepsEnterWhenNarrow(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0), stack("b", "", 1, 1, 0)})
+	m.width, m.height, m.loading = 80, 24, false
+	m.selected["a"] = true
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, "↩") {
+		t.Errorf("80 colonnes, sélection : ↩ absent du pied %q", f)
+	}
+	g := newTestModel([]compose.Stack{stack("a", "dir", 1, 1, 0), stack("b", "dir", 1, 1, 0)})
+	g.width, g.height, g.loading = 60, 24, false
+	g.cursor = 0
+	if row, ok := g.cursorRow(); !ok || !row.header {
+		t.Skip("pas d'en-tête de dossier sous le curseur")
+	}
+	if f := ansi.Strip(g.renderFooter()); !strings.Contains(f, "↩") {
+		t.Errorf("60 colonnes, dossier : ↩ absent du pied %q", f)
+	}
+}
+
+// Le pied d'erreur (R réessayer, o répertoire) est celui de la liste : l'aide
+// et le nettoyage gardent le leur, où R et o n'agissent pas.
+func TestErrorFooterOnlyOnList(t *testing.T) {
+	m := newTestModel([]compose.Stack{stack("a", "", 1, 1, 0)})
+	m.width, m.height, m.loading = 120, 36, false
+	m.err = errors.New("Cannot connect to the Docker daemon")
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, "réessayer") {
+		t.Errorf("liste en erreur : « réessayer » attendu : %q", f)
+	}
+	m.view, m.helpReturn = viewHelp, viewList
+	if f := ansi.Strip(m.renderFooter()); strings.Contains(f, "réessayer") || !strings.Contains(f, "fermer") {
+		t.Errorf("aide : pied de la liste en erreur au lieu du sien : %q", f)
+	}
+	m.view = viewCleanup
+	if f := ansi.Strip(m.renderFooter()); strings.Contains(f, "réessayer") {
+		t.Errorf("nettoyage : pied de la liste en erreur : %q", f)
+	}
+}
+
+// Captures en 120 colonnes : « ⌫ supprimer » reste annoncé ; c'est « * épingler »
+// qui cède la place à « ? aide ».
+func TestCapturesFooterKeepsDelete(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel([]compose.Stack{capStack("immich", svc("redis", 1))})
+	m.loading, m.lastRefresh = false, time.Now()
+	m.width, m.height, m.view = 120, 36, viewBackup
+	m.backups = []backup.Snapshot{{Date: time.Now(), StackDir: m.cfg.StackDir, Stacks: []string{"immich"}}}
+	if f := ansi.Strip(m.renderFooter()); !strings.Contains(f, "supprimer") {
+		t.Errorf("120 colonnes : %q", f)
+	}
+}
+
+// Le bandeau de capture ne dépasse jamais la largeur de l'écran, texte tronqué
+// ou non.
+func TestCaptureBannerFitsWidth(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newTestModel([]compose.Stack{capStack("immich", svc("redis", 1)), capStack("authelia", svc("authelia", 0))})
+	m.loading, m.lastRefresh = false, time.Now()
+	m.backups = []backup.Snapshot{{Date: time.Now().Add(-26 * time.Hour), StackDir: m.cfg.StackDir,
+		Entries: []backup.Entry{{Name: "authelia"}}, Stacks: []string{"authelia"}}}
+	for _, w := range []int{40, 60, 80, 100, 200} {
+		m.width = w
+		if bw := ansi.StringWidth(m.captureBanner()); bw > w {
+			t.Errorf("w=%d : bandeau de %d colonnes : %q", w, bw, ansi.Strip(m.captureBanner()))
 		}
 	}
 }

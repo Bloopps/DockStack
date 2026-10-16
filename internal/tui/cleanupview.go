@@ -671,7 +671,7 @@ func renderCleanup(m Model, height int) string {
 	title := "  " + stylePanelTitle.Render("🧹 Nettoyage")
 	switch {
 	case m.cleanupLoading:
-		return title + "\n\n  " + styleYellow.Render(m.spinner.View()) + styleDim.Render(" Analyse de l'espace utilisé par Docker…")
+		return title + "\n\n  " + styleYellow.Render(m.spinner.View()) + styleDim.Render(truncate(" Analyse de l'espace utilisé par Docker…", max(w-6, 8)))
 	case m.cleanupErr != nil:
 		lines := []string{title, ""}
 		for _, l := range wordWrap("Analyse impossible : "+m.cleanupErr.Error(), max(w-4, 20)) {

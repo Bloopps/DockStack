@@ -408,7 +408,7 @@ func TestHeaderFreshnessVisible(t *testing.T) {
 		{80, []string{"maj " + m.lastRefresh.Format("15:04:05"), "o changer", "…"}},
 		{120, []string{"🕐", "maj à l'instant", "o changer"}},
 	} {
-		line := ansi.Strip(strings.Split(renderHeader(m.metrics, m.history, m.headerCounts(), nil, tc.w), "\n")[0])
+		line := ansi.Strip(strings.Split(renderHeader(m.metrics, m.history, m.headerCounts(), nil, tc.w, 100, true), "\n")[0])
 		for _, want := range tc.want {
 			if !strings.Contains(line, want) {
 				t.Errorf("w=%d : %q absent de %q", tc.w, want, line)
@@ -419,11 +419,11 @@ func TestHeaderFreshnessVisible(t *testing.T) {
 		}
 	}
 	m.lastRefresh = now.Add(-3 * time.Minute)
-	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 120)); !strings.Contains(line, "maj il y a 3 min") {
+	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 120, 100, true)); !strings.Contains(line, "maj il y a 3 min") {
 		t.Errorf("liste ancienne : %q", strings.Split(line, "\n")[0])
 	}
 	m.refreshing = true
-	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 80)); !strings.Contains(strings.Split(line, "\n")[0], "↻ actualisation…") {
+	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 80, 100, true)); !strings.Contains(strings.Split(line, "\n")[0], "↻ actualisation…") {
 		t.Errorf("relecture en cours : %q", strings.Split(line, "\n")[0])
 	}
 }
@@ -473,7 +473,7 @@ func TestDirChangeForgetsLastRefresh(t *testing.T) {
 		i := strings.Index(out, "dernière liste")
 		t.Errorf("nouveau dossier jamais lu, l'écran date l'ancien : %q", out[i:min(i+40, len(out))])
 	}
-	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 120)); strings.Contains(line, "maj il y a") {
+	if line := ansi.Strip(renderHeader(m.metrics, m.history, m.headerCounts(), nil, 120, 100, true)); strings.Contains(line, "maj il y a") {
 		t.Errorf("en-tête : %q", strings.Split(line, "\n")[0])
 	}
 }

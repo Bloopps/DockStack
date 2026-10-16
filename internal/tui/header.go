@@ -160,18 +160,26 @@ func fmtRate(kbs int) string {
 	}
 }
 
-func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *compose.DockerUsage, width int) string {
+// renderHeader : en-tête complet. height est la hauteur du terminal : elle
+// plafonne le gabarit large (cf. wideHeader). showChange ajoute le rappel placé
+// après le dossier (« o changer »), absent là où o n'agit pas.
+func renderHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, du *compose.DockerUsage, width, height int, showChange bool) string {
 	// ── Ligne 1 : titre │ chemin │ heure ──────────────────────────────────
 	// Le dossier scanné et la touche pour en changer, côte à côte : sans ce
 	// rappel, un nouvel utilisateur ne sait pas comment quitter un mauvais
 	// dossier (le pied de page ne propose plus o, l'en-tête le rappelle à
 	// toutes les largeurs).
-	change := styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
+	// Seulement là où o ouvre le sélecteur de dossier : le sélecteur de
+	// thème et le mode services l'ignorent, l'annoncer y serait faux.
+	change := ""
+	if showChange {
+		change = styleDim.Render("  ") + styleCyan.Bold(true).Render("o") + styleDim.Render(" changer")
+	}
 	// L'état des stacks est sur la ligne Docker (dockerLine), avec les
 	// conteneurs : un seul endroit pour « est-ce que tout tourne ? ».
 	line1 := headerLine1(sc.Dir, change, freshnessText(sc, time.Now(), width), width)
 
-	if width >= compactHeaderMinWidth {
+	if wideHeader(len(m.CPUCores), width, height) {
 		return renderCompactHeader(m, du, sc, line1, width)
 	}
 	return renderNarrowHeader(m, hist, sc, du, line1, width)
@@ -259,19 +267,36 @@ func renderNarrowHeader(m monitor.Metrics, hist metricsHistory, sc StackCounts, 
 	return strings.Join(lines, "\n")
 }
 
+// wideHeader dit si l'en-tête prend le gabarit large (deux colonnes). Sa
+// grille de cœurs grandit avec leur nombre quand la colonne Docker ne tient
+// plus : à 64 ou 128 cœurs, elle mangeait l'écran (liste et pied de page
+// poussés dehors). Au-delà d'un tiers de la hauteur (8 lignes au moins),
+// on retombe sur l'en-tête étroit de 4 lignes, qui ne dépend pas des cœurs.
+func wideHeader(nCores, width, height int) bool {
+	if width < compactHeaderMinWidth {
+		return false
+	}
+	return wideHeaderLines(nCores, width) <= max(height/3, 8)
+}
+
+// wideHeaderLines : hauteur du gabarit large.
+func wideHeaderLines(nCores, width int) int {
+	rows, _, dockerCol := compactLayout(nCores, width)
+	h := 2 + rows + 2 // titre + titres de colonnes, ressources/cœurs, Système + séparateur
+	if !dockerCol {
+		h++ // Docker repasse en ligne
+	}
+	return h
+}
+
 // headerHeight renvoie la hauteur (en lignes) de renderHeader sans le
 // construire : mesurer le header en le rendant coûte un rendu stylé complet,
 // que progressBodyHeight déclencherait à chaque frappe/molette. Doit rester
 // aligné sur la structure assemblée par renderCompactHeader et
 // renderNarrowHeader.
-func headerHeight(nCores, width int) int {
-	if width >= compactHeaderMinWidth {
-		rows, _, dockerCol := compactLayout(nCores, width)
-		h := 2 + rows + 2 // titre + titres de colonnes, ressources/cœurs, Système + séparateur
-		if !dockerCol {
-			h++ // Docker repasse en ligne
-		}
-		return h
+func headerHeight(nCores, width, height int) int {
+	if wideHeader(nCores, width, height) {
+		return wideHeaderLines(nCores, width)
 	}
 	return narrowHeaderLines
 }

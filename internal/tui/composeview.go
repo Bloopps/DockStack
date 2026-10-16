@@ -82,7 +82,7 @@ func renderComposeView(m Model) string {
 		{scrollKeyShort, {"tab", "brut/résolu"}, mouse},
 	}, []footerKey{{"esc", "retour"}, {"?", "aide"}, {"q", "quitter"}}, m.width, "")
 	if m.quitArmed {
-		hint = quitWarning()
+		hint = quitWarning(m.width)
 	}
 	sep := styleDim.Render(strings.Repeat("─", max(m.width, 1)))
 

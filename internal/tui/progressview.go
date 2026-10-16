@@ -325,19 +325,24 @@ func (m Model) renderResourceLine(r *resourceProgress, stackDone bool, now time.
 		status += fmt.Sprintf(" %d%%", r.percent)
 	}
 
+	// L'identifiant (« Image lscr.io/linuxserver/… ») cède la place au reste
+	// de la ligne : trop long, il la faisait dépasser l'écran.
+	fixed := lipgloss.Width(indent) + 2 + 2 + lipgloss.Width(status) + 1 + lipgloss.Width(dur)
+	id := truncate(r.id, max(m.width-fixed, 8))
+
 	switch {
 	case r.state == "working" && stackDone:
 		// Stuck: never reached a terminal state (stack failed mid-way).
-		return indent + styleDim.Render("· "+r.id+"  "+status)
+		return indent + styleDim.Render("· "+id+"  "+status)
 	case r.state == "working":
 		spin := styleYellow.Render(m.spinner.View())
-		return indent + spin + " " + styleYellow.Render(r.id) + "  " + styleDim.Render(status) + " " + dur
+		return indent + spin + " " + styleYellow.Render(id) + "  " + styleDim.Render(status) + " " + dur
 	case r.state == "error":
-		return indent + styleRed.Render("✕ "+r.id) + "  " + styleDim.Render(status) + " " + dur
+		return indent + styleRed.Render("✕ "+id) + "  " + styleDim.Render(status) + " " + dur
 	case r.state == "warning":
-		return indent + styleYellow.Render("! "+r.id) + "  " + styleDim.Render(status) + " " + dur
+		return indent + styleYellow.Render("! "+id) + "  " + styleDim.Render(status) + " " + dur
 	default:
-		return indent + styleGreen.Render("✔") + " " + r.id + "  " + styleDim.Render(status) + " " + dur
+		return indent + styleGreen.Render("✔") + " " + id + "  " + styleDim.Render(status) + " " + dur
 	}
 }
 
@@ -348,7 +353,7 @@ func renderProgressView(m Model) string {
 	var footer string
 	switch {
 	case m.quitArmed:
-		footer = quitWarning()
+		footer = quitWarning(m.width)
 	case m.progressDone:
 		// l passe avant g/G : sur un terminal étroit, c'est g/G qui cède.
 		left := []footerKey{{"↑↓", "défiler"}}

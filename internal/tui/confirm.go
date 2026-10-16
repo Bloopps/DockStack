@@ -374,6 +374,11 @@ func renderConfirmView(m Model, height int) string {
 	room := m.confirmRoom()
 	head, rule := m.confirmHead(room)
 	keys := styleGreen.Render(m.confirmKeys()+"  confirmer") + "   " + styleRed.Render("n / esc  annuler")
+	if lipgloss.Width(keys) > room {
+		// Terminal étroit : touches courtes plutôt qu'un cadre plus large que
+		// l'écran (la ligne des touches fixait sa largeur).
+		keys = styleGreen.Render(strings.ReplaceAll(m.confirmKeys(), " / ", "/")+" oui") + styleDim.Render(" · ") + styleRed.Render("n/esc non")
+	}
 
 	names := make([]string, len(m.confirmNames))
 	for i, n := range m.confirmNames {
