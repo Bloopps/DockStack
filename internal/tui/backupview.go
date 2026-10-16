@@ -323,7 +323,10 @@ func renderCaptureDetail(snap backup.Snapshot, stacks []compose.Stack, stackDir 
 			}
 		}
 		nameW = max(nameW, lipgloss.Width(e.name))
-		labelW = max(labelW, lipgloss.Width(labels[i]))
+		// Seul le mot d'état compte : la suite « · services » est coupée au
+		// rendu et ne doit pas rogner les noms (deux stacks « monitoring/p… »
+		// devenaient identiques).
+		labelW = max(labelW, lipgloss.Width(strings.SplitN(labels[i], " · ", 2)[0]))
 	}
 	nameCol := max(min(nameW+2, inner-2-labelW), 3)
 

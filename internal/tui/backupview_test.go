@@ -229,3 +229,32 @@ func TestCaptureDetailStatusNextToName(t *testing.T) {
 		t.Errorf("statuts en colonne %d, want %d (plus long nom + 2)\n%s", statusCol, want, s)
 	}
 }
+
+// En 80 colonnes, la colonne des noms ne suit pas le plus long statut
+// « à relancer · services » : deux stacks en marche gardent leur nom entier.
+func TestCaptureNamesNotCutByLongestStatus(t *testing.T) {
+	m := New(&config.Config{StackDir: "/srv"})
+	m.width, m.view = 80, viewBackup
+	m.stacks = []compose.Stack{
+		{Name: "monitoring/prometheus", Running: 1, Total: 1},
+		{Name: "monitoring/promtail", Running: 1, Total: 1},
+		{Name: "nextcloud", Running: 1, Total: 3, Services: []compose.ServiceStatus{
+			{Name: "app", Running: 1, Total: 1}, {Name: "cron", Total: 1}, {Name: "redis", Total: 1},
+		}},
+	}
+	m.backups = []backup.Snapshot{{
+		Date: time.Now(), StackDir: "/srv",
+		Stacks: []string{"nextcloud", "monitoring/prometheus", "monitoring/promtail"},
+		Entries: []backup.Entry{
+			{Name: "nextcloud", Services: []string{"app", "cron", "redis"}},
+			{Name: "monitoring/prometheus"},
+			{Name: "monitoring/promtail"},
+		},
+	}}
+	s := ansi.Strip(renderBackupView(m, 20))
+	for _, name := range []string{"monitoring/prometheus", "monitoring/promtail"} {
+		if !strings.Contains(s, name) {
+			t.Errorf("80 colonnes : nom %q coupé\n%s", name, s)
+		}
+	}
+}

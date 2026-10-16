@@ -428,8 +428,10 @@ func (m Model) servicesPane(s compose.Stack, inner, height int) svcPane {
 		return p
 	}
 
+	dMax := 0
 	if svcs := p.svcs; m.svcCursor < len(svcs) {
-		detail := serviceDetail(svcs[m.svcCursor], p.all, m.svcDeps, inner, m.previewExtraFor(s))
+		ex := m.previewExtraFor(s)
+		detail := serviceDetail(svcs[m.svcCursor], p.all, m.svcDeps, inner, ex)
 		// Actions : sur les services cochés ET visibles, sinon sur celui du
 		// curseur — exactement ce que vise targetServices. Compter tous les
 		// cochés annonçait « 3 services cochés » quand le filtre en masquait,
@@ -442,17 +444,40 @@ func (m Model) servicesPane(s compose.Stack, inner, height int) svcPane {
 				target = fmt.Sprintf("Actions sur %d coché%s visible%s (%d masqué%s)", n, plural(n), plural(n), hidden, plural(hidden))
 			}
 		}
-		detail = append(detail, "", styleDim.Render(truncate(target, inner)))
-		p.detail = append(detail, keyGrid([]footerKey{
+		tail := append([]string{"", styleDim.Render(truncate(target, inner))}, keyGrid([]footerKey{
 			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"}, {"c", "recreate"}, {"p", "pull"}, {"l", "logs"},
 		}, inner)...)
+		p.detail = append(detail, tail...)
+		// Hauteur du détail la plus grande parmi les services visibles : la
+		// zone ne dépend plus du service visé, donc le trait du détail ne
+		// saute pas d'un service à l'autre (conso et io n'existent que pour
+		// un service en marche, l'avertissement de dépendances que pour
+		// certains).
+		for _, sv := range svcs {
+			dMax = max(dMax, len(serviceDetail(sv, p.all, m.svcDeps, inner, ex))+len(tail))
+		}
 	}
 	// Zone des services : la hauteur de TOUS les services (filtre compris),
 	// bornée par la place, puis une ligne vide s'il en reste et le détail
 	// (qui s'ouvre sur un trait). Collé en bas du volet, le détail était à
 	// 10 ou 20 lignes du service qu'il décrit ; placé sous les seuls
 	// services visibles, il bougerait à chaque lettre du filtre.
-	p.room = height - len(p.head) - len(p.detail)
+	// Sur un volet bas, on cède d'abord l'en-tête puis le détail : le service
+	// visé par u/s/d/r/c/p/l doit toujours être à l'écran (au moins
+	// min(services, 4) lignes, repères « ··· » compris).
+	minZone := min(len(p.all), 4)
+	p.room = height - len(p.head) - dMax
+	if p.room < minZone {
+		// Ordre des sacrifices : ligne de filtre vide, état, titre.
+		for _, i := range []int{3, 1, 0} {
+			if height-len(p.head) >= minZone || i >= len(p.head) || (i == 3 && p.head[i] != "") {
+				continue
+			}
+			p.head = append(p.head[:i:i], p.head[i+1:]...)
+		}
+		p.detail = p.detail[:max(min(len(p.detail), height-len(p.head)-minZone), 0)]
+		p.room = height - len(p.head) - len(p.detail)
+	}
 	p.zone = min(len(p.all), max(p.room, 1))
 	return p
 }
@@ -484,18 +509,14 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 	if len(svcs) == 0 {
 		return append(out, styleDim.Render("(aucun service ne correspond)"))
 	}
-	start := 0
-	if len(svcs) > zone {
-		start = min(max(m.svcCursor-zone/2, 0), len(svcs)-zone)
-	}
 	nameW := 0
 	for _, sv := range svcs {
 		nameW = max(nameW, lipgloss.Width(sv.Name))
 	}
 	nameW = min(nameW, max(inner-18, 8))
 	top := len(out)
-	for i := start; i < len(svcs) && i < start+zone; i++ {
-		sv := svcs[i]
+	rows := make([]string, len(svcs))
+	for i, sv := range svcs {
 		d, st := stateStyle(sv.State())
 		name := truncate(sv.Name, nameW)
 		name += strings.Repeat(" ", max(nameW-lipgloss.Width(name), 0))
@@ -509,7 +530,7 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 			if m.svcSel[sv.Name] {
 				mark = styleYellow.Render("┃")
 			}
-			out = append(out, styleCyan.Render("▶")+mark+styleSelected.Render(plain+strings.Repeat(" ", pad)))
+			rows[i] = styleCyan.Render("▶") + mark + styleSelected.Render(plain+strings.Repeat(" ", pad))
 			continue
 		}
 		mark := " "
@@ -517,7 +538,21 @@ func previewServices(m Model, s compose.Stack, inner, height int) []string {
 			mark = styleYellow.Render("┃")
 			name = styleBold.Render(name)
 		}
-		out = append(out, " "+mark+st.Render(d)+" "+name+"  "+st.Render(word))
+		rows[i] = " " + mark + st.Render(d) + " " + name + "  " + st.Render(word)
+	}
+	// Repères « ··· N au-dessus / en dessous » quand tous ne tiennent pas :
+	// sinon rien ne dit où l'on est ni ce qui est caché (fenêtre centrée
+	// comme celle de la liste, que suit le pas de pgup/pgdown, cf. page).
+	from, to, above, below := 0, len(rows), 0, 0
+	if len(rows) > zone {
+		from, to, above, below = markedWindow(len(rows), m.svcCursor-(zone-1)/2, zone)
+	}
+	if above > 0 {
+		out = append(out, styleDim.Render(fmt.Sprintf("    ··· %d au-dessus", above)))
+	}
+	out = append(out, rows[from:to]...)
+	if below > 0 {
+		out = append(out, styleDim.Render(fmt.Sprintf("    ··· %d en dessous", below)))
 	}
 	for len(out) < top+zone {
 		out = append(out, "")

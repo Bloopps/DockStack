@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,5 +376,128 @@ func TestServiceDetailStaysUnderList(t *testing.T) {
 		if strings.HasPrefix(ansi.Strip(l), "──") && (i < 1 || strings.TrimSpace(ansi.Strip(lines[i-1])) == "") {
 			t.Errorf("volet bas : ligne vide avant le détail au lieu d'un service :\n%s", ansi.Strip(strings.Join(lines, "\n")))
 		}
+	}
+}
+
+// manySvcModel : une stack de n services (le quatrième arrêté, dépendant du
+// premier), 120x40, hors chargement.
+func manySvcModel(n int) Model {
+	st := stack("big", "", n-1, n, 0)
+	for i := range n {
+		sv := compose.ServiceStatus{Name: fmt.Sprintf("svc%02d", i), Running: 1, Total: 1, Image: "ghcr.io/org/some-very-long-image-name:release-2026", Status: "Up 2 hours"}
+		if i == 3 {
+			sv.Running, sv.Status = 0, "Exited (137) 2 hours ago"
+			sv.DependsOn = []string{"svc00"}
+		}
+		st.Services = append(st.Services, sv)
+	}
+	m := newTestModel([]compose.Stack{st})
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 120, 40, false
+	return m
+}
+
+// En 80 ou 100 colonnes, la fenêtre des services ne montre pas tout : des
+// repères « ··· N » doivent dire où l'on est et ce qui est caché.
+func TestServicesHiddenOnesAreMarkedWhenNarrow(t *testing.T) {
+	for _, w := range []int{80, 100} {
+		m := manySvcModel(12)
+		m, _ = update(m, tea.WindowSizeMsg{Width: w, Height: 24})
+		m = press(m, "right")
+		for range 6 {
+			m = press(m, "down")
+		}
+		out := ansi.Strip(m.viewContent())
+		shown := 0
+		for i := range 12 {
+			if strings.Contains(out, fmt.Sprintf("svc%02d", i)) {
+				shown++
+			}
+		}
+		if shown < 12 && !strings.Contains(out, "···") {
+			t.Errorf("%d colonnes : %d services sur 12 à l'écran, aucun repère\n%s", w, shown, out)
+		}
+	}
+}
+
+// Écran étroit (60x20) : mêmes repères, et le service sous le curseur reste
+// affiché.
+func TestServicesNarrowScreenKeepsCursorAndMarkers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stacks := []compose.Stack{capStack("immich", svc("database", 1), svc("immich-machine-learning", 1), svc("immich-server", 1), svc("redis", 1))}
+	m := newTestModel(stacks)
+	m.client = &fakeClient{stacks: stacks, autoDone: true}
+	m.loading = false
+	m.width, m.height = 120, 36
+	m.invalidateRows()
+	m = press(m, "right")
+	m.width, m.height = 60, 20
+	s := ansi.Strip(m.viewContent())
+	n := 0
+	for _, name := range []string{"database", "immich-machine-learning", "immich-server", "redis"} {
+		if strings.Contains(s, "● "+name) {
+			n++
+		}
+	}
+	if n < 4 && !strings.Contains(s, "···") {
+		t.Errorf("%d/4 services visibles, aucun repère :\n%s", n, s)
+	}
+	if !strings.Contains(s, "▶ ● database") {
+		t.Errorf("le service sous le curseur n'est pas affiché :\n%s", s)
+	}
+}
+
+// Le trait du détail ne bouge pas en naviguant, même quand les services ne
+// tiennent pas tous : la zone suit le détail le plus haut, pas celui du
+// service visé.
+func TestServiceDetailRuleStaysPutWhenCrowded(t *testing.T) {
+	st := stack("app", "", 4, 7, 0)
+	for i := range 7 {
+		sv := compose.ServiceStatus{Name: fmt.Sprintf("svc%d", i), Running: 1, Total: 1, Image: "nginx:alpine", Status: "Up 2 hours"}
+		if i%2 == 1 {
+			sv.Running, sv.Status = 0, "Exited (0) 2 hours ago"
+		}
+		st.Services = append(st.Services, sv)
+	}
+	m := newTestModel([]compose.Stack{st})
+	m.client = &fakeClient{}
+	m.loading = false
+	m, _ = update(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = press(m, "right")
+	rule := func(m Model) int {
+		for i, l := range strings.Split(ansi.Strip(m.viewContent()), "\n") {
+			if strings.HasPrefix(strings.TrimLeft(l, "│ "), "────") && strings.HasPrefix(l, "│") {
+				return i
+			}
+		}
+		return -1
+	}
+	want := rule(m)
+	for c := 1; c < 7; c++ {
+		m = press(m, "down")
+		if got := rule(m); got != want {
+			t.Fatalf("curseur sur svc%d : détail à la ligne %d, puis %d\n%s", c, want, got, ansi.Strip(m.viewContent()))
+		}
+	}
+}
+
+// Terminal bas : le service visé par les lettres reste à l'écran (le détail
+// et l'en-tête cèdent la place), sinon p partirait sur un service invisible.
+func TestServiceActionTargetStaysVisibleOnShortTerminal(t *testing.T) {
+	st := stack("web", "", 2, 3, 0)
+	st.Services = []compose.ServiceStatus{
+		{Name: "app", Running: 1, Total: 1, Status: "Up 2 hours"},
+		{Name: "cache", Running: 1, Total: 1, Status: "Up 2 hours"},
+		{Name: "db", Total: 1, Status: "Exited (137) 3 hours ago"},
+	}
+	fake := &fakeClient{}
+	m := newTestModel([]compose.Stack{st})
+	m.client = fake
+	m.loading = false
+	m, _ = update(m, tea.WindowSizeMsg{Width: 120, Height: 12})
+	m = press(m, "right")
+	out := ansi.Strip(m.viewContent())
+	if !strings.Contains(out, "▶ ● app") {
+		t.Fatalf("le service visé est absent de l'écran :\n%s", out)
 	}
 }

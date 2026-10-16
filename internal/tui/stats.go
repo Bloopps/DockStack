@@ -336,6 +336,18 @@ func truncImage(ref string, w int) string {
 	if width <= w {
 		return ref
 	}
+	// Le digest (« @sha256:… ») est traité à part : ses 64 chiffres hexa
+	// chassaient le nom et le tag, seuls lisibles. On garde le nom (coupé au
+	// milieu au besoin) puis autant de digest que la place le permet.
+	if at := strings.Index(ref, "@"); at > 0 {
+		base, digest := ref[:at], ref[at:]
+		if bw := ansi.StringWidth(base); bw+2 <= w {
+			return base + ansi.Truncate(digest, w-bw, "…")
+		}
+		if w >= 3 {
+			return truncImage(base, w-2) + "@…"
+		}
+	}
 	i, j := strings.Index(ref, "/"), strings.LastIndex(ref, "/")
 	if i >= 0 && j > i {
 		if short := ref[:i] + "/…" + ref[j:]; ansi.StringWidth(short) <= w {

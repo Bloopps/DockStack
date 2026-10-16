@@ -417,3 +417,25 @@ func TestServiceBlockStateAndExitCode(t *testing.T) {
 		t.Errorf("résumé des services masqués :\n%s", out)
 	}
 }
+
+// Une image épinglée par digest garde son nom et son tag lisibles : le
+// digest cède la place en premier, jamais le nom.
+func TestTruncImageKeepsNameWithDigest(t *testing.T) {
+	ref := "ghcr.io/immich-app/immich-server:v1.119.0@sha256:" + strings.Repeat("3f0a9c1b", 8)
+	for _, w := range []int{30, 36, 46} {
+		got := truncImage(ref, w)
+		if !strings.Contains(got, "immich-server") || ansi.StringWidth(got) > w {
+			t.Errorf("truncImage(…, %d) = %q : nom perdu ou trop large", w, got)
+		}
+	}
+	st := stack("immich", "", 1, 1, 0)
+	st.Services = []compose.ServiceStatus{{Name: "server", Running: 1, Total: 1, Image: ref, Status: "Up 2 hours"}}
+	m := newTestModel([]compose.Stack{st})
+	m.client = &fakeClient{}
+	m.width, m.height, m.loading = 110, 36, false
+	for _, l := range strings.Split(ansi.Strip(m.viewContent()), "\n") {
+		if strings.Contains(l, "image") && !strings.Contains(l, "immich-server") {
+			t.Errorf("volet : ligne d'image sans le nom :\n%s", l)
+		}
+	}
+}
